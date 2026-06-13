@@ -29,9 +29,22 @@ struct VideoScanResult: Sendable {
 }
 
 struct VideoScanner {
+    typealias VideoLoader = @Sendable (URL) async throws -> VideoItem
+
     static let supportedExtensions: Set<String> = [
         "mp4", "mov", "m4v", "avi", "mkv", "webm", "mpeg", "mpg", "3gp"
     ]
+
+    private let maxConcurrentLoads: Int
+    private let loader: VideoLoader
+
+    init(
+        maxConcurrentLoads: Int = min(4, max(2, ProcessInfo.processInfo.activeProcessorCount / 2)),
+        loader: VideoLoader? = nil
+    ) {
+        self.maxConcurrentLoads = max(1, maxConcurrentLoads)
+        self.loader = loader ?? { url in try await Self.loadVideo(at: url) }
+    }
 
     static func discoverVideoURLs(in folder: URL) throws -> [URL] {
         guard let enumerator = FileManager.default.enumerator(
@@ -55,28 +68,51 @@ struct VideoScanner {
     ) async throws -> VideoScanResult {
         let urls = try Self.discoverVideoURLs(in: folder)
         await progress(ScanProgress(stage: .readingMetadata, fraction: 0, discoveredCount: urls.count))
-        var videos: [VideoItem] = []
-        var issues: [ScanIssue] = []
-        for (index, url) in urls.enumerated() {
-            try Task.checkCancellation()
-            do {
-                videos.append(try await loadVideo(at: url))
-            } catch ScannerError.noVideoTrack {
-                issues.append(ScanIssue(url: url, reason: .noVideoTrack))
-            } catch {
-                issues.append(ScanIssue(url: url, reason: .message(error.localizedDescription)))
+        let loader = self.loader
+        let limit = maxConcurrentLoads
+        let results = try await withThrowingTaskGroup(of: LoadedVideo.self) { group in
+            var iterator = Array(urls.enumerated()).makeIterator()
+            var collected: [LoadedVideo] = []
+            var completed = 0
+
+            for _ in 0..<min(limit, urls.count) {
+                guard let next = iterator.next() else { break }
+                group.addTask { await Self.load(index: next.offset, url: next.element, using: loader) }
             }
-            await progress(ScanProgress(
-                stage: .readingMetadata,
-                fraction: urls.isEmpty ? 1 : Double(index + 1) / Double(urls.count),
-                currentFile: url.lastPathComponent,
-                discoveredCount: urls.count
-            ))
+
+            while let result = try await group.next() {
+                collected.append(result)
+                completed += 1
+                await progress(ScanProgress(
+                    stage: .readingMetadata,
+                    fraction: urls.isEmpty ? 1 : Double(completed) / Double(urls.count),
+                    currentFile: result.url.lastPathComponent,
+                    discoveredCount: urls.count
+                ))
+                if let next = iterator.next() {
+                    group.addTask { await Self.load(index: next.offset, url: next.element, using: loader) }
+                }
+            }
+            return collected.sorted { $0.index < $1.index }
         }
-        return VideoScanResult(videos: videos, issues: issues)
+
+        return VideoScanResult(
+            videos: results.compactMap(\.video),
+            issues: results.compactMap(\.issue)
+        )
     }
 
-    private func loadVideo(at url: URL) async throws -> VideoItem {
+    private static func load(index: Int, url: URL, using loader: VideoLoader) async -> LoadedVideo {
+        do {
+            return LoadedVideo(index: index, url: url, video: try await loader(url), issue: nil)
+        } catch ScannerError.noVideoTrack {
+            return LoadedVideo(index: index, url: url, video: nil, issue: ScanIssue(url: url, reason: .noVideoTrack))
+        } catch {
+            return LoadedVideo(index: index, url: url, video: nil, issue: ScanIssue(url: url, reason: .message(error.localizedDescription)))
+        }
+    }
+
+    private static func loadVideo(at url: URL) async throws -> VideoItem {
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
@@ -99,7 +135,7 @@ struct VideoScanner {
         )
     }
 
-    private func thumbnailData(asset: AVAsset, duration: Double) async -> Data? {
+    private static func thumbnailData(asset: AVAsset, duration: Double) async -> Data? {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 720, height: 405)
@@ -108,6 +144,13 @@ struct VideoScanner {
         let representation = NSBitmapImageRep(cgImage: cgImage)
         return representation.representation(using: .jpeg, properties: [.compressionFactor: 0.78])
     }
+}
+
+private struct LoadedVideo: Sendable {
+    let index: Int
+    let url: URL
+    let video: VideoItem?
+    let issue: ScanIssue?
 }
 
 enum ScannerError: Error {

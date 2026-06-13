@@ -42,10 +42,26 @@ struct SimilarityScore: Equatable, Sendable {
 }
 
 enum SimilarityScorer {
+    /// 评分整合三层证据:
+    /// - SHA-256 字节级一致 → 1.0
+    /// - 感知哈希 (DCT-3D Hamming 距离): 主信号, 0..1
+    /// - Vision FeaturePrint (帧级 CNN 特征): 精确认证层 (可选)
+    /// - 元数据 (时长/尺寸/大小/文件名): 辅助证据
+    ///
+    /// `perceptualSimilarity` 取值 [0, 1]:
+    ///   - 1.0 = Hamming 距离 0 (完全相同的指纹)
+    ///   - 0.0 = 全比特不同
+    ///   - 由 BK-Tree 候选筛选后, 通常 >= 1 - 24/64 ≈ 0.625
+    ///
+    /// 评分公式:
+    ///   - 三层都有时:   score = 0.45·perc + 0.35·frames + 0.20·metadata
+    ///   - 仅哈希+元数据: score = 0.65·perc + 0.35·metadata, 上限 0.95 (无 Vision 不能确信完全一致)
+    ///   - 仅元数据:     score = 0.78·metadata, 上限 0.78 (不能高过视觉信号)
     static func score(
         _ first: VideoItem,
         _ second: VideoItem,
         hashesMatch: Bool,
+        perceptualSimilarity: Double? = nil,
         frameSimilarity: Double?
     ) -> SimilarityScore {
         if hashesMatch {
@@ -63,13 +79,30 @@ enum SimilarityScorer {
         if name >= 0.85 { evidence.insert(.similarName) }
 
         let metadata = duration * 0.30 + dimensions * 0.20 + size * 0.20 + name * 0.30
-        guard let frameSimilarity else {
-            return SimilarityScore(score: min(metadata * 0.78, 0.78), evidence: evidence)
+
+        let perc = perceptualSimilarity.map { min(max($0, 0), 1) }
+        if let perc, perc >= 0.78 { evidence.insert(.similarPerceptualHash) }
+
+        // 三种组合分支
+        if let perc, let frame = frameSimilarity {
+            let frames = min(max(frame, 0), 1)
+            if frames >= 0.82 { evidence.insert(.similarFrames) }
+            let combined = perc * 0.45 + frames * 0.35 + metadata * 0.20
+            return SimilarityScore(score: min(combined, 1), evidence: evidence)
         }
 
-        let frames = min(max(frameSimilarity, 0), 1)
-        if frames >= 0.82 { evidence.insert(.similarFrames) }
-        return SimilarityScore(score: min(frames * 0.70 + metadata * 0.30, 1), evidence: evidence)
+        if let perc {
+            let combined = perc * 0.65 + metadata * 0.35
+            return SimilarityScore(score: min(combined, 0.95), evidence: evidence)
+        }
+
+        if let frame = frameSimilarity {
+            let frames = min(max(frame, 0), 1)
+            if frames >= 0.82 { evidence.insert(.similarFrames) }
+            return SimilarityScore(score: min(frames * 0.70 + metadata * 0.30, 1), evidence: evidence)
+        }
+
+        return SimilarityScore(score: min(metadata * 0.78, 0.78), evidence: evidence)
     }
 
     private static func ratioScore(_ lhs: Double, _ rhs: Double) -> Double {

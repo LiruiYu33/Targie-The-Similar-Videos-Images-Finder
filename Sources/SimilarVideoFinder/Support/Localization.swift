@@ -99,6 +99,7 @@ enum L10n {
     static func evidence(_ value: SimilarityEvidence, _ l: AppLanguage) -> String {
         switch value {
         case .identicalContentHash: text(l, "Identical content", "内容完全一致")
+        case .similarPerceptualHash: text(l, "Matching fingerprint", "指纹匹配")
         case .similarFrames: text(l, "Similar frames", "画面相似")
         case .similarDuration: text(l, "Similar duration", "时长接近")
         case .similarDimensions: text(l, "Similar resolution", "分辨率接近")
@@ -112,6 +113,8 @@ enum L10n {
         case .idle: text(l, "Ready to scan", "等待扫描")
         case .discovering: text(l, "Finding videos", "正在查找视频")
         case .readingMetadata: text(l, "Reading video information", "正在读取视频信息")
+        case .prehashing: text(l, "Filtering candidates", "正在筛选候选")
+        case .hashing: text(l, "Computing video fingerprints", "正在计算视频指纹")
         case .comparing: text(l, "Comparing video frames", "正在比较画面")
         case .completed: text(l, "Scan complete", "扫描完成")
         case .cancelled: text(l, "Scan cancelled", "扫描已取消")

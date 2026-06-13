@@ -35,13 +35,48 @@ struct FrameFeatureExtractor {
     static let samplePositions = [0.08, 0.28, 0.50, 0.72, 0.92]
 
     func similarity(between firstURL: URL, and secondURL: URL) async throws -> Double? {
-        let first = try await observations(for: firstURL)
-        let second = try await observations(for: secondURL)
-        let count = min(first.count, second.count)
+        let first = try await features(for: firstURL)
+        let second = try await features(for: secondURL)
+        return try await similarity(between: first, and: second)
+    }
+}
+
+struct FrameFeatures: @unchecked Sendable {
+    let observations: [VNFeaturePrintObservation?]
+}
+
+protocol FrameFeatureExtracting: Sendable {
+    func features(for url: URL) async throws -> FrameFeatures
+    func similarity(between first: FrameFeatures, and second: FrameFeatures) async throws -> Double?
+}
+
+extension FrameFeatureExtractor: FrameFeatureExtracting {
+    func features(for url: URL) async throws -> FrameFeatures {
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        guard duration.isFinite, duration > 0 else { return FrameFeatures(observations: []) }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.35, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.35, preferredTimescale: 600)
+
+        let observations: [VNFeaturePrintObservation?] = try Self.samplePositions.map { position in
+            try Task.checkCancellation()
+            let time = CMTime(seconds: duration * position, preferredTimescale: 600)
+            guard let image = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+            let request = VNGenerateImageFeaturePrintRequest()
+            try VNImageRequestHandler(cgImage: image).perform([request])
+            return request.results?.first as? VNFeaturePrintObservation
+        }
+        return FrameFeatures(observations: observations)
+    }
+
+    func similarity(between first: FrameFeatures, and second: FrameFeatures) async throws -> Double? {
+        let count = min(first.observations.count, second.observations.count)
         var similarities: [Double?] = []
         for index in 0..<count {
             try Task.checkCancellation()
-            guard let lhs = first[index], let rhs = second[index] else {
+            guard let lhs = first.observations[index], let rhs = second.observations[index] else {
                 similarities.append(nil)
                 continue
             }
@@ -51,23 +86,28 @@ struct FrameFeatureExtractor {
         }
         return FrameSimilarityAggregator.aggregate(similarities)
     }
+}
 
-    private func observations(for url: URL) async throws -> [VNFeaturePrintObservation?] {
-        let asset = AVURLAsset(url: url)
-        let duration = try await asset.load(.duration).seconds
-        guard duration.isFinite, duration > 0 else { return [] }
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.35, preferredTimescale: 600)
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.35, preferredTimescale: 600)
+actor FrameFeatureCache {
+    private let extractor: any FrameFeatureExtracting
+    private var storage: [URL: FrameFeatures] = [:]
 
-        return try Self.samplePositions.map { position in
-            try Task.checkCancellation()
-            let time = CMTime(seconds: duration * position, preferredTimescale: 600)
-            guard let image = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
-            let request = VNGenerateImageFeaturePrintRequest()
-            try VNImageRequestHandler(cgImage: image).perform([request])
-            return request.results?.first as? VNFeaturePrintObservation
+    init(extractor: any FrameFeatureExtracting = FrameFeatureExtractor()) {
+        self.extractor = extractor
+    }
+
+    func features(for url: URL) async throws -> FrameFeatures {
+        if let cached = storage[url] {
+            return cached
         }
+        let value = try await extractor.features(for: url)
+        storage[url] = value
+        return value
+    }
+
+    func similarity(between firstURL: URL, and secondURL: URL) async throws -> Double? {
+        let first = try await features(for: firstURL)
+        let second = try await features(for: secondURL)
+        return try await extractor.similarity(between: first, and: second)
     }
 }

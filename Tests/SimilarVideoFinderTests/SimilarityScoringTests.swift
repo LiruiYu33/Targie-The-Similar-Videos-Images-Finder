@@ -48,6 +48,71 @@ final class SimilarityScoringTests: XCTestCase {
         XCTAssertLessThan(result.score, 0.82)
     }
 
+    // MARK: - Perceptual Hash Layer
+
+    func testPerceptualHashAddsEvidenceWhenStrong() {
+        let result = SimilarityScorer.score(
+            Self.video(name: "a.mov"),
+            Self.video(name: "b.mov"),
+            hashesMatch: false,
+            perceptualSimilarity: 0.95,
+            frameSimilarity: nil
+        )
+        XCTAssertTrue(result.evidence.contains(.similarPerceptualHash))
+    }
+
+    func testPerceptualHashWithoutFrameStillScoresHigh() {
+        let result = SimilarityScorer.score(
+            Self.video(name: "trip.mov"),
+            Self.video(name: "trip copy.mov"),
+            hashesMatch: false,
+            perceptualSimilarity: 0.95,
+            frameSimilarity: nil
+        )
+        // 仅哈希 + 元数据时上限 0.95
+        XCTAssertGreaterThan(result.score, 0.78)
+        XCTAssertLessThanOrEqual(result.score, 0.95)
+    }
+
+    func testWeakPerceptualHashKeepsScoreLow() {
+        let result = SimilarityScorer.score(
+            Self.video(name: "a.mov"),
+            Self.video(name: "b.mov", size: 5_000_000, duration: 30),  // 不同元数据
+            hashesMatch: false,
+            perceptualSimilarity: 0.4,
+            frameSimilarity: nil
+        )
+        XCTAssertLessThan(result.score, 0.7)
+        XCTAssertFalse(result.evidence.contains(.similarPerceptualHash))
+    }
+
+    func testThreeLayerScoreCombinesWeights() {
+        // 三层都强 → 应接近 1.0
+        let result = SimilarityScorer.score(
+            Self.video(name: "trip.mov"),
+            Self.video(name: "trip copy.mov"),
+            hashesMatch: false,
+            perceptualSimilarity: 0.95,
+            frameSimilarity: 0.92
+        )
+        // 0.45·0.95 + 0.35·0.92 + 0.20·meta(高) → ~0.92+
+        XCTAssertGreaterThan(result.score, 0.88)
+        XCTAssertTrue(result.evidence.contains(.similarPerceptualHash))
+        XCTAssertTrue(result.evidence.contains(.similarFrames))
+    }
+
+    func testIdenticalContentHashStillBeatsAllOtherSignals() {
+        let result = SimilarityScorer.score(
+            Self.video(name: "x.mov"),
+            Self.video(name: "y.mov"),
+            hashesMatch: true,
+            perceptualSimilarity: 0.4,
+            frameSimilarity: 0.5
+        )
+        XCTAssertEqual(result.score, 1.0)
+        XCTAssertEqual(result.evidence, [.identicalContentHash])
+    }
+
     static func video(name: String, size: Int64 = 1_000_000, duration: Double = 60) -> VideoItem {
         VideoItem(
             url: URL(fileURLWithPath: "/tmp/\(name)"),

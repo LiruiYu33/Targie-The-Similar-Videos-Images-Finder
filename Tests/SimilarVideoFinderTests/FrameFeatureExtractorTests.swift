@@ -29,4 +29,38 @@ final class FrameFeatureExtractorTests: XCTestCase {
         XCTAssertNotNil(result)
         XCTAssertEqual(result!, 0.8, accuracy: 0.0001)
     }
+
+    func testFeatureCacheExtractsEachVideoOnlyOnce() async throws {
+        let extractor = CountingFrameFeatureExtractor()
+        let cache = FrameFeatureCache(extractor: extractor)
+        let first = URL(fileURLWithPath: "/tmp/first.mp4")
+        let second = URL(fileURLWithPath: "/tmp/second.mp4")
+
+        _ = try await cache.features(for: first)
+        _ = try await cache.features(for: first)
+        _ = try await cache.features(for: second)
+        _ = try await cache.features(for: first)
+
+        let firstCount = await extractor.count(for: first)
+        let secondCount = await extractor.count(for: second)
+        XCTAssertEqual(firstCount, 1)
+        XCTAssertEqual(secondCount, 1)
+    }
+}
+
+private actor CountingFrameFeatureExtractor: FrameFeatureExtracting {
+    private var counts: [URL: Int] = [:]
+
+    func features(for url: URL) async throws -> FrameFeatures {
+        counts[url, default: 0] += 1
+        return FrameFeatures(observations: [])
+    }
+
+    func similarity(between first: FrameFeatures, and second: FrameFeatures) async throws -> Double? {
+        nil
+    }
+
+    func count(for url: URL) -> Int {
+        counts[url, default: 0]
+    }
 }

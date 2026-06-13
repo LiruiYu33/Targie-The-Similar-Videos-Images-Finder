@@ -37,4 +37,50 @@ final class VideoScannerTests: XCTestCase {
         let found = try VideoScanner.discoverVideoURLs(in: root)
         XCTAssertEqual(found.map(\.lastPathComponent), ["b.mov", "a.mp4", "c.M4V"])
     }
+
+    func testScanLoadsMetadataConcurrentlyAndKeepsStableOrder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["c.mp4", "a.mp4", "b.mp4"] {
+            try Data().write(to: root.appendingPathComponent(name))
+        }
+
+        let tracker = LoadConcurrencyTracker()
+        let scanner = VideoScanner(maxConcurrentLoads: 3) { url in
+            await tracker.started()
+            try await Task.sleep(for: .milliseconds(40))
+            await tracker.finished()
+            return VideoItem(
+                url: url,
+                fileSize: 1,
+                duration: 1,
+                width: 1,
+                height: 1,
+                modifiedAt: nil,
+                thumbnailData: nil
+            )
+        }
+
+        let result = try await scanner.scan(folder: root) { _ in }
+
+        XCTAssertEqual(result.videos.map(\.filename), ["a.mp4", "b.mp4", "c.mp4"])
+        let maximum = await tracker.maximum
+        XCTAssertGreaterThan(maximum, 1)
+        XCTAssertLessThanOrEqual(maximum, 3)
+    }
+}
+
+private actor LoadConcurrencyTracker {
+    private(set) var current = 0
+    private(set) var maximum = 0
+
+    func started() {
+        current += 1
+        maximum = max(maximum, current)
+    }
+
+    func finished() {
+        current -= 1
+    }
 }

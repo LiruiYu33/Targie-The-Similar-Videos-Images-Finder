@@ -66,19 +66,26 @@ final class ScanViewModel: ObservableObject {
     private let scanner: VideoScanner
     private let pipeline: any SimilarityProcessing
     private let deletionService: any DeletionServicing
+    private let hashCache: (any HashCaching)?
 
     init(
         scanner: VideoScanner = VideoScanner(),
-        pipeline: any SimilarityProcessing = SimilarityPipeline(),
-        deletionService: any DeletionServicing = DeletionService()
+        pipeline: (any SimilarityProcessing)? = nil,
+        deletionService: any DeletionServicing = DeletionService(),
+        hashCache: (any HashCaching)? = ScanViewModel.makeDefaultHashCache()
     ) {
         self.scanner = scanner
-        self.pipeline = pipeline
         self.deletionService = deletionService
+        self.hashCache = hashCache
+        self.pipeline = pipeline ?? SimilarityPipeline(cache: hashCache)
+    }
+
+    private static func makeDefaultHashCache() -> (any HashCaching)? {
+        try? HashCache()
     }
 
     var isScanning: Bool {
-        [.discovering, .readingMetadata, .comparing].contains(progress.stage)
+        [.discovering, .readingMetadata, .prehashing, .hashing, .comparing].contains(progress.stage)
     }
 
     var selectedGroup: SimilarityGroup? {
@@ -127,6 +134,12 @@ final class ScanViewModel: ObservableObject {
                 groups = result.groups
                 selectFirstAvailable()
                 progress = ScanProgress(stage: .completed, fraction: 1, discoveredCount: result.videos.count)
+
+                // 清理缓存中已不存在的视频条目
+                if let hashCache {
+                    let validPaths = Set(result.videos.map { $0.url.path })
+                    Task { await hashCache.pruneStale(validPaths: validPaths) }
+                }
             } catch is CancellationError {
                 allVideos = []
                 allRelations = []
