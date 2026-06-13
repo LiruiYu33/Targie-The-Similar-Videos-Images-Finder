@@ -17,6 +17,8 @@ Targie finds similar videos and images in a selected folder by combining metadat
 - Requires an explicit choice between moving files to Trash and permanent deletion, with a second confirmation for permanent deletion.
 - Supports English and Simplified Chinese with instant switching and remembered preference.
 
+![Screenshot](asset/Screenshot.png)
+
 ## Build (macOS only)
 
 ```bash
