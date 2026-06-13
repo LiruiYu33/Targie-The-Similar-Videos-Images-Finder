@@ -93,6 +93,7 @@ enum L10n {
     static func chooseVideoFolder(_ l: AppLanguage) -> String { text(l, "Choose a Folder to Scan for Videos", "选择要扫描的视频文件夹") }
     static func unknown(_ l: AppLanguage) -> String { text(l, "Unknown", "未知") }
     static func noVideoTrack(_ l: AppLanguage) -> String { text(l, "No readable video track was found", "未找到可读取的视频轨道") }
+    static func unreadableImage(_ l: AppLanguage) -> String { text(l, "Image could not be read", "图片无法读取") }
     static func fileMissing(_ l: AppLanguage) -> String { text(l, "The file no longer exists", "文件已不存在") }
     static func deletionFailed(_ message: String, _ l: AppLanguage) -> String { text(l, "Deletion failed: \(message)", "删除失败：\(message)") }
 

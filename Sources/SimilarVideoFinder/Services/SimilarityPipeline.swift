@@ -22,14 +22,14 @@
 import Foundation
 
 struct PipelineResult: Sendable {
-    let videos: [VideoItem]
+    let videos: [MediaItem]
     let relations: [SimilarityRelation]
     let groups: [SimilarityGroup]
 }
 
 protocol SimilarityProcessing: Sendable {
     func process(
-        videos: [VideoItem],
+        videos: [MediaItem],
         threshold: Double,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> PipelineResult
@@ -67,7 +67,7 @@ struct SimilarityPipeline: SimilarityProcessing {
     }
 
     func process(
-        videos: [VideoItem],
+        videos: [MediaItem],
         threshold: Double,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> PipelineResult {
@@ -217,9 +217,9 @@ struct SimilarityPipeline: SimilarityProcessing {
     }
 
     /// 从候选对中提取所有需要计算感知哈希的视频 (去重)。
-    private func uniqueVideos(in pairs: [(VideoItem, VideoItem)]) -> [VideoItem] {
+    private func uniqueVideos(in pairs: [(MediaItem, MediaItem)]) -> [MediaItem] {
         var seen = Set<UUID>()
-        var result: [VideoItem] = []
+        var result: [MediaItem] = []
         for (first, second) in pairs {
             if seen.insert(first.id).inserted { result.append(first) }
             if seen.insert(second.id).inserted { result.append(second) }
@@ -231,7 +231,7 @@ struct SimilarityPipeline: SimilarityProcessing {
 
     /// 并行计算多个视频的 PerceptualHash, 进度上报。命中缓存的视频跳过哈希计算。
     private func computePerceptualHashesInParallel(
-        videos: [VideoItem],
+        videos: [MediaItem],
         prehashes: [UUID: QuickPrehash],
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> [UUID: VideoPerceptualHash] {
@@ -240,7 +240,7 @@ struct SimilarityPipeline: SimilarityProcessing {
 
         // ---- 阶段 1: 缓存命中过滤 ----
         var cached: [UUID: VideoPerceptualHash] = [:]
-        var needsHashing: [VideoItem] = []
+        var needsHashing: [MediaItem] = []
         if let cache {
             for video in videos {
                 if let record = await cache.lookup(
@@ -320,7 +320,7 @@ struct SimilarityPipeline: SimilarityProcessing {
 
     // MARK: - Phase C helpers
 
-    private func fileSHA256(for video: VideoItem, cache: inout [UUID: String]) async throws -> String {
+    private func fileSHA256(for video: MediaItem, cache: inout [UUID: String]) async throws -> String {
         if let cached = cache[video.id] { return cached }
         let value = try await FileHasher.sha256(of: video.url)
         cache[video.id] = value

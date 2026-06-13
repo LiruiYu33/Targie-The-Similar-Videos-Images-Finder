@@ -30,7 +30,7 @@ enum DeletePromptStep: Equatable {
 
 struct DeletePrompt: Identifiable, Equatable {
     let id = UUID()
-    let video: VideoItem
+    let media: MediaItem
     var step: DeletePromptStep
 }
 
@@ -54,13 +54,13 @@ final class ScanViewModel: ObservableObject {
     }
     @Published private(set) var groups: [SimilarityGroup] = []
     @Published var selectedGroupID: UUID?
-    @Published var selectedVideoID: UUID?
+    @Published var selectedMediaID: UUID?
     @Published private(set) var progress = ScanProgress()
     @Published private(set) var issues: [ScanIssue] = []
     @Published var presentedError: PresentedError?
     @Published var deletePrompt: DeletePrompt?
 
-    private var allVideos: [VideoItem] = []
+    private var allItems: [MediaItem] = []
     private var allRelations: [SimilarityRelation] = []
     private var scanTask: Task<Void, Never>?
     private let scanner: VideoScanner
@@ -92,8 +92,8 @@ final class ScanViewModel: ObservableObject {
         groups.first { $0.id == selectedGroupID }
     }
 
-    var selectedVideo: VideoItem? {
-        selectedGroup?.videos.first { $0.id == selectedVideoID }
+    var selectedMedia: MediaItem? {
+        selectedGroup?.items.first { $0.id == selectedMediaID }
     }
 
     func chooseFolder(language: AppLanguage) {
@@ -106,7 +106,7 @@ final class ScanViewModel: ObservableObject {
             selectedFolder = url
             groups = []
             selectedGroupID = nil
-            selectedVideoID = nil
+            selectedMediaID = nil
             progress = ScanProgress()
             issues = []
         }
@@ -129,7 +129,7 @@ final class ScanViewModel: ObservableObject {
                     await MainActor.run { self?.progress = update }
                 }
                 try Task.checkCancellation()
-                allVideos = result.videos
+                allItems = result.videos
                 allRelations = result.relations
                 groups = result.groups
                 selectFirstAvailable()
@@ -141,7 +141,7 @@ final class ScanViewModel: ObservableObject {
                     Task { await hashCache.pruneStale(validPaths: validPaths) }
                 }
             } catch is CancellationError {
-                allVideos = []
+                allItems = []
                 allRelations = []
                 groups = []
                 progress = ScanProgress(stage: .cancelled)
@@ -159,22 +159,22 @@ final class ScanViewModel: ObservableObject {
 
     func selectGroup(_ id: UUID?) {
         selectedGroupID = id
-        selectedVideoID = selectedGroup?.videos.first?.id
+        selectedMediaID = selectedGroup?.items.first?.id
     }
 
-    func requestDeletion(of video: VideoItem) {
-        deletePrompt = DeletePrompt(video: video, step: .choosingMethod)
+    func requestDeletion(of media: MediaItem) {
+        deletePrompt = DeletePrompt(media: media, step: .choosingMethod)
     }
 
     func askForPermanentConfirmation() {
         deletePrompt?.step = .confirmingPermanent
     }
 
-    func confirmDeletion(of video: VideoItem, mode: DeletionMode) async {
+    func confirmDeletion(of media: MediaItem, mode: DeletionMode) async {
         do {
-            try await deletionService.delete(url: video.url, mode: mode)
-            allVideos.removeAll { $0.id == video.id }
-            allRelations.removeAll { $0.contains(video.id) }
+            try await deletionService.delete(url: media.url, mode: mode)
+            allItems.removeAll { $0.id == media.id }
+            allRelations.removeAll { $0.contains(media.id) }
             rebuildGroups()
             deletePrompt = nil
         } catch let error as DeletionError {
@@ -184,16 +184,16 @@ final class ScanViewModel: ObservableObject {
         }
     }
 
-    func revealSelectedVideo() {
-        if let video = selectedVideo { deletionService.reveal(video.url) }
+    func revealSelectedMedia() {
+        if let media = selectedMedia { deletionService.reveal(media.url) }
     }
 
-    func openSelectedVideo() {
-        if let video = selectedVideo { deletionService.open(video.url) }
+    func openSelectedMedia() {
+        if let media = selectedMedia { deletionService.open(media.url) }
     }
 
-    func replaceResultsForTesting(videos: [VideoItem], relations: [SimilarityRelation]) {
-        allVideos = videos
+    func replaceResultsForTesting(items: [MediaItem], relations: [SimilarityRelation]) {
+        allItems = items
         allRelations = relations
         rebuildGroups()
     }
@@ -203,12 +203,12 @@ final class ScanViewModel: ObservableObject {
     }
 
     private func rebuildGroups() {
-        groups = SimilarityGrouper.groups(items: allVideos, relations: allRelations, threshold: threshold)
+        groups = SimilarityGrouper.groups(items: allItems, relations: allRelations, threshold: threshold)
         if !groups.contains(where: { $0.id == selectedGroupID }) { selectFirstAvailable() }
     }
 
     private func selectFirstAvailable() {
         selectedGroupID = groups.first?.id
-        selectedVideoID = groups.first?.videos.first?.id
+        selectedMediaID = groups.first?.items.first?.id
     }
 }

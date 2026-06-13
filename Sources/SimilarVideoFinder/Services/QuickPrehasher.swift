@@ -25,7 +25,7 @@ import Foundation
 // MARK: - Quick Prehash (基于元数据 + 缩略图的零成本快速指纹)
 
 /// 极轻量级签名：用于在感知哈希之前快速过滤大量明显不相似的视频对。
-/// 完全基于已有的 VideoItem 数据（缩略图 + 元数据），无需再访问视频文件。
+/// 完全基于已有的 MediaItem 数据（缩略图 + 元数据），无需再访问视频文件。
 struct QuickPrehash: Hashable, Sendable {
     let videoID: UUID
     let durationBucket: Int     // 时长分桶 (5% 步长)
@@ -53,12 +53,12 @@ struct QuickPrehash: Hashable, Sendable {
 
 enum QuickPrehasher {
 
-    /// 从 VideoItem 计算 QuickPrehash（同步，纯内存操作）。
-    static func prehash(for video: VideoItem) -> QuickPrehash {
+    /// 从 MediaItem 计算 QuickPrehash（同步，纯内存操作）。
+    static func prehash(for video: MediaItem) -> QuickPrehash {
         let (mean, variance) = thumbnailStats(video.thumbnailData)
         return QuickPrehash(
             videoID: video.id,
-            durationBucket: durationBucket(video.duration),
+            durationBucket: durationBucket(video.duration ?? 0),
             sizeBucket: sizeBucket(video.fileSize),
             aspectBucket: aspectBucket(width: video.width, height: video.height),
             thumbnailMean: mean,

@@ -107,7 +107,7 @@ struct SidebarView: View {
                             .frame(width: 16)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(L10n.similarGroup(index + 1, language))
-                            Text(L10n.videoCountAndScore(group.videos.count, DisplayFormatters.percent(group.maximumScore), language))
+                            Text(L10n.videoCountAndScore(group.items.count, DisplayFormatters.percent(group.maximumScore), language))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

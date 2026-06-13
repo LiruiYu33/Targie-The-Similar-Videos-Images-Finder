@@ -23,7 +23,7 @@ import Foundation
 
 enum SimilarityGrouper {
     static func groups(
-        items: [VideoItem],
+        items: [MediaItem],
         relations: [SimilarityRelation],
         threshold: Double
     ) -> [SimilarityGroup] {
@@ -46,12 +46,16 @@ enum SimilarityGrouper {
                 component.insert(current)
                 stack.append(contentsOf: adjacency[current, default: []])
             }
-            let videos = component.compactMap { byID[$0] }.sorted { $0.filename < $1.filename }
-            guard videos.count >= 2 else { continue }
+            let groupItems = component.compactMap { byID[$0] }.sorted { $0.filename < $1.filename }
+            guard groupItems.count >= 2 else { continue }
+            // 同质性保险: grouping 来源 (相似度流水线) 已确保不会跨媒介产生 relation,
+            // 但作为防御层, 这里再用 SimilarityGroup.make 校验, 拒绝混合组。
             let componentRelations = accepted.filter {
                 component.contains($0.firstID) && component.contains($0.secondID)
             }
-            result.append(SimilarityGroup(videos: videos, relations: componentRelations))
+            if let group = SimilarityGroup.make(items: groupItems, relations: componentRelations) {
+                result.append(group)
+            }
         }
 
         return result.sorted {

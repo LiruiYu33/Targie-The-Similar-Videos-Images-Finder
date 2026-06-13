@@ -43,15 +43,15 @@ struct GroupDetailView: View {
                         }
 
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 14)], spacing: 14) {
-                            ForEach(group.videos) { video in
+                            ForEach(group.items) { video in
                                 VideoCardView(
                                     video: video,
                                     score: group.score(for: video.id),
                                     evidence: group.evidence(for: video.id),
                                     language: language,
-                                    isSelected: model.selectedVideoID == video.id
+                                    isSelected: model.selectedMediaID == video.id
                                 )
-                                .onTapGesture { model.selectedVideoID = video.id }
+                                .onTapGesture { model.selectedMediaID = video.id }
                             }
                         }
                     }
@@ -65,6 +65,6 @@ struct GroupDetailView: View {
                 )
             }
         }
-        .navigationTitle(model.selectedGroup == nil ? L10n.videoComparison(language) : L10n.similarVideoCount(model.selectedGroup!.videos.count, language))
+        .navigationTitle(model.selectedGroup == nil ? L10n.videoComparison(language) : L10n.similarVideoCount(model.selectedGroup!.items.count, language))
     }
 }

@@ -23,7 +23,7 @@ import AppKit
 import SwiftUI
 
 struct VideoCardView: View {
-    let video: VideoItem
+    let video: MediaItem
     let score: Double
     let evidence: Set<SimilarityEvidence>
     let language: AppLanguage
@@ -56,7 +56,7 @@ struct VideoCardView: View {
                     .font(.caption.bold())
                     .foregroundStyle(score >= 0.9 ? .green : .secondary)
             }
-            Text("\(DisplayFormatters.fileSize(video.fileSize)) · \(DisplayFormatters.duration(video.duration, language: language)) · \(video.resolution(language: language))")
+            Text("\(DisplayFormatters.fileSize(video.fileSize)) · \(DisplayFormatters.duration(video.duration ?? 0, language: language)) · \(video.resolution(language: language))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

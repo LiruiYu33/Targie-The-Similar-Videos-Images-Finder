@@ -24,12 +24,12 @@ import AVFoundation
 import Foundation
 
 struct VideoScanResult: Sendable {
-    let videos: [VideoItem]
+    let videos: [MediaItem]
     let issues: [ScanIssue]
 }
 
 struct VideoScanner {
-    typealias VideoLoader = @Sendable (URL) async throws -> VideoItem
+    typealias VideoLoader = @Sendable (URL) async throws -> MediaItem
 
     static let supportedExtensions: Set<String> = [
         "mp4", "mov", "m4v", "avi", "mkv", "webm", "mpeg", "mpg", "3gp"
@@ -112,7 +112,7 @@ struct VideoScanner {
         }
     }
 
-    private static func loadVideo(at url: URL) async throws -> VideoItem {
+    private static func loadVideo(at url: URL) async throws -> MediaItem {
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
@@ -124,7 +124,8 @@ struct VideoScanner {
         let width = Int(abs(transformed.width).rounded())
         let height = Int(abs(transformed.height).rounded())
         let thumbnail = await thumbnailData(asset: asset, duration: duration)
-        return VideoItem(
+        return MediaItem(
+            kind: .video,
             url: url,
             fileSize: Int64(values.fileSize ?? 0),
             duration: duration,
@@ -149,7 +150,7 @@ struct VideoScanner {
 private struct LoadedVideo: Sendable {
     let index: Int
     let url: URL
-    let video: VideoItem?
+    let video: MediaItem?
     let issue: ScanIssue?
 }
 

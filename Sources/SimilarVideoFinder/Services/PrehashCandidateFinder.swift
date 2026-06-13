@@ -4,7 +4,7 @@
 import Foundation
 
 struct PrehashCandidateResult {
-    let pairs: [(VideoItem, VideoItem)]
+    let pairs: [(MediaItem, MediaItem)]
     let compatibilityChecks: Int
 }
 
@@ -31,16 +31,16 @@ enum PrehashCandidateFinder {
     }
 
     static func find(
-        videos: [VideoItem],
+        videos: [MediaItem],
         prehashes: [UUID: QuickPrehash]
     ) -> PrehashCandidateResult {
-        var buckets: [BucketKey: [VideoItem]] = [:]
-        var names: [String: [VideoItem]] = [:]
+        var buckets: [BucketKey: [MediaItem]] = [:]
+        var names: [String: [MediaItem]] = [:]
         var pairKeys = Set<PairKey>()
-        var pairs: [(VideoItem, VideoItem)] = []
+        var pairs: [(MediaItem, MediaItem)] = []
         var compatibilityChecks = 0
 
-        func appendPair(_ first: VideoItem, _ second: VideoItem) {
+        func appendPair(_ first: MediaItem, _ second: MediaItem) {
             guard pairKeys.insert(PairKey(first.id, second.id)).inserted else { return }
             pairs.append((first, second))
         }

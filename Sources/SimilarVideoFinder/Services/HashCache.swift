@@ -171,7 +171,7 @@ extension CacheRecord {
 
     /// 从一组数据构造 CacheRecord
     static func make(
-        video: VideoItem,
+        video: MediaItem,
         perceptualHash: VideoPerceptualHash,
         quickPrehash: QuickPrehash
     ) -> CacheRecord {

@@ -78,7 +78,7 @@ struct ContentView: View {
             Text(model.localizedError(language) ?? L10n.unknownError(language))
         }
         .onDeleteCommand {
-            if let video = model.selectedVideo { model.requestDeletion(of: video) }
+            if let video = model.selectedMedia { model.requestDeletion(of: video) }
         }
         .environment(\.appLanguage, language)
         .background(WindowTitleUpdater(title: L10n.appName(language)))
