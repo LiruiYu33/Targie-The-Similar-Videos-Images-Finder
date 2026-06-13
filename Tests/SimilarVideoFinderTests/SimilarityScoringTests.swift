@@ -113,8 +113,9 @@ final class SimilarityScoringTests: XCTestCase {
         XCTAssertEqual(result.evidence, [.identicalContentHash])
     }
 
-    static func video(name: String, size: Int64 = 1_000_000, duration: Double = 60) -> VideoItem {
-        VideoItem(
+    static func video(name: String, size: Int64 = 1_000_000, duration: Double = 60) -> MediaItem {
+        MediaItem(
+            kind: .video,
             url: URL(fileURLWithPath: "/tmp/\(name)"),
             fileSize: size,
             duration: duration,

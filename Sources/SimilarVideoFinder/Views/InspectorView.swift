@@ -28,31 +28,35 @@ struct InspectorView: View {
 
     var body: some View {
         Group {
-            if let video = model.selectedVideo {
+            if let media = model.selectedMedia {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        VideoPreview(video: video)
+                        MediaPreview(media: media)
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(video.filename)
+                            Text(media.filename)
                                 .font(.title3.bold())
                                 .textSelection(.enabled)
-                            metadata(L10n.fileSize(language), DisplayFormatters.fileSize(video.fileSize))
-                            metadata(L10n.duration(language), DisplayFormatters.duration(video.duration, language: language))
-                            metadata(L10n.resolution(language), video.resolution(language: language))
-                            metadata(L10n.path(language), video.url.path)
+                            metadata(L10n.fileSize(language), DisplayFormatters.fileSize(media.fileSize))
+                            if let duration = media.duration {
+                                metadata(L10n.duration(language), DisplayFormatters.duration(duration, language: language))
+                            }
+                            metadata(L10n.resolution(language), media.resolution(language: language))
+                            metadata(L10n.path(language), media.url.path)
                         }
 
                         HStack {
-                            Button(L10n.openDefaultPlayer(language), action: model.openSelectedVideo)
-                            Button(L10n.showInFinder(language), action: model.revealSelectedVideo)
+                            if media.kind == .video {
+                                Button(L10n.openDefaultPlayer(language), action: model.openSelectedMedia)
+                            }
+                            Button(L10n.showInFinder(language), action: model.revealSelectedMedia)
                         }
                         .controlSize(.small)
 
                         Divider()
                         Button(role: .destructive) {
-                            model.requestDeletion(of: video)
+                            model.requestDeletion(of: media)
                         } label: {
-                            Label(L10n.deleteVideo(language), systemImage: "trash")
+                            Label(L10n.deleteMedia(language), systemImage: "trash")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
@@ -61,9 +65,9 @@ struct InspectorView: View {
                 }
             } else {
                 ContentUnavailableView(
-                    L10n.selectVideo(language),
-                    systemImage: "play.rectangle",
-                    description: Text(L10n.selectVideoHint(language))
+                    L10n.selectMedia(language),
+                    systemImage: "rectangle.and.hand.point.up.left",
+                    description: Text(L10n.selectMediaHint(language))
                 )
             }
         }
@@ -78,25 +82,30 @@ struct InspectorView: View {
     }
 }
 
-private struct VideoPreview: View {
-    let video: VideoItem
+private struct MediaPreview: View {
+    let media: MediaItem
 
     var body: some View {
         Group {
-            if let data = video.thumbnailData, let image = NSImage(data: data) {
+            if let data = media.thumbnailData, let image = NSImage(data: data) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
             } else {
                 ZStack {
                     Color.secondary.opacity(0.12)
-                    Image(systemName: "film")
+                    Image(systemName: media.kind == .video ? "film" : "photo")
                         .font(.system(size: 42))
                         .foregroundStyle(.secondary)
                 }
             }
         }
-            .aspectRatio(16 / 9, contentMode: .fit)
+            .aspectRatio(previewAspectRatio, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var previewAspectRatio: CGFloat {
+        guard media.kind == .image, media.width > 0, media.height > 0 else { return 16 / 9 }
+        return CGFloat(media.width) / CGFloat(media.height)
     }
 }

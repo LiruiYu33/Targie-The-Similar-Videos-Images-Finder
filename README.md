@@ -4,18 +4,17 @@
 
 > **macOS only.** Targie is a native macOS 14+ application. There is no Windows or Linux build, and none is planned.
 
-Targie finds similar videos in a selected folder by combining file metadata, content hashes, and sampled frame analysis.
-
-> Repository name `Targie_TheSimilarVideoFinder` describes the current scope; the app may grow beyond videos (e.g. similar-image comparison) in the future. The product is always referred to as **Targie**.
+Targie finds similar videos and images in a selected folder by combining metadata, content hashes, perceptual fingerprints, and visual features.
 
 ## Features
 
-- Recursively scans a folder for common video formats.
-- Combines file name, size, duration, resolution, SHA-256, and Vision frame features.
-- Groups similar videos for side-by-side review.
-- Previews the selected video inside the app.
-- Opens videos in the default player or reveals them in Finder.
-- Requires an explicit choice between moving a file to Trash and permanent deletion.
+- Switches between Videos, Images, and All scan modes and remembers the selected mode.
+- Recursively scans common video formats plus JPEG, PNG, HEIC, WebP, TIFF, GIF, and BMP images.
+- Uses SHA-256, cached perceptual fingerprints, metadata, and reusable Vision features while isolating unreadable files.
+- Keeps video and image groups separate for side-by-side review with static in-app previews.
+- Opens videos in the default player and reveals either media type in Finder.
+- Supports explicit multi-selection and partial-success batch deletion.
+- Requires an explicit choice between moving files to Trash and permanent deletion, with a second confirmation for permanent deletion.
 - Supports English and Simplified Chinese with instant switching and remembered preference.
 
 ## Build (macOS only)

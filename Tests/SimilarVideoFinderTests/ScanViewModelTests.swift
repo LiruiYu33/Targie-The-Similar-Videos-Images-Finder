@@ -36,21 +36,64 @@ final class ScanViewModelTests: XCTestCase {
         let relation = SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames])
         let deletion = FakeDeletionService()
         let model = ScanViewModel(deletionService: deletion)
-        model.replaceResultsForTesting(videos: [a, b], relations: [relation])
+        model.replaceResultsForTesting(items: [a, b], relations: [relation])
 
         await model.confirmDeletion(of: b, mode: .permanent)
 
         XCTAssertTrue(model.groups.isEmpty)
         XCTAssertEqual(deletion.deletedURLs, [b.url])
     }
+
+    func testChangingScanModeClearsExistingResultsAndSelection() {
+        let first = SimilarityScoringTests.video(name: "a.mov")
+        let second = SimilarityScoringTests.video(name: "b.mov")
+        let relation = SimilarityRelation(firstID: first.id, secondID: second.id, score: 0.95, evidence: [.similarFrames])
+        let model = ScanViewModel()
+        model.replaceResultsForTesting(items: [first, second], relations: [relation])
+        model.toggleChecked(first.id)
+
+        model.setScanMode(.images)
+
+        XCTAssertEqual(model.scanMode, .images)
+        XCTAssertTrue(model.groups.isEmpty)
+        XCTAssertNil(model.selectedGroupID)
+        XCTAssertNil(model.selectedMediaID)
+        XCTAssertTrue(model.checkedMediaIDs.isEmpty)
+    }
+
+    func testBatchDeletionKeepsFailuresAndRemovesSuccessfulItems() async {
+        let first = SimilarityScoringTests.video(name: "a.mov")
+        let second = SimilarityScoringTests.video(name: "b.mov")
+        let relation = SimilarityRelation(firstID: first.id, secondID: second.id, score: 0.95, evidence: [.similarFrames])
+        let deletion = FakeDeletionService(failingURLs: [second.url])
+        let model = ScanViewModel(deletionService: deletion)
+        model.replaceResultsForTesting(items: [first, second], relations: [relation])
+        model.toggleChecked(first.id)
+        model.toggleChecked(second.id)
+        model.requestCheckedDeletion()
+
+        await model.confirmPromptDeletion(mode: .trash)
+
+        XCTAssertEqual(deletion.deletedURLs, [first.url, second.url])
+        XCTAssertEqual(model.checkedMediaIDs, [second.id])
+        XCTAssertNotNil(model.presentedError)
+    }
 }
 
 @MainActor
 private final class FakeDeletionService: DeletionServicing {
     var deletedURLs: [URL] = []
+    let failingURLs: Set<URL>
+
+    init(failingURLs: Set<URL> = []) {
+        self.failingURLs = failingURLs
+    }
 
     func delete(url: URL, mode: DeletionMode) async throws {
         deletedURLs.append(url)
+        if failingURLs.contains(url) {
+            throw CocoaError(.fileWriteUnknown)
+        }
     }
 
     func reveal(_ url: URL) {}

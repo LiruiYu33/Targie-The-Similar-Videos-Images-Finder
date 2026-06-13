@@ -43,8 +43,9 @@ final class PrehashCandidateFinderTests: XCTestCase {
         XCTAssertLessThan(result.compatibilityChecks, 5_000)
     }
 
-    private func makeVideo(name: String) -> VideoItem {
-        VideoItem(
+    private func makeVideo(name: String) -> MediaItem {
+        MediaItem(
+            kind: .video,
             url: URL(fileURLWithPath: "/tmp/\(name)"),
             fileSize: 1,
             duration: 1,

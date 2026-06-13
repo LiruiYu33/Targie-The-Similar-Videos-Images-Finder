@@ -33,5 +33,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.chooseFolder(.simplifiedChinese), "选择文件夹")
         XCTAssertEqual(L10n.skippedFiles(3, .english), "Skipped 3 unreadable files")
         XCTAssertEqual(L10n.skippedFiles(3, .simplifiedChinese), "跳过 3 个无法读取的文件")
+        XCTAssertEqual(L10n.similarMedia(.english), "Similar Media")
+        XCTAssertEqual(L10n.similarMedia(.simplifiedChinese), "相似媒体")
     }
 }

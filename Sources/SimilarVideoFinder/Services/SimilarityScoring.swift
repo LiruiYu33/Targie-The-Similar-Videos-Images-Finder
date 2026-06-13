@@ -58,8 +58,8 @@ enum SimilarityScorer {
     ///   - 仅哈希+元数据: score = 0.65·perc + 0.35·metadata, 上限 0.95 (无 Vision 不能确信完全一致)
     ///   - 仅元数据:     score = 0.78·metadata, 上限 0.78 (不能高过视觉信号)
     static func score(
-        _ first: VideoItem,
-        _ second: VideoItem,
+        _ first: MediaItem,
+        _ second: MediaItem,
         hashesMatch: Bool,
         perceptualSimilarity: Double? = nil,
         frameSimilarity: Double?
@@ -68,17 +68,24 @@ enum SimilarityScorer {
             return SimilarityScore(score: 1, evidence: [.identicalContentHash])
         }
 
-        let duration = ratioScore(first.duration, second.duration)
+        let duration = optionalRatioScore(first.duration, second.duration)
         let size = ratioScore(Double(first.fileSize), Double(second.fileSize))
         let dimensions = dimensionScore(first, second)
         let name = nameScore(first.filename, second.filename)
         var evidence = Set<SimilarityEvidence>()
-        if duration >= 0.9 { evidence.insert(.similarDuration) }
+        if let duration, duration >= 0.9 { evidence.insert(.similarDuration) }
         if size >= 0.85 { evidence.insert(.similarSize) }
         if dimensions >= 0.95 { evidence.insert(.similarDimensions) }
         if name >= 0.85 { evidence.insert(.similarName) }
 
-        let metadata = duration * 0.30 + dimensions * 0.20 + size * 0.20 + name * 0.30
+        let metadata: Double
+        if let duration {
+            metadata = duration * 0.30 + dimensions * 0.20 + size * 0.20 + name * 0.30
+        } else {
+            // Images have no duration. Re-normalize the remaining metadata weights
+            // instead of treating a missing video-only value as a zero score.
+            metadata = dimensions * (2.0 / 7.0) + size * (2.0 / 7.0) + name * (3.0 / 7.0)
+        }
 
         let perc = perceptualSimilarity.map { min(max($0, 0), 1) }
         if let perc, perc >= 0.78 { evidence.insert(.similarPerceptualHash) }
@@ -110,7 +117,12 @@ enum SimilarityScorer {
         return min(lhs, rhs) / max(lhs, rhs)
     }
 
-    private static func dimensionScore(_ first: VideoItem, _ second: VideoItem) -> Double {
+    private static func optionalRatioScore(_ lhs: Double?, _ rhs: Double?) -> Double? {
+        guard let lhs, let rhs else { return nil }
+        return ratioScore(lhs, rhs)
+    }
+
+    private static func dimensionScore(_ first: MediaItem, _ second: MediaItem) -> Double {
         guard first.width > 0, first.height > 0, second.width > 0, second.height > 0 else { return 0 }
         let firstRatio = Double(first.width) / Double(first.height)
         let secondRatio = Double(second.width) / Double(second.height)

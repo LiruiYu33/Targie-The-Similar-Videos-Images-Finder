@@ -83,6 +83,7 @@ enum PerceptualHasher {
             let time = CMTime(seconds: duration * position, preferredTimescale: 600)
             guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { continue }
             let gray = downsampleToGray(cgImage, size: dctSize)
+            guard gray.count == dctSize * dctSize else { continue }
             frames.append(GrayFrame(pixels: gray))
         }
         return frames

@@ -124,10 +124,11 @@ final class QuickPrehasherTests: XCTestCase {
         XCTAssertFalse(a.isCompatible(with: b))
     }
 
-    // MARK: - Prehash from VideoItem
+    // MARK: - Prehash from MediaItem
 
     func testPrehashFromVideoItemWithoutThumbnail() {
-        let video = VideoItem(
+        let video = MediaItem(
+            kind: .video,
             url: URL(fileURLWithPath: "/tmp/test.mp4"),
             fileSize: 10 * 1024 * 1024,
             duration: 60,
@@ -147,8 +148,9 @@ final class QuickPrehasherTests: XCTestCase {
     }
 
     func testPrehashIsDeterministicForSameVideo() {
-        let video = VideoItem(
+        let video = MediaItem(
             id: UUID(),
+            kind: .video,
             url: URL(fileURLWithPath: "/tmp/test.mp4"),
             fileSize: 10 * 1024 * 1024,
             duration: 60,

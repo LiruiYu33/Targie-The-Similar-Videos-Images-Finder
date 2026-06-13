@@ -31,7 +31,7 @@ struct SidebarView: View {
             Divider()
             groupList
         }
-        .navigationTitle(L10n.similarVideos(language))
+        .navigationTitle(L10n.similarMedia(language))
     }
 
     private var controls: some View {
@@ -91,8 +91,8 @@ struct SidebarView: View {
     private var groupList: some View {
         if model.groups.isEmpty {
             ContentUnavailableView(
-                model.progress.stage == .completed ? L10n.noSimilarVideos(language) : L10n.waitingToScan(language),
-                systemImage: model.progress.stage == .completed ? "checkmark.circle" : "film.stack",
+                model.progress.stage == .completed ? L10n.noSimilarMedia(language) : L10n.waitingToScan(language),
+                systemImage: model.progress.stage == .completed ? "checkmark.circle" : "photo.stack",
                 description: Text(model.progress.stage == .completed ? L10n.lowerThresholdHint(language) : L10n.chooseAndScanHint(language))
             )
         } else {
@@ -100,22 +100,31 @@ struct SidebarView: View {
                 get: { model.selectedGroupID },
                 set: { model.selectGroup($0) }
             )) {
-                ForEach(Array(model.groups.enumerated()), id: \.element.id) { index, group in
-                    HStack(spacing: 10) {
-                        Image(systemName: "square.stack.3d.up")
-                            .foregroundStyle(.secondary)
-                            .frame(width: 16)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(L10n.similarGroup(index + 1, language))
-                            Text(L10n.videoCountAndScore(group.videos.count, DisplayFormatters.percent(group.maximumScore), language))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .tag(group.id)
+                if model.scanMode == .all {
+                    Section(L10n.videos(language)) { groupRows(model.groups.filter { $0.items.first?.kind == .video }) }
+                    Section(L10n.images(language)) { groupRows(model.groups.filter { $0.items.first?.kind == .image }) }
+                } else {
+                    groupRows(model.groups)
                 }
             }
             .listStyle(.sidebar)
+        }
+    }
+
+    private func groupRows(_ groups: [SimilarityGroup]) -> some View {
+        ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+            HStack(spacing: 10) {
+                Image(systemName: group.items.first?.kind == .image ? "photo.stack" : "film.stack")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.similarGroup(index + 1, language))
+                    Text(L10n.mediaCountAndScore(group.items.count, DisplayFormatters.percent(group.maximumScore), language))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .tag(group.id)
         }
     }
 }

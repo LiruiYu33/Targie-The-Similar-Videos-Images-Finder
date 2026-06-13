@@ -32,26 +32,31 @@ struct GroupDetailView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(L10n.compareVideos(language))
+                                Text(L10n.compareMedia(language))
                                     .font(.title2.bold())
-                                Text(L10n.compareHint(language))
+                                Text(L10n.compareMediaHint(language))
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
+                            if !model.checkedMediaIDs.isEmpty {
+                                Button(L10n.deleteSelected(model.checkedMediaIDs.count, language), action: model.requestCheckedDeletion)
+                            }
                             Text(L10n.highestSimilarity(DisplayFormatters.percent(group.maximumScore), language))
                                 .font(.callout.weight(.medium))
                         }
 
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 14)], spacing: 14) {
-                            ForEach(group.videos) { video in
+                            ForEach(group.items) { video in
                                 VideoCardView(
                                     video: video,
                                     score: group.score(for: video.id),
                                     evidence: group.evidence(for: video.id),
                                     language: language,
-                                    isSelected: model.selectedVideoID == video.id
+                                    isSelected: model.selectedMediaID == video.id,
+                                    isChecked: model.checkedMediaIDs.contains(video.id),
+                                    toggleChecked: { model.toggleChecked(video.id) }
                                 )
-                                .onTapGesture { model.selectedVideoID = video.id }
+                                .onTapGesture { model.selectedMediaID = video.id }
                             }
                         }
                     }
@@ -65,6 +70,6 @@ struct GroupDetailView: View {
                 )
             }
         }
-        .navigationTitle(model.selectedGroup == nil ? L10n.videoComparison(language) : L10n.similarVideoCount(model.selectedGroup!.videos.count, language))
+        .navigationTitle(model.selectedGroup == nil ? L10n.mediaComparison(language) : L10n.similarMediaCount(model.selectedGroup!.items.count, language))
     }
 }

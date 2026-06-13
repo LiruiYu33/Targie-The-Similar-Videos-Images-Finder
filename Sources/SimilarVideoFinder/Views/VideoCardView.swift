@@ -23,14 +23,18 @@ import AppKit
 import SwiftUI
 
 struct VideoCardView: View {
-    let video: VideoItem
+    let video: MediaItem
     let score: Double
     let evidence: Set<SimilarityEvidence>
     let language: AppLanguage
     let isSelected: Bool
+    let isChecked: Bool
+    let toggleChecked: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: Binding(get: { isChecked }, set: { _ in toggleChecked() })) { EmptyView() }
+                .toggleStyle(.checkbox)
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.black.opacity(0.88))
@@ -39,12 +43,12 @@ struct VideoCardView: View {
                         .resizable()
                         .scaledToFit()
                 } else {
-                    Image(systemName: "film")
+                    Image(systemName: video.kind == .video ? "film" : "photo")
                         .font(.largeTitle)
                         .foregroundStyle(.white.opacity(0.7))
                 }
             }
-            .aspectRatio(16 / 9, contentMode: .fit)
+            .aspectRatio(previewAspectRatio, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             HStack(alignment: .firstTextBaseline) {
@@ -56,7 +60,7 @@ struct VideoCardView: View {
                     .font(.caption.bold())
                     .foregroundStyle(score >= 0.9 ? .green : .secondary)
             }
-            Text("\(DisplayFormatters.fileSize(video.fileSize)) · \(DisplayFormatters.duration(video.duration, language: language)) · \(video.resolution(language: language))")
+            Text(video.duration.map { "\(DisplayFormatters.fileSize(video.fileSize)) · \(DisplayFormatters.duration($0, language: language)) · \(video.resolution(language: language))" } ?? "\(DisplayFormatters.fileSize(video.fileSize)) · \(video.resolution(language: language))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -79,5 +83,10 @@ struct VideoCardView: View {
                 .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.18), lineWidth: isSelected ? 2 : 1)
         }
         .contentShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var previewAspectRatio: CGFloat {
+        guard video.kind == .image, video.width > 0, video.height > 0 else { return 16 / 9 }
+        return CGFloat(video.width) / CGFloat(video.height)
     }
 }

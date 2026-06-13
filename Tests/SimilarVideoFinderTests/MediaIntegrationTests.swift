@@ -52,7 +52,7 @@ final class MediaIntegrationTests: XCTestCase {
 
         let result = try await SimilarityPipeline().process(videos: scan.videos, threshold: 0.88) { _ in }
         XCTAssertEqual(result.groups.count, 1)
-        XCTAssertEqual(result.groups[0].videos.count, 2)
+        XCTAssertEqual(result.groups[0].items.count, 2)
         XCTAssertEqual(result.groups[0].maximumScore, 1)
     }
 }

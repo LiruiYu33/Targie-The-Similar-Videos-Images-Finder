@@ -51,7 +51,8 @@ final class VideoScannerTests: XCTestCase {
             await tracker.started()
             try await Task.sleep(for: .milliseconds(40))
             await tracker.finished()
-            return VideoItem(
+            return MediaItem(
+            kind: .video,
                 url: url,
                 fileSize: 1,
                 duration: 1,

@@ -24,6 +24,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var model = ScanViewModel()
     @AppStorage("appLanguage") private var languageRawValue = AppLanguage.defaultLanguage.rawValue
+    @AppStorage("scanMode") private var scanModeRawValue = ScanMode.all.rawValue
 
     private var language: AppLanguage {
         AppLanguage(rawValue: languageRawValue) ?? .defaultLanguage
@@ -42,6 +43,16 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup {
+                Picker("", selection: Binding(
+                    get: { ScanMode(rawValue: scanModeRawValue) ?? .all },
+                    set: { mode in scanModeRawValue = mode.rawValue; model.setScanMode(mode) }
+                )) {
+                    Text(L10n.videos(language)).tag(ScanMode.videos)
+                    Text(L10n.images(language)).tag(ScanMode.images)
+                    Text(L10n.allMedia(language)).tag(ScanMode.all)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
                 Button(action: { model.chooseFolder(language: language) }) {
                     Label(L10n.chooseFolder(language), systemImage: "folder.badge.plus")
                 }
@@ -78,9 +89,10 @@ struct ContentView: View {
             Text(model.localizedError(language) ?? L10n.unknownError(language))
         }
         .onDeleteCommand {
-            if let video = model.selectedVideo { model.requestDeletion(of: video) }
+            if let video = model.selectedMedia { model.requestDeletion(of: video) }
         }
         .environment(\.appLanguage, language)
+        .onAppear { model.setScanMode(ScanMode(rawValue: scanModeRawValue) ?? .all) }
         .background(WindowTitleUpdater(title: L10n.appName(language)))
     }
 }

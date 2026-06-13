@@ -21,11 +21,33 @@
 
 import Foundation
 
-struct VideoItem: Identifiable, Hashable, Sendable {
+// MARK: - Media Kind & Scan Mode
+
+/// 媒介种类: 视频或图片。SimilarityGroup 只允许同种媒介聚合。
+enum MediaKind: String, Codable, Sendable, Hashable {
+    case video
+    case image
+}
+
+/// 扫描模式: 用户可选仅视频、仅图片、或全部。持久化到 UserDefaults 时使用 rawValue。
+enum ScanMode: String, CaseIterable, Identifiable, Codable, Sendable, Hashable {
+    case videos
+    case images
+    case all
+
+    var id: String { rawValue }
+}
+
+// MARK: - MediaItem (统一视频与图片)
+
+/// 媒介中立的扫描条目。视频用 `duration: Double?`, 图片用 `duration: nil`。
+/// `kind` 是不可变标签, 用于禁止跨媒介相似度匹配。
+struct MediaItem: Identifiable, Hashable, Sendable {
     let id: UUID
+    let kind: MediaKind
     let url: URL
     let fileSize: Int64
-    let duration: Double
+    let duration: Double?
     let width: Int
     let height: Int
     let modifiedAt: Date?
@@ -33,15 +55,17 @@ struct VideoItem: Identifiable, Hashable, Sendable {
 
     init(
         id: UUID = UUID(),
+        kind: MediaKind,
         url: URL,
         fileSize: Int64,
-        duration: Double,
+        duration: Double?,
         width: Int,
         height: Int,
         modifiedAt: Date?,
         thumbnailData: Data?
     ) {
         self.id = id
+        self.kind = kind
         self.url = url
         self.fileSize = fileSize
         self.duration = duration
@@ -52,10 +76,13 @@ struct VideoItem: Identifiable, Hashable, Sendable {
     }
 
     var filename: String { url.lastPathComponent }
+
     func resolution(language: AppLanguage = .defaultLanguage) -> String {
         width > 0 && height > 0 ? "\(width) × \(height)" : L10n.unknown(language)
     }
 }
+
+// MARK: - Similarity Evidence
 
 enum SimilarityEvidence: String, Hashable, Sendable {
     case identicalContentHash
@@ -65,8 +92,9 @@ enum SimilarityEvidence: String, Hashable, Sendable {
     case similarDimensions
     case similarSize
     case similarName
-
 }
+
+// MARK: - SimilarityRelation
 
 struct SimilarityRelation: Hashable, Sendable {
     let firstID: UUID
@@ -77,34 +105,54 @@ struct SimilarityRelation: Hashable, Sendable {
     func contains(_ id: UUID) -> Bool { firstID == id || secondID == id }
 }
 
+// MARK: - SimilarityGroup
+
+/// 同一组的所有 `items` 必须有相同 `MediaKind`。
+/// 直接初始化器假设调用方已确保同质性 (供 grouping 算法内部使用);
+/// 外部代码应使用 `SimilarityGroup.make(items:relations:)` 来安全构造。
 struct SimilarityGroup: Identifiable, Hashable, Sendable {
     let id: UUID
-    let videos: [VideoItem]
+    let items: [MediaItem]
     let relations: [SimilarityRelation]
 
-    init(id: UUID = UUID(), videos: [VideoItem], relations: [SimilarityRelation]) {
+    init(id: UUID = UUID(), items: [MediaItem], relations: [SimilarityRelation]) {
         self.id = id
-        self.videos = videos
+        self.items = items
         self.relations = relations
     }
 
+    /// 工厂方法: 拒绝混合媒介组, 返回 nil 表示拒绝。
+    /// 空列表也拒绝, 因为没有 kind 可推断。
+    static func make(id: UUID = UUID(), items: [MediaItem], relations: [SimilarityRelation]) -> SimilarityGroup? {
+        guard let firstKind = items.first?.kind else { return nil }
+        guard items.allSatisfy({ $0.kind == firstKind }) else { return nil }
+        return SimilarityGroup(id: id, items: items, relations: relations)
+    }
+
+    /// 组的媒介种类 (从首个条目推断; 直接初始化器调用方需确保同质)。
+    var kind: MediaKind? { items.first?.kind }
+
     var maximumScore: Double { relations.map(\.score).max() ?? 0 }
+
     var reclaimableBytes: Int64 {
-        guard videos.count > 1 else { return 0 }
-        return videos.map(\.fileSize).sorted().dropFirst().reduce(0, +)
+        guard items.count > 1 else { return 0 }
+        return items.map(\.fileSize).sorted().dropFirst().reduce(0, +)
     }
 
-    func score(for videoID: UUID) -> Double {
-        relations.filter { $0.contains(videoID) }.map(\.score).max() ?? maximumScore
+    func score(for itemID: UUID) -> Double {
+        relations.filter { $0.contains(itemID) }.map(\.score).max() ?? maximumScore
     }
 
-    func evidence(for videoID: UUID) -> Set<SimilarityEvidence> {
-        relations.filter { $0.contains(videoID) }.reduce(into: []) { $0.formUnion($1.evidence) }
+    func evidence(for itemID: UUID) -> Set<SimilarityEvidence> {
+        relations.filter { $0.contains(itemID) }.reduce(into: []) { $0.formUnion($1.evidence) }
     }
 }
 
+// MARK: - Scan Issue
+
 enum ScanIssueReason: Hashable, Sendable {
     case noVideoTrack
+    case unreadableImage
     case message(String)
 }
 
@@ -116,10 +164,13 @@ struct ScanIssue: Identifiable, Hashable, Sendable {
     func message(language: AppLanguage) -> String {
         switch reason {
         case .noVideoTrack: L10n.noVideoTrack(language)
+        case .unreadableImage: L10n.unreadableImage(language)
         case .message(let value): value
         }
     }
 }
+
+// MARK: - Scan Progress
 
 enum ScanStage: Equatable, Sendable {
     case idle
@@ -130,7 +181,6 @@ enum ScanStage: Equatable, Sendable {
     case comparing
     case completed
     case cancelled
-
 }
 
 struct ScanProgress: Equatable, Sendable {

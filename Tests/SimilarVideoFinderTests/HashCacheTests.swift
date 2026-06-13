@@ -98,6 +98,29 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNil(result)
     }
 
+    func testLookupFailsForDifferentMediaKindOrAlgorithmVersion() async {
+        var record = makeRecord(path: "/tmp/foo.jpg", size: 100, date: nil)
+        record.mediaKind = MediaKind.image.rawValue
+        record.algorithmVersion = "image-phash-v1"
+        await cache.upsert(record)
+
+        let matching = await cache.lookup(
+            filePath: record.filePath, fileSize: 100, modifiedAt: nil,
+            mediaKind: .image, algorithmVersion: "image-phash-v1"
+        )
+        let wrongKind = await cache.lookup(
+            filePath: record.filePath, fileSize: 100, modifiedAt: nil,
+            mediaKind: .video, algorithmVersion: "video-dct3d-v1"
+        )
+        let wrongVersion = await cache.lookup(
+            filePath: record.filePath, fileSize: 100, modifiedAt: nil,
+            mediaKind: .image, algorithmVersion: "image-phash-v2"
+        )
+        XCTAssertNotNil(matching)
+        XCTAssertNil(wrongKind)
+        XCTAssertNil(wrongVersion)
+    }
+
     func testLookupFailsWhenModificationDateChanged() async {
         let record = makeRecord(path: "/tmp/foo.mp4", size: 100, date: Date(timeIntervalSince1970: 1000))
         await cache.upsert(record)
@@ -193,8 +216,9 @@ final class HashCacheTests: XCTestCase {
     }
 
     func testCacheRecordFromVideoItem() {
-        let video = VideoItem(
+        let video = MediaItem(
             id: UUID(),
+            kind: .video,
             url: URL(fileURLWithPath: "/tmp/foo.mp4"),
             fileSize: 1000,
             duration: 60,

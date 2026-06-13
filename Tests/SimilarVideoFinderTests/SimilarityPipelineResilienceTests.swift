@@ -39,8 +39,9 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(SimilarityPipeline.hashConcurrencyLimit(processorCount: 12), 4)
     }
 
-    private func video(path: String, size: Int64) -> VideoItem {
-        VideoItem(
+    private func video(path: String, size: Int64) -> MediaItem {
+        MediaItem(
+            kind: .video,
             url: URL(fileURLWithPath: path),
             fileSize: size,
             duration: 60,
@@ -51,7 +52,7 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         )
     }
 
-    private func seed(_ cache: InMemoryHashCache, video: VideoItem, hash: [UInt8]) async {
+    private func seed(_ cache: InMemoryHashCache, video: MediaItem, hash: [UInt8]) async {
         let prehash = QuickPrehasher.prehash(for: video)
         await cache.upsert(CacheRecord.make(
             video: video,

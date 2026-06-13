@@ -37,7 +37,7 @@ final class SimilarityGrouperTests: XCTestCase {
         )
 
         XCTAssertEqual(groups.count, 1)
-        XCTAssertEqual(Set(groups[0].videos.map(\.id)), Set([a.id, b.id, c.id]))
+        XCTAssertEqual(Set(groups[0].items.map(\.id)), Set([a.id, b.id, c.id]))
     }
 
     func testRemovingVideoDropsSingletonGroup() {

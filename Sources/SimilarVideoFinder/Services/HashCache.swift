@@ -36,6 +36,8 @@ struct CacheRecord: Codable, Sendable, FetchableRecord, PersistableRecord {
     var prehashAspectBucket: Int
     var prehashThumbnailMean: Int
     var prehashThumbnailVariance: Int
+    var mediaKind: String = MediaKind.video.rawValue
+    var algorithmVersion: String = "video-dct3d-v1"
 
     static var databaseTableName: String { "hash_cache" }
 }
@@ -48,6 +50,13 @@ protocol HashCaching: Sendable {
     func upsert(_ record: CacheRecord) async
     func pruneStale(validPaths: Set<String>) async
     func count() async -> Int
+    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) async -> CacheRecord?
+}
+
+extension HashCaching {
+    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> CacheRecord? {
+        await lookup(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: .video, algorithmVersion: "video-dct3d-v1")
+    }
 }
 
 // MARK: - HashCache
@@ -72,11 +81,13 @@ actor HashCache: HashCaching {
 
     // MARK: - Public API
 
-    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?) -> CacheRecord? {
+    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
         try? dbQueue.read { db in
             try CacheRecord
                 .filter(Column("filePath") == filePath)
                 .filter(Column("fileSize") == fileSize)
+                .filter(Column("mediaKind") == mediaKind.rawValue)
+                .filter(Column("algorithmVersion") == algorithmVersion)
                 .fetchOne(db)
                 .flatMap { record in
                     // 校验修改时间 (容差 1 秒, 兼容文件系统精度差异)
@@ -131,6 +142,12 @@ actor HashCache: HashCaching {
                 t.column("prehashThumbnailVariance", .integer).notNull().defaults(to: 0)
             }
         }
+        migrator.registerMigration("v2_media_cache_identity") { db in
+            try db.alter(table: "hash_cache") { table in
+                table.add(column: "mediaKind", .text).notNull().defaults(to: MediaKind.video.rawValue)
+                table.add(column: "algorithmVersion", .text).notNull().defaults(to: "video-dct3d-v1")
+            }
+        }
         try migrator.migrate(dbQueue)
     }
 
@@ -171,7 +188,7 @@ extension CacheRecord {
 
     /// 从一组数据构造 CacheRecord
     static func make(
-        video: VideoItem,
+        video: MediaItem,
         perceptualHash: VideoPerceptualHash,
         quickPrehash: QuickPrehash
     ) -> CacheRecord {
@@ -195,9 +212,10 @@ extension CacheRecord {
 actor InMemoryHashCache: HashCaching {
     private var storage: [String: CacheRecord] = [:]
 
-    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?) -> CacheRecord? {
+    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
         guard let record = storage[filePath] else { return nil }
         guard record.fileSize == fileSize else { return nil }
+        guard record.mediaKind == mediaKind.rawValue, record.algorithmVersion == algorithmVersion else { return nil }
         if let a = record.modifiedAt, let b = modifiedAt {
             return abs(a.timeIntervalSince(b)) < 1.0 ? record : nil
         }

@@ -20,13 +20,21 @@ export COPYFILE_DISABLE=1
 #   "universal"     → arm64 + x86_64, merged with lipo
 ARCHS="${BUILD_ARCHS:-}"
 
+swift_build() {
+  if [ "${DISABLE_SWIFTPM_SANDBOX:-0}" = "1" ]; then
+    swift build --disable-sandbox "$@"
+  else
+    swift build "$@"
+  fi
+}
+
 if [ "$ARCHS" = "universal" ]; then
   echo "▶ Building universal binary (arm64 + x86_64)..." >&2
-  swift build -c release --arch arm64 --arch x86_64
-  BUILD_BINARY="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/$EXECUTABLE_NAME"
+  swift_build -c release --arch arm64 --arch x86_64
+  BUILD_BINARY="$(swift_build -c release --arch arm64 --arch x86_64 --show-bin-path)/$EXECUTABLE_NAME"
 else
-  swift build -c release
-  BUILD_BINARY="$(swift build -c release --show-bin-path)/$EXECUTABLE_NAME"
+  swift_build -c release
+  BUILD_BINARY="$(swift_build -c release --show-bin-path)/$EXECUTABLE_NAME"
 fi
 
 rm -rf "$APP_BUNDLE"
@@ -88,7 +96,7 @@ printf '%s\n' \
   '</dict></plist>' > "$CONTENTS/Info.plist"
 
 xattr -cr "$APP_BUNDLE"
-codesign --force --sign - --identifier "$BUNDLE_ID" "$CONTENTS/MacOS/$EXECUTABLE_NAME"
+codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE"
 plutil -lint "$CONTENTS/Info.plist" >/dev/null
-codesign --verify --strict "$CONTENTS/MacOS/$EXECUTABLE_NAME"
+codesign --verify --deep --strict "$APP_BUNDLE"
 echo "$APP_BUNDLE"
