@@ -19,7 +19,7 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
-import AVKit
+import AppKit
 import SwiftUI
 
 struct InspectorView: View {
@@ -31,7 +31,7 @@ struct InspectorView: View {
             if let video = model.selectedVideo {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        VideoPreview(url: video.url)
+                        VideoPreview(video: video)
                         VStack(alignment: .leading, spacing: 8) {
                             Text(video.filename)
                                 .font(.title3.bold())
@@ -79,22 +79,24 @@ struct InspectorView: View {
 }
 
 private struct VideoPreview: View {
-    let url: URL
-    @State private var player: AVPlayer
-
-    init(url: URL) {
-        self.url = url
-        _player = State(initialValue: AVPlayer(url: url))
-    }
+    let video: VideoItem
 
     var body: some View {
-        VideoPlayer(player: player)
+        Group {
+            if let data = video.thumbnailData, let image = NSImage(data: data) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                ZStack {
+                    Color.secondary.opacity(0.12)
+                    Image(systemName: "film")
+                        .font(.system(size: 42))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
             .aspectRatio(16 / 9, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            .onDisappear { player.pause() }
-            .onChange(of: url) { _, newURL in
-                player.pause()
-                player = AVPlayer(url: newURL)
-            }
     }
 }

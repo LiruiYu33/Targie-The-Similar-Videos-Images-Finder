@@ -48,15 +48,22 @@ protocol SimilarityProcessing: Sendable {
 struct SimilarityPipeline: SimilarityProcessing {
     private let extractor: any FrameFeatureExtracting
     private let cache: (any HashCaching)?
+    private let usesFrameVerification: Bool
     /// 感知哈希之间被视为"潜在相似"的最大 Hamming 距离 (64-bit 哈希中允许多达 24 bits 不同)
     static let perceptualMaxDistance = 24
 
     init(
         cache: (any HashCaching)? = nil,
-        extractor: any FrameFeatureExtracting = FrameFeatureExtractor()
+        extractor: any FrameFeatureExtracting = FrameFeatureExtractor(),
+        usesFrameVerification: Bool = false
     ) {
         self.cache = cache
         self.extractor = extractor
+        self.usesFrameVerification = usesFrameVerification
+    }
+
+    static func hashConcurrencyLimit(processorCount: Int) -> Int {
+        min(4, max(2, processorCount))
     }
 
     func process(
@@ -156,19 +163,18 @@ struct SimilarityPipeline: SimilarityProcessing {
 
                 // 同尺寸文件先做 SHA-256 (检测 byte-identical)
                 let sameSize = video.fileSize > 0 && video.fileSize == other.fileSize
+                let perceptualHashesMatch = queryHash.hammingDistance(to: neighbor.item) == 0
                 var hashMatch = false
-                if sameSize {
-                    let firstHash = try await fileSHA256(for: video, cache: &fileHashes)
-                    let secondHash = try await fileSHA256(for: other, cache: &fileHashes)
-                    hashMatch = firstHash == secondHash
+                if sameSize && perceptualHashesMatch {
+                    let firstHash = try? await fileSHA256(for: video, cache: &fileHashes)
+                    let secondHash = try? await fileSHA256(for: other, cache: &fileHashes)
+                    hashMatch = firstHash != nil && firstHash == secondHash
                 }
 
-                // Vision 自适应跳过:
-                // - 文件 byte-identical → 无需 Vision
-                // - 感知哈希极强 (>= 0.92, Hamming ≤ 5) → 已足够确信, 跳过 Vision 加速
-                // - 否则用 Vision FeaturePrint 做精确认证
+                // 默认使用可持久化的感知哈希完成比较。Vision 精校验只在显式启用时运行，
+                // 避免为每个候选重复解码视频，并让第二次扫描直接受益于哈希缓存。
                 let frameScore: Double?
-                if hashMatch || percSimilarity >= 0.92 {
+                if !usesFrameVerification || hashMatch || percSimilarity >= 0.92 {
                     frameScore = nil
                 } else {
                     frameScore = try? await frameFeatureCache.similarity(
@@ -257,7 +263,9 @@ struct SimilarityPipeline: SimilarityProcessing {
         }
 
         // ---- 阶段 2: 并行计算未命中的哈希 ----
-        let concurrencyCap = max(2, ProcessInfo.processInfo.activeProcessorCount)
+        let concurrencyCap = Self.hashConcurrencyLimit(
+            processorCount: ProcessInfo.processInfo.activeProcessorCount
+        )
 
         let computed = try await withThrowingTaskGroup(of: (UUID, VideoPerceptualHash?).self) { group in
             var iterator = needsHashing.makeIterator()

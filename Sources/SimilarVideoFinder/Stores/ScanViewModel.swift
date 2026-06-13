@@ -124,13 +124,13 @@ final class ScanViewModel: ObservableObject {
                 let scanned = try await scanner.scan(folder: folder) { [weak self] update in
                     await MainActor.run { self?.progress = update }
                 }
+                issues = scanned.issues
                 let result = try await pipeline.process(videos: scanned.videos, threshold: threshold) { [weak self] update in
                     await MainActor.run { self?.progress = update }
                 }
                 try Task.checkCancellation()
                 allVideos = result.videos
                 allRelations = result.relations
-                issues = scanned.issues
                 groups = result.groups
                 selectFirstAvailable()
                 progress = ScanProgress(stage: .completed, fraction: 1, discoveredCount: result.videos.count)
