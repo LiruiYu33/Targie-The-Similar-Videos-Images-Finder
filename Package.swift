@@ -7,8 +7,15 @@ let package = Package(
     products: [
         .executable(name: "SimilarVideoFinder", targets: ["SimilarVideoFinder"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0")
+    ],
     targets: [
-        .executableTarget(name: "SimilarVideoFinder", path: "Sources/SimilarVideoFinder"),
+        .executableTarget(
+            name: "SimilarVideoFinder",
+            dependencies: [.product(name: "GRDB", package: "GRDB.swift")],
+            path: "Sources/SimilarVideoFinder"
+        ),
         .testTarget(
             name: "SimilarVideoFinderTests",
             dependencies: ["SimilarVideoFinder"],

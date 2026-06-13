@@ -59,6 +59,7 @@ struct VideoItem: Identifiable, Hashable, Sendable {
 
 enum SimilarityEvidence: String, Hashable, Sendable {
     case identicalContentHash
+    case similarPerceptualHash
     case similarFrames
     case similarDuration
     case similarDimensions
@@ -124,6 +125,8 @@ enum ScanStage: Equatable, Sendable {
     case idle
     case discovering
     case readingMetadata
+    case prehashing
+    case hashing
     case comparing
     case completed
     case cancelled
