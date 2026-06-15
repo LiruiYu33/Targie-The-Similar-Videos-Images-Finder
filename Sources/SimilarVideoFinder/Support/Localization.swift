@@ -67,7 +67,7 @@ enum L10n {
     static func similarVideos(_ l: AppLanguage) -> String { text(l, "Similar Videos", "相似视频") }
     static func similarMedia(_ l: AppLanguage) -> String { text(l, "Similar Media", "相似媒体") }
     static func displayThreshold(_ l: AppLanguage) -> String { text(l, "Display Threshold", "显示阈值") }
-    static func displayThresholdHelp(_ l: AppLanguage) -> String { text(l, "72% is the minimum retained confidence; 100% shows exact matches only.", "72% 是管线保留的最低可信度；100% 仅显示完全匹配。") }
+    static func displayThresholdHelp(_ l: AppLanguage) -> String { text(l, "≥ 72% recommended; below that false positives increase.", "建议 ≥ 72%；低于此值误报增多。") }
     static func skippedFiles(_ count: Int, _ l: AppLanguage) -> String { text(l, "Skipped \(count) unreadable files", "跳过 \(count) 个无法读取的文件") }
     static func noSimilarVideos(_ l: AppLanguage) -> String { text(l, "No Similar Videos Found", "没有发现相似视频") }
     static func noSimilarMedia(_ l: AppLanguage) -> String { text(l, "No Similar Media Found", "没有发现相似媒体") }

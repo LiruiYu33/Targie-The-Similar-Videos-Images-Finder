@@ -48,7 +48,7 @@ enum PresentedError {
 
 @MainActor
 final class ScanViewModel: ObservableObject {
-    static let displayThresholdRange = 0.72...1.0
+    static let displayThresholdRange = 0.50...1.0
 
     @Published var selectedFolders: [URL] = []
     @Published var threshold = 0.88 {

@@ -209,7 +209,7 @@ struct SimilarityPipeline: SimilarityProcessing {
                     frameSimilarity: frameScore
                 )
 
-                if score.score >= min(threshold, 0.72) {
+                if score.score >= min(threshold, 0.50) {
                     relations.append(SimilarityRelation(
                         firstID: video.id,
                         secondID: other.id,

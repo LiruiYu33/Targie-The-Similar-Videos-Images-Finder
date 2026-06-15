@@ -53,7 +53,7 @@ struct ImageSimilarityPipeline: Sendable {
                     ? await featureCache.similarity(between: image.url, and: other.url)
                     : nil
                 let score = SimilarityScorer.score(image, other, hashesMatch: exact, perceptualSimilarity: perceptual, frameSimilarity: feature)
-                if score.score >= 0.72 {
+                if score.score >= 0.50 {
                     relations.append(SimilarityRelation(firstID: image.id, secondID: other.id, score: score.score, evidence: score.evidence))
                 }
             }

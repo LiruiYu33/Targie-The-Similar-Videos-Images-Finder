@@ -99,8 +99,19 @@ struct SidebarView: View {
                     Text(DisplayFormatters.percent(model.threshold)).monospacedDigit()
                 }
                 .font(.caption)
-                Slider(value: $model.threshold, in: ScanViewModel.displayThresholdRange, step: 0.01)
-                    .help(L10n.displayThresholdHelp(language))
+                Slider(value: $model.threshold, in: ScanViewModel.displayThresholdRange, step: 0.01) {
+                    EmptyView()
+                } minimumValueLabel: {
+                    Text("50%").font(.system(size: 9)).foregroundStyle(.tertiary)
+                } maximumValueLabel: {
+                    Text("100%").font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+                .help(L10n.displayThresholdHelp(language))
+                if model.threshold < 0.72 {
+                    Text(L10n.displayThresholdHelp(language))
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
 
             if !model.issues.isEmpty {
