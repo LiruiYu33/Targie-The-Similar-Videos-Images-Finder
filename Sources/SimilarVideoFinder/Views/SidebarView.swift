@@ -37,17 +37,42 @@ struct SidebarView: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
             Button(action: { model.chooseFolder(language: language) }) {
-                Label(model.selectedFolder == nil ? L10n.chooseFolder(language) : L10n.changeFolder(language), systemImage: "folder")
+                Label(L10n.addFolders(language), systemImage: "folder.badge.plus")
                     .frame(maxWidth: .infinity)
             }
             .controlSize(.large)
+            .disabled(model.isScanning)
 
-            if let folder = model.selectedFolder {
-                Text(folder.path)
+            if model.selectedFolders.isEmpty {
+                Text(L10n.dragFoldersHint(language))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .help(folder.path)
+            } else {
+                Text(L10n.foldersSelected(model.selectedFolders.count, language))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(model.selectedFolders, id: \.self) { folder in
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder")
+                            .foregroundStyle(.secondary)
+                        Text(folder.path)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(folder.path)
+                        Spacer(minLength: 0)
+                        Button {
+                            model.removeFolder(folder)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isScanning)
+                        .foregroundStyle(.secondary)
+                        .help(L10n.removeFolder(language))
+                    }
+                }
             }
 
             if model.isScanning {
@@ -64,7 +89,7 @@ struct SidebarView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.selectedFolder == nil)
+                .disabled(model.selectedFolders.isEmpty)
             }
 
             VStack(alignment: .leading, spacing: 5) {
@@ -74,7 +99,19 @@ struct SidebarView: View {
                     Text(DisplayFormatters.percent(model.threshold)).monospacedDigit()
                 }
                 .font(.caption)
-                Slider(value: $model.threshold, in: 0.72...0.98, step: 0.01)
+                Slider(value: $model.threshold, in: ScanViewModel.displayThresholdRange, step: 0.01) {
+                    EmptyView()
+                } minimumValueLabel: {
+                    Text("50%").font(.system(size: 9)).foregroundStyle(.tertiary)
+                } maximumValueLabel: {
+                    Text("100%").font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+                .help(L10n.displayThresholdHelp(language))
+                if model.threshold < 0.72 {
+                    Text(L10n.displayThresholdHelp(language))
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
 
             if !model.issues.isEmpty {

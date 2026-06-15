@@ -59,7 +59,7 @@ struct ContentView: View {
                 Button(action: model.startScan) {
                     Label(L10n.startScan(language), systemImage: "sparkle.magnifyingglass")
                 }
-                .disabled(model.selectedFolder == nil || model.isScanning)
+                .disabled(model.selectedFolders.isEmpty || model.isScanning)
                 Menu {
                     ForEach(AppLanguage.allCases) { option in
                         Button {
@@ -90,6 +90,9 @@ struct ContentView: View {
         }
         .onDeleteCommand {
             if let video = model.selectedMedia { model.requestDeletion(of: video) }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            model.addFolders(urls)
         }
         .environment(\.appLanguage, language)
         .onAppear { model.setScanMode(ScanMode(rawValue: scanModeRawValue) ?? .all) }

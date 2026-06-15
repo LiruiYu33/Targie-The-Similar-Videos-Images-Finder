@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Targie"
 EXECUTABLE_NAME="SimilarVideoFinder"
 BUNDLE_ID="local.aaronyu.SimilarVideoFinder"
+APP_VERSION="${APP_VERSION:-0.0.0-dev}"
+BUILD_NUMBER="${BUILD_NUMBER:-1}"
 APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
 CONTENTS="$APP_BUNDLE/Contents"
 ICON_NAME="AppIcon"
@@ -88,6 +90,8 @@ printf '%s\n' \
   '<key>CFBundleIdentifier</key><string>local.aaronyu.SimilarVideoFinder</string>' \
   '<key>CFBundleName</key><string>Targie</string>' \
   '<key>CFBundleDisplayName</key><string>Targie</string>' \
+  "<key>CFBundleShortVersionString</key><string>$APP_VERSION</string>" \
+  "<key>CFBundleVersion</key><string>$BUILD_NUMBER</string>" \
   '<key>CFBundleIconFile</key><string>AppIcon</string>' \
   '<key>CFBundleIconName</key><string>AppIcon</string>' \
   '<key>CFBundlePackageType</key><string>APPL</string>' \

@@ -56,7 +56,7 @@ swift test
 # --- Build -------------------------------------------------------------------
 
 echo "▶ Building universal app bundle..."
-APP_BUNDLE="$(BUILD_ARCHS=universal "$ROOT_DIR/script/build_app.sh" | tail -1)"
+APP_BUNDLE="$(APP_VERSION="$VERSION" BUILD_NUMBER="${BUILD_NUMBER:-1}" BUILD_ARCHS=universal "$ROOT_DIR/script/build_app.sh" | tail -1)"
 
 if [ ! -d "$APP_BUNDLE" ]; then
   echo "error: build_app.sh did not produce an .app bundle (got '$APP_BUNDLE')" >&2
@@ -65,10 +65,17 @@ fi
 
 # Verify both slices are present in the binary.
 EXECUTABLE="$APP_BUNDLE/Contents/MacOS/SimilarVideoFinder"
+PLIST="$APP_BUNDLE/Contents/Info.plist"
 ARCH_OUT="$(/usr/bin/lipo -archs "$EXECUTABLE")"
 echo "▶ Bundle architectures: $ARCH_OUT"
 if ! echo "$ARCH_OUT" | grep -q arm64 || ! echo "$ARCH_OUT" | grep -q x86_64; then
   echo "error: expected arm64 + x86_64, got '$ARCH_OUT'" >&2
+  exit 1
+fi
+
+PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+if [ "$PLIST_VERSION" != "$VERSION" ]; then
+  echo "error: expected bundle version '$VERSION', got '$PLIST_VERSION'" >&2
   exit 1
 fi
 

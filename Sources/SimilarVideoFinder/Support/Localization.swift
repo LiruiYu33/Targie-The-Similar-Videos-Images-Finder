@@ -49,6 +49,10 @@ enum L10n {
     static func appName(_ l: AppLanguage) -> String { text(l, "Targie", "Targie") }
     static func chooseFolder(_ l: AppLanguage) -> String { text(l, "Choose Folder", "选择文件夹") }
     static func changeFolder(_ l: AppLanguage) -> String { text(l, "Change Folder", "更换文件夹") }
+    static func addFolders(_ l: AppLanguage) -> String { text(l, "Add Folders", "添加文件夹") }
+    static func removeFolder(_ l: AppLanguage) -> String { text(l, "Remove Folder", "移除文件夹") }
+    static func foldersSelected(_ count: Int, _ l: AppLanguage) -> String { text(l, "\(count) folders selected", "已添加 \(count) 个文件夹") }
+    static func dragFoldersHint(_ l: AppLanguage) -> String { text(l, "Drag one or more folders into this window.", "可将一个或多个文件夹拖入此窗口。") }
     static func startScan(_ l: AppLanguage) -> String { text(l, "Start Scan", "开始扫描") }
     static func cancelScan(_ l: AppLanguage) -> String { text(l, "Cancel Scan", "取消扫描") }
     static func language(_ l: AppLanguage) -> String { text(l, "Language", "语言") }
@@ -63,12 +67,13 @@ enum L10n {
     static func similarVideos(_ l: AppLanguage) -> String { text(l, "Similar Videos", "相似视频") }
     static func similarMedia(_ l: AppLanguage) -> String { text(l, "Similar Media", "相似媒体") }
     static func displayThreshold(_ l: AppLanguage) -> String { text(l, "Display Threshold", "显示阈值") }
+    static func displayThresholdHelp(_ l: AppLanguage) -> String { text(l, "≥ 72% recommended; below that false positives increase.", "建议 ≥ 72%；低于此值误报增多。") }
     static func skippedFiles(_ count: Int, _ l: AppLanguage) -> String { text(l, "Skipped \(count) unreadable files", "跳过 \(count) 个无法读取的文件") }
     static func noSimilarVideos(_ l: AppLanguage) -> String { text(l, "No Similar Videos Found", "没有发现相似视频") }
     static func noSimilarMedia(_ l: AppLanguage) -> String { text(l, "No Similar Media Found", "没有发现相似媒体") }
     static func waitingToScan(_ l: AppLanguage) -> String { text(l, "Ready to Scan", "等待扫描") }
     static func lowerThresholdHint(_ l: AppLanguage) -> String { text(l, "Lower the display threshold to review more results.", "可以降低显示阈值后再查看。") }
-    static func chooseAndScanHint(_ l: AppLanguage) -> String { text(l, "Choose a folder and start scanning.", "选择文件夹并开始扫描。") }
+    static func chooseAndScanHint(_ l: AppLanguage) -> String { text(l, "Add folders and start scanning.", "添加文件夹并开始扫描。") }
     static func similarGroup(_ index: Int, _ l: AppLanguage) -> String { text(l, "Similar Group \(index)", "相似组 \(index)") }
     static func videoCountAndScore(_ count: Int, _ score: String, _ l: AppLanguage) -> String { text(l, "\(count) videos · \(score)", "\(count) 个 · \(score)") }
     static func mediaCountAndScore(_ count: Int, _ score: String, _ l: AppLanguage) -> String { text(l, "\(count) files · \(score)", "\(count) 个文件 · \(score)") }
@@ -105,7 +110,7 @@ enum L10n {
     static func irreversible(_ l: AppLanguage) -> String { text(l, "This bypasses Trash and cannot be undone.", "此操作不会经过废纸篓，文件将无法恢复。") }
     static func back(_ l: AppLanguage) -> String { text(l, "Back", "返回") }
     static func confirmPermanent(_ l: AppLanguage) -> String { text(l, "Confirm Permanent Delete", "确认永久删除") }
-    static func chooseVideoFolder(_ l: AppLanguage) -> String { text(l, "Choose a Folder to Scan", "选择要扫描的文件夹") }
+    static func chooseVideoFolder(_ l: AppLanguage) -> String { text(l, "Choose Folders to Scan", "选择要扫描的文件夹") }
     static func unknown(_ l: AppLanguage) -> String { text(l, "Unknown", "未知") }
     static func noVideoTrack(_ l: AppLanguage) -> String { text(l, "No readable video track was found", "未找到可读取的视频轨道") }
     static func unreadableImage(_ l: AppLanguage) -> String { text(l, "Image could not be read", "图片无法读取") }

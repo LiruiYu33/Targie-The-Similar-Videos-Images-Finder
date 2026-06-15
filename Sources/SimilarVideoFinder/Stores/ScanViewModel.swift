@@ -48,7 +48,9 @@ enum PresentedError {
 
 @MainActor
 final class ScanViewModel: ObservableObject {
-    @Published var selectedFolder: URL?
+    static let displayThresholdRange = 0.50...1.0
+
+    @Published var selectedFolders: [URL] = []
     @Published var threshold = 0.88 {
         didSet { rebuildGroups() }
     }
@@ -108,20 +110,44 @@ final class ScanViewModel: ObservableObject {
         panel.title = L10n.chooseVideoFolder(language)
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            selectedFolder = url
-            groups = []
-            selectedGroupID = nil
-            selectedMediaID = nil
-            checkedMediaIDs = []
-            progress = ScanProgress()
-            issues = []
+        panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK {
+            addFolders(panel.urls)
         }
     }
 
+    @discardableResult
+    func addFolders(_ urls: [URL]) -> Bool {
+        guard !isScanning else { return false }
+        let directories = urls.compactMap { url -> URL? in
+            let normalized = url.standardizedFileURL
+            guard (try? normalized.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                return nil
+            }
+            return normalized
+        }
+        guard !directories.isEmpty else { return false }
+
+        var seen = Set(selectedFolders.map { $0.standardizedFileURL.path })
+        let additions = directories.filter { seen.insert($0.path).inserted }
+        guard !additions.isEmpty else { return true }
+
+        selectedFolders.append(contentsOf: additions)
+        resetResults()
+        return true
+    }
+
+    func removeFolder(_ folder: URL) {
+        guard !isScanning else { return }
+        let path = folder.standardizedFileURL.path
+        guard selectedFolders.contains(where: { $0.standardizedFileURL.path == path }) else { return }
+        selectedFolders.removeAll { $0.standardizedFileURL.path == path }
+        resetResults()
+    }
+
     func startScan() {
-        guard let folder = selectedFolder, !isScanning else { return }
+        guard !selectedFolders.isEmpty, !isScanning else { return }
+        let folders = selectedFolders
         scanTask?.cancel()
         progress = ScanProgress(stage: .discovering)
         allItems = []
@@ -136,19 +162,29 @@ final class ScanViewModel: ObservableObject {
                 var relations: [SimilarityRelation] = []
                 var scanIssues: [ScanIssue] = []
                 if scanMode != .images {
-                    let scanned = try await scanner.scan(folder: folder) { [weak self] update in await MainActor.run { self?.progress = update } }
-                    scanIssues.append(contentsOf: scanned.issues)
+                    var videos: [MediaItem] = []
+                    for folder in folders {
+                        let scanned = try await scanner.scan(folder: folder) { [weak self] update in await MainActor.run { self?.progress = update } }
+                        videos.append(contentsOf: scanned.videos)
+                        scanIssues.append(contentsOf: scanned.issues)
+                    }
+                    videos = uniqueItemsByURL(videos)
                     issues = scanIssues
-                    let result = try await pipeline.process(videos: scanned.videos, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
+                    let result = try await pipeline.process(videos: videos, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
                     items.append(contentsOf: result.videos)
                     relations.append(contentsOf: result.relations)
                     publish(items: items, relations: relations)
                 }
                 if scanMode != .videos {
-                    let scanned = try await imageScanner.scan(folder: folder) { [weak self] update in await MainActor.run { self?.progress = update } }
-                    scanIssues.append(contentsOf: scanned.issues)
+                    var images: [MediaItem] = []
+                    for folder in folders {
+                        let scanned = try await imageScanner.scan(folder: folder) { [weak self] update in await MainActor.run { self?.progress = update } }
+                        images.append(contentsOf: scanned.images)
+                        scanIssues.append(contentsOf: scanned.issues)
+                    }
+                    images = uniqueItemsByURL(images)
                     issues = scanIssues
-                    let result = try await imagePipeline.process(images: scanned.images, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
+                    let result = try await imagePipeline.process(images: images, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
                     items.append(contentsOf: result.images)
                     relations.append(contentsOf: result.relations)
                     publish(items: items, relations: relations)
@@ -222,15 +258,19 @@ final class ScanViewModel: ObservableObject {
 
     func confirmPromptDeletion(mode: DeletionMode) async {
         guard let targets = deletePrompt?.media else { return }
+        let groupsBeforeDeletion = groups
+        var deletedIDs = Set<UUID>()
         var failures: [String] = []
         for media in targets {
             do {
                 try await deletionService.delete(url: media.url, mode: mode)
+                deletedIDs.insert(media.id)
                 allItems.removeAll { $0.id == media.id }
                 allRelations.removeAll { $0.contains(media.id) }
                 checkedMediaIDs.remove(media.id)
             } catch { failures.append("\(media.filename): \(error.localizedDescription)") }
         }
+        preserveGroupContinuity(groupsBeforeDeletion, deletedIDs: deletedIDs)
         rebuildGroups()
         deletePrompt = nil
         if !failures.isEmpty { presentedError = .message(failures.joined(separator: "\n")) }
@@ -270,5 +310,54 @@ final class ScanViewModel: ObservableObject {
     private func selectFirstAvailable() {
         selectedGroupID = groups.first?.id
         selectedMediaID = groups.first?.items.first?.id
+    }
+
+    private func resetResults() {
+        allItems = []
+        allRelations = []
+        groups = []
+        selectedGroupID = nil
+        selectedMediaID = nil
+        checkedMediaIDs = []
+        progress = ScanProgress()
+        issues = []
+    }
+
+    private func uniqueItemsByURL(_ items: [MediaItem]) -> [MediaItem] {
+        var seen = Set<String>()
+        return items.filter { seen.insert($0.url.standardizedFileURL.path).inserted }
+    }
+
+    private func preserveGroupContinuity(_ previousGroups: [SimilarityGroup], deletedIDs: Set<UUID>) {
+        guard !deletedIDs.isEmpty else { return }
+        let remainingIDs = Set(allItems.map(\.id))
+
+        for group in previousGroups where group.items.contains(where: { deletedIDs.contains($0.id) }) {
+            let survivors = group.items.filter { remainingIDs.contains($0.id) }
+            guard survivors.count >= 2 else { continue }
+
+            let score = group.relations
+                .filter { $0.score >= threshold }
+                .map(\.score)
+                .min() ?? threshold
+            let evidence = group.relations.reduce(into: Set<SimilarityEvidence>()) {
+                $0.formUnion($1.evidence)
+            }
+
+            for (first, second) in zip(survivors, survivors.dropFirst()) {
+                let pairExists = allRelations.contains {
+                    ($0.firstID == first.id && $0.secondID == second.id)
+                        || ($0.firstID == second.id && $0.secondID == first.id)
+                }
+                if !pairExists {
+                    allRelations.append(SimilarityRelation(
+                        firstID: first.id,
+                        secondID: second.id,
+                        score: score,
+                        evidence: evidence
+                    ))
+                }
+            }
+        }
     }
 }
