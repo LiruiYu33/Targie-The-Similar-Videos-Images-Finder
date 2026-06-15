@@ -24,6 +24,65 @@ import XCTest
 
 @MainActor
 final class ScanViewModelTests: XCTestCase {
+    func testAddingFoldersKeepsMultipleUniqueDirectoriesAndRejectsFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FolderSelection-\(UUID().uuidString)", isDirectory: true)
+        let first = root.appendingPathComponent("first", isDirectory: true)
+        let second = root.appendingPathComponent("second", isDirectory: true)
+        let file = root.appendingPathComponent("notes.txt")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        try Data().write(to: file)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = ScanViewModel(hashCache: nil)
+
+        let added = model.addFolders([first, second, first, file])
+
+        XCTAssertTrue(added)
+        XCTAssertEqual(model.selectedFolders, [first, second])
+    }
+
+    func testVideoScanComparesFilesAcrossSelectedFolders() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MultiFolderScan-\(UUID().uuidString)", isDirectory: true)
+        let first = root.appendingPathComponent("first", isDirectory: true)
+        let second = root.appendingPathComponent("second", isDirectory: true)
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        try Data().write(to: first.appendingPathComponent("a.mp4"))
+        try Data().write(to: second.appendingPathComponent("b.mp4"))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let scanner = VideoScanner(maxConcurrentLoads: 2) { url in
+            MediaItem(
+                kind: .video,
+                url: url,
+                fileSize: 1,
+                duration: 1,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: nil
+            )
+        }
+        let model = ScanViewModel(
+            scanner: scanner,
+            pipeline: ExactDuplicatePipeline(),
+            hashCache: nil
+        )
+        model.scanMode = .videos
+        model.selectedFolders = [first, second]
+
+        model.startScan()
+        try await waitUntil { model.progress.stage == .completed }
+
+        XCTAssertEqual(model.groups.count, 1)
+        XCTAssertEqual(Set(model.groups[0].items.map { $0.url.standardizedFileURL.path }), [
+            first.appendingPathComponent("a.mp4").standardizedFileURL.path,
+            second.appendingPathComponent("b.mp4").standardizedFileURL.path
+        ])
+    }
+
     func testDeletePromptStartsByChoosingMethod() {
         let model = ScanViewModel()
         model.requestDeletion(of: SimilarityScoringTests.video(name: "a.mov"))
@@ -42,6 +101,28 @@ final class ScanViewModelTests: XCTestCase {
 
         XCTAssertTrue(model.groups.isEmpty)
         XCTAssertEqual(deletion.deletedURLs, [b.url])
+    }
+
+    func testDeletingBridgeItemKeepsGroupWhenTwoFilesRemain() async {
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.94, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: b.id, secondID: c.id, score: 0.91, evidence: [.similarPerceptualHash])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [a, b, c], relations: relations)
+
+        await model.confirmDeletion(of: b, mode: .permanent)
+
+        XCTAssertEqual(model.groups.count, 1)
+        XCTAssertEqual(Set(model.groups[0].items.map(\.id)), [a.id, c.id])
+    }
+
+    func testDisplayThresholdSupportsExactMatchFiltering() {
+        XCTAssertEqual(ScanViewModel.displayThresholdRange.lowerBound, 0.72)
+        XCTAssertEqual(ScanViewModel.displayThresholdRange.upperBound, 1.0)
     }
 
     func testChangingScanModeClearsExistingResultsAndSelection() {
@@ -119,7 +200,7 @@ final class ScanViewModelTests: XCTestCase {
             pipeline: ExactDuplicatePipeline(),
             hashCache: nil
         )
-        model.selectedFolder = root
+        model.selectedFolders = [root]
 
         model.startScan()
         try await waitUntil { model.groups.count == 1 && model.progress.stage == .readingMetadata }

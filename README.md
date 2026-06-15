@@ -4,11 +4,12 @@
 
 > **macOS only.** Targie is a native macOS 14+ application. There is no Windows or Linux build, and none is planned.
 
-Targie finds similar videos and images in a selected folder by combining metadata, content hashes, perceptual fingerprints, and visual features.
+Targie finds similar videos and images across selected folders by combining metadata, content hashes, perceptual fingerprints, and visual features.
 
 ## Features
 
 - Switches between Videos, Images, and All scan modes and remembers the selected mode.
+- Adds multiple folders through the picker or Finder drag and drop, then compares media across all selected folders.
 - Recursively scans common video formats plus JPEG, PNG, HEIC, WebP, TIFF, GIF, and BMP images.
 - Uses SHA-256, cached perceptual fingerprints, metadata, and reusable Vision features while isolating unreadable files.
 - Keeps video and image groups separate for side-by-side review with static in-app previews.
