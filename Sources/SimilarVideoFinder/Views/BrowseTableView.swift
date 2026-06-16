@@ -48,42 +48,141 @@ struct BrowseTableView: View {
                 description: Text(L10n.noItemsBrowseHint(language))
             )
         } else {
-            Table(browseModel.displayedItems, selection: Binding(
-                get: { browseModel.selectedMediaID },
-                set: { browseModel.selectMedia($0) }
-            )) {
-                TableColumn(L10n.thumbnail(language)) { item in
-                    BrowseThumbnailCell(item: item)
-                }
-                .width(min: 48, ideal: 60, max: 80)
+            VStack(spacing: 0) {
+                browseTableHeader
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.bar)
 
-                TableColumn(L10n.name(language)) { item in
-                    BrowseNameCell(item: item)
-                }
-                .width(min: 120, ideal: 250)
+                Divider()
 
-                TableColumn(L10n.fileSize(language)) { item in
-                    Text(DisplayFormatters.fileSize(item.fileSize))
+                List(browseModel.displayedItems, selection: Binding(
+                    get: { browseModel.selectedMediaID },
+                    set: { browseModel.selectMedia($0) }
+                )) { item in
+                    BrowseTableRow(item: item, language: language)
+                        .tag(item.id)
                 }
-                .width(min: 60, ideal: 90, max: 120)
-
-                TableColumn(L10n.resolution(language)) { item in
-                    Text(item.resolution(language: language))
-                }
-                .width(min: 80, ideal: 110, max: 150)
-
-                TableColumn(L10n.modifiedTime(language)) { item in
-                    BrowseDateText(date: item.modifiedAt)
-                }
-                .width(min: 80, ideal: 120, max: 160)
+                .listStyle(.inset)
+                .alternatingRowBackgrounds(.enabled)
             }
-            .alternatingRowBackgrounds(.enabled)
-            .tableStyle(.inset(alternatesRowBackgrounds: true))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    // MARK: - Table Header
+
+    private var browseTableHeader: some View {
+        HStack(spacing: 0) {
+            headerLabel(L10n.thumbnail(language), width: 60)
+
+            sortHeader(L10n.name(language), field: .name, fill: true)
+
+            sortHeader(L10n.fileSize(language), field: .fileSize, fill: false, width: 90)
+
+            resolutionHeader
+
+            sortHeader(L10n.modifiedTime(language), field: .modifiedTime, fill: false, width: 120)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+    }
+
+    private func headerLabel(_ text: String, width: CGFloat) -> some View {
+        Text(text).frame(width: width, alignment: .leading)
+    }
+
+    private func sortHeader(_ text: String, field: BrowseViewModel.SortField, fill: Bool, width: CGFloat? = nil) -> some View {
+        Button { browseModel.toggleSort(field: field) } label: {
+            HStack(spacing: 4) {
+                Text(text)
+                if browseModel.sortField == field {
+                    Image(systemName: browseModel.sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .iflet(width) { v, w in v.frame(width: w, alignment: .leading) }
+        .if(fill) { v in v.frame(maxWidth: .infinity, alignment: .leading) }
+    }
+
+    private var resolutionHeader: some View {
+        Button { browseModel.isResolutionSortPresented.toggle() } label: {
+            HStack(spacing: 4) {
+                Text(L10n.resolution(language))
+                if browseModel.sortField.isResolution {
+                    Image(systemName: browseModel.sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                }
+            }
+            .frame(width: 110, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $browseModel.isResolutionSortPresented) {
+            BrowseResolutionSortPopover(browseModel: browseModel, language: language)
         }
     }
 }
 
-// MARK: - Cell Views
+// MARK: - Table Row
+
+struct BrowseTableRow: View {
+    let item: MediaItem
+    let language: AppLanguage
+
+    var body: some View {
+        HStack(spacing: 0) {
+            BrowseThumbnailCell(item: item)
+                .frame(width: 48, height: 48)
+                .frame(width: 60, alignment: .center)
+
+            HStack(spacing: 6) {
+                Image(systemName: item.kind == .video ? "film" : "photo")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                Text(item.filename)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(DisplayFormatters.fileSize(item.fileSize))
+                .monospacedDigit()
+                .frame(width: 90, alignment: .leading)
+
+            Text(item.resolution(language: language))
+                .monospacedDigit()
+                .frame(width: 110, alignment: .leading)
+
+            Group {
+                if let date = item.modifiedAt {
+                    Text(date, style: .date)
+                } else {
+                    Text("—").foregroundStyle(.tertiary)
+                }
+            }
+            .frame(width: 120, alignment: .leading)
+        }
+        .font(.callout)
+    }
+}
+
+// MARK: - View Helpers
+
+extension View {
+    @ViewBuilder
+    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition { transform(self) } else { self }
+    }
+
+    @ViewBuilder
+    func iflet<T, Content: View>(_ value: T?, transform: (Self, T) -> Content) -> some View {
+        if let value { transform(self, value) } else { self }
+    }
+}
+
+// MARK: - Thumbnail Cell
 
 struct BrowseThumbnailCell: View {
     let item: MediaItem
@@ -96,32 +195,54 @@ struct BrowseThumbnailCell: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(width: 48, height: 48)
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
 
-struct BrowseNameCell: View {
-    let item: MediaItem
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: item.kind == .video ? "film" : "photo")
-                .foregroundStyle(.secondary)
-                .font(.caption)
-            Text(item.filename)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-    }
-}
+// MARK: - Resolution Sort Popover
 
-struct BrowseDateText: View {
-    let date: Date?
+struct BrowseResolutionSortPopover: View {
+    @ObservedObject var browseModel: BrowseViewModel
+    let language: AppLanguage
+
     var body: some View {
-        if let date {
-            Text(date, style: .date)
-        } else {
-            Text("—").foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.resolutionSort(language))
+                    .font(.headline)
+                Text(L10n.sortBy(language))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("", selection: Binding(
+                    get: { browseModel.sortField.isResolution ? browseModel.sortField : .resolutionWidth },
+                    set: { browseModel.sortField = $0; browseModel.sortAscending = true }
+                )) {
+                    Text(L10n.sortByWidth(language)).tag(BrowseViewModel.SortField.resolutionWidth)
+                    Text(L10n.sortByHeight(language)).tag(BrowseViewModel.SortField.resolutionHeight)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.sortDirection(language))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $browseModel.sortAscending) {
+                    Text(L10n.ascending(language)).tag(true)
+                    Text(L10n.descending(language)).tag(false)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            if browseModel.sortField.isResolution {
+                Button(L10n.clearFilter(language), action: browseModel.clearResolutionSort)
+                    .controlSize(.small)
+            }
         }
+        .padding(16)
+        .frame(width: 280)
     }
 }
