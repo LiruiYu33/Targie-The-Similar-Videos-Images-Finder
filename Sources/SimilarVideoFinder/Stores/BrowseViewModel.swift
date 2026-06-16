@@ -67,7 +67,6 @@ final class BrowseViewModel: ObservableObject {
 
     @Published var sortField: SortField = .name
     @Published var sortAscending: Bool = true
-    @Published var isResolutionSortPresented: Bool = false
     @Published var mediaFilter: MediaFilter = .all
     @Published var resolutionComparator: ResolutionComparator = .lessThan
     @Published var selectedResolutionPreset: ResolutionPreset?
@@ -160,6 +159,31 @@ final class BrowseViewModel: ObservableObject {
         if let w, w > 0 { return w }
         if let h, h > 0 { return h }
         return nil
+    }
+
+    // MARK: - Table sort order (KeyPathComparator binding)
+
+    var sortComparators: [KeyPathComparator<MediaItem>] {
+        let order: SortOrder = sortAscending ? .forward : .reverse
+        switch sortField {
+        case .name:         return [KeyPathComparator(\.filename, order: order)]
+        case .fileSize:     return [KeyPathComparator(\.fileSize, order: order)]
+        case .modifiedTime: return [KeyPathComparator(\.modifiedAt, order: order)]
+        case .resolutionWidth:  return [KeyPathComparator(\.width, order: order)]
+        case .resolutionHeight: return [KeyPathComparator(\.height, order: order)]
+        }
+    }
+
+    func updateSort(from comparators: [KeyPathComparator<MediaItem>]) {
+        guard let comp = comparators.first else { return }
+        let kp = comp.keyPath
+        if kp == \.filename      { sortField = .name }
+        else if kp == \.fileSize { sortField = .fileSize }
+        else if kp == \.modifiedAt { sortField = .modifiedTime }
+        else if kp == \.width    { sortField = .resolutionWidth }
+        else if kp == \.height   { sortField = .resolutionHeight }
+        else { return }
+        sortAscending = comp.order == .forward
     }
 
     // MARK: - Actions

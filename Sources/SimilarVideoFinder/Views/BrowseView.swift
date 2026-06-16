@@ -27,10 +27,6 @@ struct BrowseView: View {
     @Environment(\.appLanguage) private var language
 
     var body: some View {
-        // Three-column NavigationSplitView with a hidden sidebar so the
-        // content column fills from the left window edge natively.
-        // NavigationSplitView properly fills the window on launch
-        // (unlike HSplitView which needs a state change to snap).
         NavigationSplitView {
             Color.clear
                 .frame(width: 0)
@@ -61,6 +57,24 @@ struct BrowseView: View {
                     BrowseFilterPopover(browseModel: browseModel)
                 }
 
+                // Sort menu
+                Menu {
+                    ForEach(BrowseViewModel.SortField.allCases) { field in
+                        Button {
+                            browseModel.toggleSort(field: field)
+                        } label: {
+                            HStack {
+                                Text(sortLabel(for: field))
+                                if browseModel.sortField == field {
+                                    Image(systemName: browseModel.sortAscending ? "chevron.up" : "chevron.down")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label(L10n.resolutionSort(language), systemImage: "arrow.up.arrow.down")
+                }
+
                 Spacer()
 
                 Text(L10n.browseItemCount(browseModel.displayedItems.count, language))
@@ -69,5 +83,15 @@ struct BrowseView: View {
             }
         }
         .navigationTitle(L10n.browse(language))
+    }
+
+    private func sortLabel(for field: BrowseViewModel.SortField) -> String {
+        switch field {
+        case .name:             L10n.name(language)
+        case .fileSize:         L10n.fileSize(language)
+        case .modifiedTime:     L10n.modifiedTime(language)
+        case .resolutionWidth:  L10n.sortByWidth(language)
+        case .resolutionHeight: L10n.sortByHeight(language)
+        }
     }
 }
