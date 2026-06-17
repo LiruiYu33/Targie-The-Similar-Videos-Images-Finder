@@ -132,6 +132,15 @@ enum L10n {
     static func noItemsBrowseHint(_ l: AppLanguage) -> String { text(l, "Add folders and browse to see files.", "添加文件夹并浏览以查看文件。") }
     static func discoveringFiles(_ l: AppLanguage) -> String { text(l, "Discovering files…", "正在发现文件…") }
 
+    // Resolution sort
+    static func resolutionSort(_ l: AppLanguage) -> String { text(l, "Resolution Sort", "分辨率排序") }
+    static func sortBy(_ l: AppLanguage) -> String { text(l, "Sort by", "排序依据") }
+    static func sortByWidth(_ l: AppLanguage) -> String { text(l, "Width (left)", "宽度（左）") }
+    static func sortByHeight(_ l: AppLanguage) -> String { text(l, "Height (right)", "高度（右）") }
+    static func sortDirection(_ l: AppLanguage) -> String { text(l, "Direction", "方向") }
+    static func ascending(_ l: AppLanguage) -> String { text(l, "Ascending", "升序") }
+    static func descending(_ l: AppLanguage) -> String { text(l, "Descending", "降序") }
+
     static func evidence(_ value: SimilarityEvidence, _ l: AppLanguage) -> String {
         switch value {
         case .identicalContentHash: text(l, "Identical content", "内容完全一致")

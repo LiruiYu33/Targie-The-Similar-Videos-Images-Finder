@@ -19,6 +19,7 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
+import AVKit
 import SwiftUI
 
 struct BrowsePreviewPanel: View {
@@ -30,7 +31,7 @@ struct BrowsePreviewPanel: View {
             if let media = browseModel.selectedMedia {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        MediaPreview(media: media)
+                        BrowseMediaPreview(media: media)
                         VStack(alignment: .leading, spacing: 8) {
                             Text(media.filename)
                                 .font(.title3.bold())
@@ -78,5 +79,85 @@ struct BrowsePreviewPanel: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.callout).textSelection(.enabled)
         }
+    }
+}
+
+// MARK: - Browse Media Preview (with video playback via native AVPlayerView)
+
+struct BrowseMediaPreview: View {
+    let media: MediaItem
+
+    var body: some View {
+        Group {
+            if media.kind == .video {
+                NativeVideoPlayerView(url: media.url, fallbackData: media.thumbnailData)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+            } else if let data = media.thumbnailData, let image = NSImage(data: data) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                ZStack {
+                    Color.secondary.opacity(0.12)
+                    Image(systemName: "photo")
+                        .font(.system(size: 42))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .aspectRatio(previewAspectRatio, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var previewAspectRatio: CGFloat {
+        guard media.kind == .image, media.width > 0, media.height > 0 else { return 16 / 9 }
+        return CGFloat(media.width) / CGFloat(media.height)
+    }
+}
+
+// MARK: - Native AVPlayerView wrapped for SwiftUI
+
+/// Wraps AppKit's `AVPlayerView` in an `NSViewRepresentable`.
+/// This avoids the SwiftUI `VideoPlayer` metadata-initialization crash
+/// that occurs when `VideoPlayer` is used inside a `@MainActor` view
+/// hierarchy (e.g. observing a `@MainActor` ViewModel).
+struct NativeVideoPlayerView: NSViewRepresentable {
+    let url: URL
+    let fallbackData: Data?
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.player = nil
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        // Only swap the player when the URL actually changes
+        let currentURL = context.coordinator.currentURL
+        guard currentURL != url else { return }
+        context.coordinator.currentURL = url
+
+        if FileManager.default.fileExists(atPath: url.path) {
+            let item = AVPlayerItem(url: url)
+            let player = AVPlayer(playerItem: item)
+            player.volume = 0.5
+            nsView.player = player
+        } else {
+            nsView.player = nil
+        }
+    }
+
+    static func dismantleNSView(_ nsView: AVPlayerView, coordinator: Coordinator) {
+        nsView.player?.pause()
+        nsView.player = nil
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    class Coordinator {
+        var currentURL: URL?
     }
 }

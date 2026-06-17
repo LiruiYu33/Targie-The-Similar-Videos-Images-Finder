@@ -60,7 +60,15 @@ struct ContentView: View {
         }
         .environment(\.appLanguage, language)
         .onAppear { model.setScanMode(ScanMode(rawValue: scanModeRawValue) ?? .all) }
-        .background(WindowTitleUpdater(title: L10n.appName(language)))
+        .background(
+            // In scan mode this owns the window title; browse mode installs
+            // its own dynamic WindowTitleUpdater that reflects item count.
+            Group {
+                if appMode == .scan {
+                    WindowTitleUpdater(title: L10n.appName(language))
+                }
+            }
+        )
     }
 
     // MARK: - Scan Mode View
@@ -80,39 +88,52 @@ struct ContentView: View {
             ToolbarItemGroup {
                 Picker("", selection: Binding(
                     get: { ScanMode(rawValue: scanModeRawValue) ?? .all },
-                    set: { mode in scanModeRawValue = mode.rawValue; model.setScanMode(mode) }
+                    set: { mode in
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            scanModeRawValue = mode.rawValue
+                            model.setScanMode(mode)
+                        }
+                    }
                 )) {
                     Text(L10n.videos(language)).tag(ScanMode.videos)
                     Text(L10n.images(language)).tag(ScanMode.images)
                     Text(L10n.allMedia(language)).tag(ScanMode.all)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 220)
-                Button(action: enterBrowseMode) {
-                    Label(L10n.browse(language), systemImage: "doc.text.image")
-                }
+                .fixedSize()
+
+                ToolbarLabeledButton(
+                    title: L10n.browse(language),
+                    systemImage: "doc.text.image",
+                    action: enterBrowseMode
+                )
                 .disabled(model.selectedFolders.isEmpty)
-                Button(action: { model.chooseFolder(language: language) }) {
-                    Label(L10n.chooseFolder(language), systemImage: "folder.badge.plus")
-                }
-                Button(action: model.startScan) {
-                    Label(L10n.startScan(language), systemImage: "sparkle.magnifyingglass")
-                }
-                .disabled(model.selectedFolders.isEmpty || model.isScanning)
-                Menu {
-                    ForEach(AppLanguage.allCases) { option in
-                        Button {
-                            languageRawValue = option.rawValue
-                        } label: {
-                            if option == language {
-                                Label(option.menuLabel, systemImage: "checkmark")
-                            } else {
-                                Text(option.menuLabel)
+
+                ToolbarLabeledPopover(
+                    title: L10n.language(language),
+                    systemImage: "globe"
+                ) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(AppLanguage.allCases) { option in
+                            Button {
+                                languageRawValue = option.rawValue
+                            } label: {
+                                HStack {
+                                    Text(option.menuLabel)
+                                    Spacer(minLength: 16)
+                                    if option == language {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .frame(minWidth: 140, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
                         }
                     }
-                } label: {
-                    Label(L10n.language(language), systemImage: "globe")
                 }
             }
         }
@@ -148,7 +169,7 @@ enum AppMode {
     case browse
 }
 
-private struct WindowTitleUpdater: NSViewRepresentable {
+struct WindowTitleUpdater: NSViewRepresentable {
     let title: String
 
     func makeNSView(context: Context) -> NSView {

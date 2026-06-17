@@ -26,38 +26,101 @@ struct BrowseView: View {
     let onBack: () -> Void
     @Environment(\.appLanguage) private var language
 
+    /// Fraction of total width given to the table (left side).
+    @State private var leftFraction: CGFloat = 0.65
+
+    /// Fraction captured at the start of a drag — basis for translation deltas.
+    @State private var dragStartFraction: CGFloat?
+
+    /// Track whether the user is currently dragging the divider.
+    @State private var isDraggingDivider = false
+
+    /// Hard floors so neither pane can collapse to zero.
+    private let minLeftWidth: CGFloat = 80
+    private let minRightWidth: CGFloat = 80
+
     var body: some View {
-        NavigationSplitView {
-            BrowseTableView(browseModel: browseModel)
-                .navigationSplitViewColumnWidth(min: 500, ideal: 800)
-        } detail: {
-            BrowsePreviewPanel(browseModel: browseModel)
-                .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 390)
+        GeometryReader { geo in
+            let totalWidth = geo.size.width
+            let leftWidth = clampedLeft(totalWidth: totalWidth)
+
+            HStack(spacing: 0) {
+                // ── Left: file table ──
+                BrowseTableView(browseModel: browseModel)
+                    .frame(width: leftWidth)
+                    .frame(maxHeight: .infinity)
+                    .clipped()
+
+                // ── Draggable divider ──
+                divider
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .named("browseSplit"))
+                            .onChanged { value in
+                                isDraggingDivider = true
+                                let start = dragStartFraction ?? leftFraction
+                                if dragStartFraction == nil { dragStartFraction = start }
+                                let baseLeft = totalWidth * start
+                                let proposedLeft = baseLeft + value.translation.width
+                                leftFraction = clampedLeft(totalWidth: totalWidth, proposed: proposedLeft) / totalWidth
+                            }
+                            .onEnded { _ in
+                                isDraggingDivider = false
+                                dragStartFraction = nil
+                            }
+                    )
+                    .onHover { inside in
+                        if inside || isDraggingDivider {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+
+                // ── Right: preview panel ──
+                BrowsePreviewPanel(browseModel: browseModel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+            }
         }
+        .coordinateSpace(name: "browseSplit")
+        .background(WindowTitleUpdater(title: L10n.browseItemCount(browseModel.displayedItems.count, language)))
         .toolbar {
             ToolbarItemGroup {
-                Button(action: onBack) {
-                    Label(L10n.back(language), systemImage: "chevron.left")
-                }
+                ToolbarLabeledButton(
+                    title: L10n.back(language),
+                    systemImage: "chevron.left",
+                    action: onBack
+                )
 
-                Button {
+                ToolbarLabeledButton(
+                    title: L10n.filter(language),
+                    systemImage: browseModel.hasActiveFilter
+                        ? "line.3.horizontal.decrease.circle.fill"
+                        : "line.3.horizontal.decrease.circle"
+                ) {
                     browseModel.isFilterPresented.toggle()
-                } label: {
-                    if browseModel.hasActiveFilter {
-                        Label(L10n.filter(language), systemImage: "line.3.horizontal.decrease.circle.fill")
-                    } else {
-                        Label(L10n.filter(language), systemImage: "line.3.horizontal.decrease.circle")
-                    }
                 }
                 .popover(isPresented: $browseModel.isFilterPresented) {
                     BrowseFilterPopover(browseModel: browseModel)
                 }
-
-                Text(L10n.browseItemCount(browseModel.displayedItems.count, language))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle(L10n.browse(language))
+    }
+
+    // MARK: - Divider
+
+    private var divider: some View {
+        Rectangle()
+            .fill(.quaternary)
+            .frame(width: 1)
+            .frame(width: 8)       // wider hit target for dragging
+            .contentShape(Rectangle())
+    }
+
+    // MARK: - Helpers
+
+    private func clampedLeft(totalWidth: CGFloat, proposed: CGFloat? = nil) -> CGFloat {
+        let candidate = proposed ?? (totalWidth * leftFraction)
+        return max(minLeftWidth, min(totalWidth - minRightWidth, candidate))
     }
 }

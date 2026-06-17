@@ -19,6 +19,7 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
+import AVKit
 import AppKit
 import SwiftUI
 
@@ -87,7 +88,9 @@ struct MediaPreview: View {
 
     var body: some View {
         Group {
-            if let data = media.thumbnailData, let image = NSImage(data: data) {
+            if media.kind == .video {
+                VideoMediaPreview(url: media.url, fallbackData: media.thumbnailData)
+            } else if let data = media.thumbnailData, let image = NSImage(data: data) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
@@ -107,5 +110,65 @@ struct MediaPreview: View {
     private var previewAspectRatio: CGFloat {
         guard media.kind == .image, media.width > 0, media.height > 0 else { return 16 / 9 }
         return CGFloat(media.width) / CGFloat(media.height)
+    }
+}
+
+/// Live, playable preview for video media. Wraps SwiftUI's `VideoPlayer`
+/// (AVKit), so clicking the frame plays/pauses and the built-in scrubber
+/// lets the user seek. The player is recreated whenever the URL changes.
+private struct VideoMediaPreview: View {
+    let url: URL
+    let fallbackData: Data?
+
+    @StateObject private var holder = PlayerHolder()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let player = holder.player {
+                VideoPlayer(player: player)
+            } else {
+                // Fallback: static thumbnail while the player loads (or if the file
+                // is unreadable).
+                ZStack {
+                    Color.black.opacity(0.88)
+                    if let data = fallbackData, let image = NSImage(data: data) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFit()
+                    } else {
+                        Image(systemName: "film")
+                            .font(.system(size: 42))
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+            }
+        }
+        .onAppear { holder.load(url: url) }
+        .onChange(of: url) { _, newURL in holder.load(url: newURL) }
+        .onDisappear { holder.tearDown() }
+    }
+}
+
+/// Owns the `AVPlayer`. Kept free of `@MainActor` isolation: it is only ever
+/// touched from SwiftUI lifecycle callbacks (`onAppear`/`onChange`/`onDisappear`)
+/// which already run on the main thread, and marking it `@MainActor` triggers a
+/// Swift-runtime metadata-initialization crash when used via `@StateObject`.
+private final class PlayerHolder: ObservableObject {
+    @Published var player: AVPlayer?
+
+    func load(url: URL) {
+        // Drop any previous player before constructing a new one.
+        player?.pause()
+        player = nil
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let item = AVPlayerItem(url: url)
+        let newPlayer = AVPlayer(playerItem: item)
+        newPlayer.volume = 0.5
+        player = newPlayer
+    }
+
+    func tearDown() {
+        player?.pause()
+        player = nil
     }
 }

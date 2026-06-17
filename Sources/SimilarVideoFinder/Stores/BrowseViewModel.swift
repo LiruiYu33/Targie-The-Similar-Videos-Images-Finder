@@ -56,18 +56,31 @@ final class BrowseViewModel: ObservableObject {
 
     enum SortField: String, CaseIterable, Identifiable, Sendable {
         case name, fileSize, modifiedTime
+        case resolutionWidth, resolutionHeight
         var id: String { rawValue }
+
+        /// Whether this field sorts by a resolution dimension (width or height).
+        var isResolution: Bool { self == .resolutionWidth || self == .resolutionHeight }
     }
 
     // MARK: - Published State
 
-    @Published var sortField: SortField = .name
-    @Published var sortAscending: Bool = true
-    @Published var mediaFilter: MediaFilter = .all
-    @Published var resolutionComparator: ResolutionComparator = .lessThan
-    @Published var selectedResolutionPreset: ResolutionPreset?
-    @Published var manualWidth: String = ""
-    @Published var manualHeight: String = ""
+    /// Filtered and sorted items ready for display.
+    /// Explicitly published so the List reliably reorders when sort/filter changes.
+    @Published var displayedItems: [MediaItem] = []
+
+    /// Incremented on every recompute so SwiftUI List reorders rows
+    /// when the same items appear in a different sort order.
+    @Published var sortVersion: Int = 0
+
+    @Published var sortField: SortField = .name { didSet { recomputeDisplayedItems(bumpSortVersion: true) } }
+    @Published var sortAscending: Bool = true  { didSet { recomputeDisplayedItems(bumpSortVersion: true) } }
+    @Published var isResolutionSortPresented: Bool = false
+    @Published var mediaFilter: MediaFilter = .all { didSet { recomputeDisplayedItems() } }
+    @Published var resolutionComparator: ResolutionComparator = .lessThan { didSet { recomputeDisplayedItems() } }
+    @Published var selectedResolutionPreset: ResolutionPreset? { didSet { recomputeDisplayedItems() } }
+    @Published var manualWidth: String = "" { didSet { recomputeDisplayedItems() } }
+    @Published var manualHeight: String = "" { didSet { recomputeDisplayedItems() } }
     @Published var selectedMediaID: UUID?
     @Published var isFilterPresented: Bool = false
 
@@ -83,15 +96,18 @@ final class BrowseViewModel: ObservableObject {
         scanModel.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.objectWillChange.send()
+                guard let self else { return }
+                self.objectWillChange.send()
+                self.recomputeDisplayedItems()
             }
             .store(in: &cancellables)
+
+        recomputeDisplayedItems()
     }
 
-    // MARK: - Computed
+    // MARK: - Displayed items computation
 
-    /// Filtered and sorted items ready for display.
-    var displayedItems: [MediaItem] {
+    private func recomputeDisplayedItems(bumpSortVersion: Bool = false) {
         var items = scanModel.items
 
         // Media type filter
@@ -124,11 +140,18 @@ final class BrowseViewModel: ObservableObject {
                 let d1 = a.modifiedAt ?? .distantPast
                 let d2 = b.modifiedAt ?? .distantPast
                 result = d1 < d2
+            case .resolutionWidth:
+                result = a.width < b.width
+            case .resolutionHeight:
+                result = a.height < b.height
             }
             return sortAscending ? result : !result
         }
 
-        return items
+        displayedItems = items
+        if bumpSortVersion {
+            sortVersion &+= 1
+        }
     }
 
     /// The selected item from the browse table.
@@ -166,6 +189,12 @@ final class BrowseViewModel: ObservableObject {
             sortField = field
             sortAscending = true
         }
+    }
+
+    /// Reset sort back to name/ascending (used by the resolution sort popover's Clear button).
+    func clearResolutionSort() {
+        sortField = .name
+        sortAscending = true
     }
 
     func clearResolutionFilter() {

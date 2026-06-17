@@ -22,13 +22,31 @@
 import AppKit
 import SwiftUI
 
+/// Effective per-column widths after fitting the table to the container.
+struct BrowseColumnWidths: Equatable {
+    let thumbnail: CGFloat
+    let name: CGFloat
+    let fileSize: CGFloat
+    let resolution: CGFloat
+    let modifiedTime: CGFloat
+}
+
 struct BrowseTableView: View {
     @ObservedObject var browseModel: BrowseViewModel
     @Environment(\.appLanguage) private var language
 
+    // Stored (user-preferred) widths for resizable columns.
+    @State private var thumbnailWidth: CGFloat = 56
+    @State private var fileSizeWidth: CGFloat = 84
+    @State private var resolutionWidth: CGFloat = 100
+    @State private var modifiedTimeWidth: CGFloat = 110
+
+    private let rowHorizontalPadding: CGFloat = 12
+    private let dividerWidth: CGFloat = 6
+    private let nameMinWidth: CGFloat = 60
+
     var body: some View {
         if browseModel.scanModel.isScanning && browseModel.scanModel.items.isEmpty {
-            // Show progress bar during file discovery
             VStack(spacing: 12) {
                 ProgressView(value: browseModel.scanModel.progress.fraction) {
                     Text(L10n.scanStage(browseModel.scanModel.progress.stage, language))
@@ -49,85 +67,167 @@ struct BrowseTableView: View {
                 description: Text(L10n.noItemsBrowseHint(language))
             )
         } else {
-            VStack(spacing: 0) {
-                // Sortable column headers
-                browseTableHeader
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.bar)
+            GeometryReader { geo in
+                let widths = computeWidths(forContainerWidth: geo.size.width)
 
-                Divider()
+                VStack(spacing: 0) {
+                    browseTableHeader(widths: widths)
+                        .padding(.horizontal, rowHorizontalPadding)
+                        .frame(height: 28)
+                        .background(.bar)
 
-                // Item list
-                List(browseModel.displayedItems, selection: Binding(
-                    get: { browseModel.selectedMediaID },
-                    set: { browseModel.selectMedia($0) }
-                )) { item in
-                    BrowseTableRow(item: item, language: language)
-                        .tag(item.id)
+                    Divider()
+
+                    List(selection: Binding(
+                        get: { browseModel.selectedMediaID },
+                        set: { browseModel.selectMedia($0) }
+                    )) {
+                        ForEach(browseModel.displayedItems) { item in
+                            BrowseTableRow(item: item, language: language, widths: widths)
+                                .padding(.horizontal, rowHorizontalPadding)
+                                .listRowInsets(EdgeInsets())
+                                .tag(item.id)
+                        }
+                    }
+                    .id(browseModel.sortVersion)
+                    .listStyle(.plain)
+                    .alternatingRowBackgrounds(.enabled)
                 }
-                .listStyle(.inset)
-                .alternatingRowBackgrounds(.enabled)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
 
+    /// Fit the columns to the container.
+    /// Thumbnail/fileSize/resolution/modifiedTime use stored widths but scale down
+    /// proportionally if total > available; name absorbs leftover space (or its
+    /// minimum if everything else has been squeezed flat).
+    private func computeWidths(forContainerWidth container: CGFloat) -> BrowseColumnWidths {
+        let inner = max(0, container - 2 * rowHorizontalPadding)
+        let dividers = 3 * dividerWidth
+
+        let preferred = thumbnailWidth + fileSizeWidth + resolutionWidth + modifiedTimeWidth
+        let availableForFixed = max(0, inner - dividers - nameMinWidth)
+
+        let scale: CGFloat = preferred > availableForFixed && preferred > 0
+            ? availableForFixed / preferred
+            : 1
+
+        let thumb = thumbnailWidth * scale
+        let size  = fileSizeWidth * scale
+        let res   = resolutionWidth * scale
+        let mod   = modifiedTimeWidth * scale
+
+        let usedFixed = thumb + size + res + mod
+        let nameWidth = max(nameMinWidth, inner - dividers - usedFixed)
+
+        return BrowseColumnWidths(
+            thumbnail: thumb,
+            name: nameWidth,
+            fileSize: size,
+            resolution: res,
+            modifiedTime: mod
+        )
+    }
+
     // MARK: - Table Header
 
-    private var browseTableHeader: some View {
+    private func browseTableHeader(widths: BrowseColumnWidths) -> some View {
         HStack(spacing: 0) {
-            headerLabel(L10n.thumbnail(language), width: 60)
+            Text(L10n.thumbnail(language))
+                .lineLimit(1)
+                .frame(width: widths.thumbnail, alignment: .leading)
 
-            sortHeader(L10n.name(language), field: .name, width: nil)
+            sortHeader(L10n.name(language), field: .name)
+                .frame(width: widths.name, alignment: .leading)
 
-            sortHeader(L10n.fileSize(language), field: .fileSize, width: 90)
+            ColumnResizeHandle(width: $fileSizeWidth, dividerWidth: dividerWidth)
 
-            headerLabel(L10n.resolution(language), width: 110)
+            sortHeader(L10n.fileSize(language), field: .fileSize)
+                .frame(width: widths.fileSize, alignment: .leading)
 
-            sortHeader(L10n.modifiedTime(language), field: .modifiedTime, width: 120)
+            ColumnResizeHandle(width: $resolutionWidth, dividerWidth: dividerWidth)
+
+            resolutionHeader
+                .frame(width: widths.resolution, alignment: .leading)
+
+            ColumnResizeHandle(width: $modifiedTimeWidth, dividerWidth: dividerWidth)
+
+            sortHeader(L10n.modifiedTime(language), field: .modifiedTime)
+                .frame(width: widths.modifiedTime, alignment: .leading)
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
     }
 
-    private func headerLabel(_ text: String, width: CGFloat?) -> some View {
-        Group {
-            if let width {
-                Text(text).frame(width: width, alignment: .leading)
-            } else {
-                Text(text).frame(maxWidth: .infinity, alignment: .leading)
+    private func sortHeader(_ text: String, field: BrowseViewModel.SortField) -> some View {
+        Button { browseModel.toggleSort(field: field) } label: {
+            HStack(spacing: 4) {
+                Text(text).lineLimit(1)
+                if browseModel.sortField == field {
+                    Image(systemName: browseModel.sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
-    private func sortHeader(_ text: String, field: BrowseViewModel.SortField, width: CGFloat?) -> some View {
-        Group {
-            if let width {
-                Button { browseModel.toggleSort(field: field) } label: {
-                    HStack(spacing: 4) {
-                        Text(text)
-                        if browseModel.sortField == field {
-                            Image(systemName: browseModel.sortAscending ? "chevron.up" : "chevron.down")
-                                .font(.caption2)
-                        }
-                    }
-                    .frame(width: width, alignment: .leading)
+    private var resolutionHeader: some View {
+        Button { browseModel.isResolutionSortPresented.toggle() } label: {
+            HStack(spacing: 4) {
+                Text(L10n.resolution(language)).lineLimit(1)
+                if browseModel.sortField.isResolution {
+                    Image(systemName: browseModel.sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
                 }
-                .buttonStyle(.plain)
-            } else {
-                Button { browseModel.toggleSort(field: field) } label: {
-                    HStack(spacing: 4) {
-                        Text(text)
-                        if browseModel.sortField == field {
-                            Image(systemName: browseModel.sortAscending ? "chevron.up" : "chevron.down")
-                                .font(.caption2)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .popover(isPresented: $browseModel.isResolutionSortPresented) {
+            BrowseResolutionSortPopover(browseModel: browseModel, language: language)
+        }
+    }
+}
+
+// MARK: - Column Resize Handle
+
+private struct ColumnResizeHandle: View {
+    @Binding var width: CGFloat
+    let dividerWidth: CGFloat
+    @State private var startWidth: CGFloat?
+
+    private let minWidth: CGFloat = 50
+    private let maxWidth: CGFloat = 400
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            Rectangle()
+                .fill(.quaternary)
+                .frame(width: 1)
+        }
+        .frame(width: dividerWidth)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    let base = startWidth ?? width
+                    if startWidth == nil { startWidth = base }
+                    // Handle is on the left edge of the column it controls;
+                    // dragging right should narrow that column.
+                    let proposed = base - value.translation.width
+                    width = max(minWidth, min(maxWidth, proposed))
+                }
+                .onEnded { _ in startWidth = nil }
+        )
     }
 }
 
@@ -136,15 +236,14 @@ struct BrowseTableView: View {
 struct BrowseTableRow: View {
     let item: MediaItem
     let language: AppLanguage
+    let widths: BrowseColumnWidths
 
     var body: some View {
         HStack(spacing: 0) {
-            // Thumbnail
             BrowseThumbnailCell(item: item)
-                .frame(width: 48, height: 48)
-                .frame(width: 60, alignment: .center)
+                .frame(width: min(widths.thumbnail, 40), height: min(widths.thumbnail, 40))
+                .frame(width: widths.thumbnail, alignment: .leading)
 
-            // Name
             HStack(spacing: 6) {
                 Image(systemName: item.kind == .video ? "film" : "photo")
                     .foregroundStyle(.secondary)
@@ -153,29 +252,52 @@ struct BrowseTableRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: widths.name, alignment: .leading)
 
-            // File size
+            // Spacer matches the divider width so columns align with header.
+            Color.clear.frame(width: 6)
+
             Text(DisplayFormatters.fileSize(item.fileSize))
                 .monospacedDigit()
-                .frame(width: 90, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: widths.fileSize, alignment: .leading)
 
-            // Resolution
+            Color.clear.frame(width: 6)
+
             Text(item.resolution(language: language))
                 .monospacedDigit()
-                .frame(width: 110, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: widths.resolution, alignment: .leading)
 
-            // Modified time
+            Color.clear.frame(width: 6)
+
             Group {
                 if let date = item.modifiedAt {
-                    Text(date, style: .date)
+                    Text(date, style: .date).lineLimit(1)
                 } else {
                     Text("—").foregroundStyle(.tertiary)
                 }
             }
-            .frame(width: 120, alignment: .leading)
+            .frame(width: widths.modifiedTime, alignment: .leading)
         }
         .font(.callout)
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - View Helpers
+
+extension View {
+    @ViewBuilder
+    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition { transform(self) } else { self }
+    }
+
+    @ViewBuilder
+    func iflet<T, Content: View>(_ value: T?, transform: (Self, T) -> Content) -> some View {
+        if let value { transform(self, value) } else { self }
     }
 }
 
@@ -183,18 +305,63 @@ struct BrowseTableRow: View {
 
 struct BrowseThumbnailCell: View {
     let item: MediaItem
-
     var body: some View {
         Group {
             if let data = item.thumbnailData, let image = NSImage(data: data) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
+                Image(nsImage: image).resizable().scaledToFit()
             } else {
                 Image(systemName: item.kind == .video ? "film" : "photo")
                     .foregroundStyle(.secondary)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+// MARK: - Resolution Sort Popover
+
+struct BrowseResolutionSortPopover: View {
+    @ObservedObject var browseModel: BrowseViewModel
+    let language: AppLanguage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.resolutionSort(language))
+                    .font(.headline)
+                Text(L10n.sortBy(language))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("", selection: Binding(
+                    get: { browseModel.sortField.isResolution ? browseModel.sortField : .resolutionWidth },
+                    set: { browseModel.sortField = $0; browseModel.sortAscending = true }
+                )) {
+                    Text(L10n.sortByWidth(language)).tag(BrowseViewModel.SortField.resolutionWidth)
+                    Text(L10n.sortByHeight(language)).tag(BrowseViewModel.SortField.resolutionHeight)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.sortDirection(language))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $browseModel.sortAscending) {
+                    Text(L10n.ascending(language)).tag(true)
+                    Text(L10n.descending(language)).tag(false)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            if browseModel.sortField.isResolution {
+                Button(L10n.clearFilter(language), action: browseModel.clearResolutionSort)
+                    .controlSize(.small)
+            }
+        }
+        .padding(16)
+        .frame(width: 280)
     }
 }
