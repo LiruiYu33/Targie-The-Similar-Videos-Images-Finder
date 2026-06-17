@@ -49,15 +49,8 @@ chmod +x "$CONTENTS/MacOS/$EXECUTABLE_NAME"
 # build. No binary resources are checked into git; tweaking the icon means
 # editing the Swift source and re-running this script.
 ICON_BUILD_DIR="$ROOT_DIR/.build/icon"
-ICONSET_DIR="$ICON_BUILD_DIR/$ICON_NAME.iconset"
-ICON_MASTER_PNG="$ICON_BUILD_DIR/icon_1024.png"
-ICNS_OUTPUT="$CONTENTS/Resources/$ICON_NAME.icns"
 
 mkdir -p "$ICON_BUILD_DIR"
-rm -rf "$ICONSET_DIR"
-mkdir -p "$ICONSET_DIR"
-
-swift "$ROOT_DIR/script/generate_icon.swift" "$ICON_MASTER_PNG" >/dev/null
 
 # Apple's required iconset sizes (1x and 2x) for .icns.
 declare -a ICON_SIZES=(
@@ -73,10 +66,19 @@ declare -a ICON_SIZES=(
   "1024:icon_512x512@2x.png"
 )
 
+MASTER_PNG="$ICON_BUILD_DIR/icon_1024.png"
+ICONSET_DIR="$ICON_BUILD_DIR/$ICON_NAME.iconset"
+ICNS_OUTPUT="$CONTENTS/Resources/$ICON_NAME.icns"
+
+rm -rf "$ICONSET_DIR"
+mkdir -p "$ICONSET_DIR"
+
+swift "$ROOT_DIR/script/generate_icon.swift" "$MASTER_PNG" >/dev/null
+
 for entry in "${ICON_SIZES[@]}"; do
   size="${entry%%:*}"
   name="${entry##*:}"
-  /usr/bin/sips -z "$size" "$size" "$ICON_MASTER_PNG" --out "$ICONSET_DIR/$name" >/dev/null
+  /usr/bin/sips -z "$size" "$size" "$MASTER_PNG" --out "$ICONSET_DIR/$name" >/dev/null
 done
 
 /usr/bin/iconutil -c icns "$ICONSET_DIR" -o "$ICNS_OUTPUT"

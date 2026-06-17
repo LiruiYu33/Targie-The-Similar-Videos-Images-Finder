@@ -45,29 +45,85 @@ context.scaleBy(x: scale, y: scale)
 context.setShouldAntialias(true)
 context.interpolationQuality = .high
 
-// MARK: - Background tile (rounded square with vertical gradient)
+// MARK: - Safe-area padding
+// macOS app icons must keep the artwork centered within ~80% of the canvas,
+// leaving a transparent margin. Without this, runtime icons assigned via
+// NSApplication.shared.applicationIconImage fill the full tile and render
+// oversized in the Dock / app switcher (which don't apply a system mask).
+// We scale the entire drawing into a centered 82% inset and keep the area
+// outside transparent.
+let artworkScale: CGFloat = 0.82
+context.translateBy(x: size * (1 - artworkScale) / 2, y: size * (1 - artworkScale) / 2)
+context.scaleBy(x: artworkScale, y: artworkScale)
+
+let tileColor = CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
+let glassTint = CGColor(red: 0.92, green: 0.92, blue: 0.92, alpha: 1.0)
+
+// MARK: - Background tile (flat fill + liquid-glass layers)
 
 let tileRect = CGRect(x: 0, y: 0, width: size, height: size)
 let cornerRadius: CGFloat = size * 0.225  // matches Big Sur+ app-icon corner
 
 let tilePath = CGPath(roundedRect: tileRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+
+// Build a CGGradient from the glass tint at one alpha to the same tint at
+// another alpha. Keeps the liquid-glass layers subtle and flat in spirit.
+func glassGradient(fromAlpha a0: CGFloat, toAlpha a1: CGFloat) -> CGGradient {
+    let c0 = glassTint.copy(alpha: a0)!
+    let c1 = glassTint.copy(alpha: a1)!
+    return CGGradient(
+        colorsSpace: colorSpace,
+        colors: [c0, c1] as CFArray,
+        locations: [0, 1]
+    )!
+}
+
 context.saveGState()
 context.addPath(tilePath)
 context.clip()
 
-let topColor = CGColor(red: 0.14, green: 0.34, blue: 0.58, alpha: 1.0)     // deep blue
-let bottomColor = CGColor(red: 0.06, green: 0.16, blue: 0.32, alpha: 1.0)  // darker navy
-let bgGradient = CGGradient(
-    colorsSpace: colorSpace,
-    colors: [topColor, bottomColor] as CFArray,
-    locations: [0, 1]
-)!
+// Base flat fill
+context.setFillColor(tileColor)
+context.fill(tileRect)
+
+// (a) Top polish highlight — strong→transparent, covering top ~45%.
+// CG y is up, so "top" is the high-y end of the tile.
+let topHighlight = glassGradient(fromAlpha: 0.32, toAlpha: 0)
+context.saveGState()
 context.drawLinearGradient(
-    bgGradient,
-    start: CGPoint(x: 0, y: size),
-    end: CGPoint(x: 0, y: 0),
-    options: []
+    topHighlight,
+    start: CGPoint(x: 0, y: size * 0.92),
+    end: CGPoint(x: 0, y: size * 0.52),
+    options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
 )
+context.restoreGState()
+
+// (b) Bottom reflection band — transparent→subtle tint over bottom ~25%.
+let bottomGlow = glassGradient(fromAlpha: 0, toAlpha: 0.15)
+context.saveGState()
+context.drawLinearGradient(
+    bottomGlow,
+    start: CGPoint(x: 0, y: size * 0.30),
+    end: CGPoint(x: 0, y: 0),
+    options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+)
+context.restoreGState()
+
+// (c) Inner edge highlight stroke — a thin bright rim just inside the tile.
+context.saveGState()
+let edgeInset = size * 0.012
+let edgePath = CGPath(
+    roundedRect: tileRect.insetBy(dx: edgeInset, dy: edgeInset),
+    cornerWidth: cornerRadius - edgeInset,
+    cornerHeight: cornerRadius - edgeInset,
+    transform: nil
+)
+context.addPath(edgePath)
+context.setStrokeColor(glassTint.copy(alpha: 0.35)!)
+context.setLineWidth(size * 0.008)
+context.strokePath()
+context.restoreGState()
+
 context.restoreGState()
 
 // MARK: - Two overlapping video frames
