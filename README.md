@@ -10,15 +10,20 @@ Targie finds similar videos and images across selected folders by combining meta
 
 - Switches between Videos, Images, and All scan modes and remembers the selected mode.
 - Adds multiple folders through the picker or Finder drag and drop, then compares media across all selected folders.
-- Recursively scans common video formats plus JPEG, PNG, HEIC, WebP, TIFF, GIF, and BMP images.
+- Recursively scans common video formats plus JPEG, PNG, HEIC, HEIF, WebP, TIFF, GIF, and BMP images.
 - Uses SHA-256, cached perceptual fingerprints, metadata, and reusable Vision features while isolating unreadable files.
 - Keeps video and image groups separate for side-by-side review with static in-app previews.
 - Opens videos in the default player and reveals either media type in Finder.
 - Supports explicit multi-selection and partial-success batch deletion.
 - Requires an explicit choice between moving files to Trash and permanent deletion, with a second confirmation for permanent deletion.
 - Supports English and Simplified Chinese with instant switching and remembered preference.
+- **Browse mode**: view all files from selected folders in a sortable, filterable table with drag-to-resize columns and a live-updating window title.
 
-![Screenshot](asset/Screenshot.png)
+![Image similarity comparison](asset/Screenshot1.png)
+
+![Video similarity comparison](asset/Screenshot2.png)
+
+![Browse mode — file list with preview](asset/Screenshot3.png)
 
 ## Build (macOS only)
 

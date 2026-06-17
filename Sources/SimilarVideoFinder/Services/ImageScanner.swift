@@ -14,7 +14,7 @@ struct ImageScanner: Sendable {
     typealias ImageLoader = @Sendable (URL) async throws -> MediaItem
 
     static let supportedExtensions: Set<String> = [
-        "jpg", "jpeg", "png", "heic", "webp", "tif", "tiff", "gif", "bmp"
+        "jpg", "jpeg", "png", "heic", "heif", "webp", "tif", "tiff", "gif", "bmp"
     ]
 
     private let maxConcurrentLoads: Int
