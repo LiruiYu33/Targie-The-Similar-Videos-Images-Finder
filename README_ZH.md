@@ -1,6 +1,6 @@
 # Targie
 
-[English](README.md)
+[English](README.md) | [繁體中文](README_ZH_HANT.md) | [Español](README_ES.md) | [Français](README_FR.md)
 
 > **仅支持 macOS。** Targie 是一款原生 macOS 14+ 应用，没有 Windows 或 Linux 版本，也不计划提供。
 

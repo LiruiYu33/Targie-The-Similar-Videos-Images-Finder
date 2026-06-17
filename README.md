@@ -1,6 +1,6 @@
 # Targie
 
-[简体中文](README_ZH.md)
+[简体中文](README_ZH.md) | [繁體中文](README_ZH_HANT.md) | [Español](README_ES.md) | [Français](README_FR.md)
 
 > **macOS only.** Targie is a native macOS 14+ application. There is no Windows or Linux build, and none is planned.
 
