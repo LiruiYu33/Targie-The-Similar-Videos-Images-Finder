@@ -86,11 +86,20 @@ struct BrowseView: View {
         .background(WindowTitleUpdater(title: L10n.browseItemCount(browseModel.displayedItems.count, language)))
         .toolbar {
             ToolbarItemGroup {
-                ToolbarLabeledButton(
-                    title: L10n.back(language),
-                    systemImage: "chevron.left",
-                    action: onBack
-                )
+                if browseModel.isBatchSelectionMode {
+                    ToolbarLabeledButton(
+                        title: L10n.done(language),
+                        systemImage: "checkmark"
+                    ) {
+                        browseModel.toggleBatchSelectionMode()
+                    }
+                } else {
+                    ToolbarLabeledButton(
+                        title: L10n.back(language),
+                        systemImage: "chevron.left",
+                        action: onBack
+                    )
+                }
 
                 ToolbarLabeledButton(
                     title: L10n.filter(language),
@@ -104,13 +113,15 @@ struct BrowseView: View {
                     BrowseFilterPopover(browseModel: browseModel)
                 }
 
-                ToolbarLabeledButton(
-                    title: browseModel.isBatchSelectionMode ? L10n.done(language) : L10n.select(language),
-                    systemImage: browseModel.isBatchSelectionMode ? "checklist.checked" : "checklist"
-                ) {
-                    browseModel.toggleBatchSelectionMode()
+                if !browseModel.isBatchSelectionMode {
+                    ToolbarLabeledButton(
+                        title: L10n.select(language),
+                        systemImage: "checklist"
+                    ) {
+                        browseModel.toggleBatchSelectionMode()
+                    }
+                    .disabled(browseModel.displayedItems.isEmpty)
                 }
-                .disabled(browseModel.displayedItems.isEmpty)
 
                 if browseModel.isBatchSelectionMode {
                     ToolbarLabeledButton(

@@ -183,11 +183,12 @@ struct BrowseStackedPreview: View {
 
 struct BrowseMediaPreview: View {
     let media: MediaItem
+    @AppStorage("browsePreviewPlayerVolume") private var playerVolume = 0.5
 
     var body: some View {
         Group {
             if media.kind == .video {
-                NativeVideoPlayerView(url: media.url, fallbackData: media.thumbnailData)
+                NativeVideoPlayerView(url: media.url, fallbackData: media.thumbnailData, volume: $playerVolume)
                     .aspectRatio(16 / 9, contentMode: .fit)
             } else if let data = media.thumbnailData, let image = NSImage(data: data) {
                 Image(nsImage: image)
@@ -221,40 +222,69 @@ struct BrowseMediaPreview: View {
 struct NativeVideoPlayerView: NSViewRepresentable {
     let url: URL
     let fallbackData: Data?
+    @Binding var volume: Double
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .inline
+        view.allowsPictureInPicturePlayback = true
         view.player = nil
         return view
     }
 
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        context.coordinator.volume = $volume
+        context.coordinator.playerView = nsView
+
         // Only swap the player when the URL actually changes
         let currentURL = context.coordinator.currentURL
-        guard currentURL != url else { return }
+        guard currentURL != url else {
+            nsView.player?.volume = Float(volume)
+            return
+        }
         context.coordinator.currentURL = url
+        context.coordinator.removeVolumeObservation()
 
         if FileManager.default.fileExists(atPath: url.path) {
             let item = AVPlayerItem(url: url)
             let player = AVPlayer(playerItem: item)
-            player.volume = 0.5
+            player.volume = Float(volume)
             nsView.player = player
+            context.coordinator.observeVolume(on: player)
         } else {
             nsView.player = nil
         }
     }
 
     static func dismantleNSView(_ nsView: AVPlayerView, coordinator: Coordinator) {
+        coordinator.removeVolumeObservation()
         nsView.player?.pause()
         nsView.player = nil
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(volume: $volume)
     }
 
     class Coordinator {
         var currentURL: URL?
+        var volume: Binding<Double>
+        weak var playerView: AVPlayerView?
+        private var volumeObservation: NSKeyValueObservation?
+
+        init(volume: Binding<Double>) {
+            self.volume = volume
+        }
+
+        func observeVolume(on player: AVPlayer) {
+            volumeObservation = player.observe(\.volume, options: [.new]) { player, _ in
+                UserDefaults.standard.set(Double(player.volume), forKey: "browsePreviewPlayerVolume")
+            }
+        }
+
+        func removeVolumeObservation() {
+            volumeObservation?.invalidate()
+            volumeObservation = nil
+        }
     }
 }
