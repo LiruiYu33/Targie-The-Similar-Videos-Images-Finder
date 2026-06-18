@@ -226,8 +226,7 @@ struct NativeVideoPlayerView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
-        view.controlsStyle = .inline
-        view.allowsPictureInPicturePlayback = true
+        NativeVideoPlayerConfigurator.configure(view)
         view.player = nil
         return view
     }
@@ -286,5 +285,14 @@ struct NativeVideoPlayerView: NSViewRepresentable {
             volumeObservation?.invalidate()
             volumeObservation = nil
         }
+    }
+}
+
+@MainActor
+enum NativeVideoPlayerConfigurator {
+    static func configure(_ view: AVPlayerView) {
+        view.controlsStyle = .inline
+        view.allowsPictureInPicturePlayback = true
+        view.showsFullScreenToggleButton = true
     }
 }

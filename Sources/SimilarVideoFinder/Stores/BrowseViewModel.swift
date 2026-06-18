@@ -81,6 +81,7 @@ final class BrowseViewModel: ObservableObject {
     @Published var selectedResolutionPreset: ResolutionPreset? { didSet { recomputeDisplayedItems() } }
     @Published var manualWidth: String = "" { didSet { recomputeDisplayedItems() } }
     @Published var manualHeight: String = "" { didSet { recomputeDisplayedItems() } }
+    @Published var searchText: String = "" { didSet { recomputeDisplayedItems() } }
     @Published var selectedMediaIDs: Set<UUID> = []
     @Published var primarySelectionID: UUID?
     @Published var selectionAnchorID: UUID?
@@ -111,6 +112,9 @@ final class BrowseViewModel: ObservableObject {
     // MARK: - Displayed items computation
 
     private func recomputeDisplayedItems(bumpSortVersion: Bool = false) {
+        let previousDisplayedItems = displayedItems
+        let previousSelectedIDs = selectedMediaIDs
+        let previousPrimarySelectionID = effectivePrimarySelectionID ?? primarySelectionID
         var items = scanModel.items
 
         // Media type filter
@@ -118,6 +122,14 @@ final class BrowseViewModel: ObservableObject {
         case .all: break
         case .images: items = items.filter { $0.kind == .image }
         case .videos: items = items.filter { $0.kind == .video }
+        }
+
+        let searchQuery = normalizedSearchText
+        if !searchQuery.isEmpty {
+            items = items.filter { item in
+                item.filename.localizedCaseInsensitiveContains(searchQuery)
+                    || item.url.path.localizedCaseInsensitiveContains(searchQuery)
+            }
         }
 
         // Resolution filter
@@ -152,7 +164,11 @@ final class BrowseViewModel: ObservableObject {
         }
 
         displayedItems = items
-        pruneSelection()
+        pruneSelection(
+            previousDisplayedItems: previousDisplayedItems,
+            previousSelectedIDs: previousSelectedIDs,
+            previousPrimarySelectionID: previousPrimarySelectionID
+        )
         if bumpSortVersion {
             sortVersion &+= 1
         }
@@ -198,6 +214,10 @@ final class BrowseViewModel: ObservableObject {
         if let w, w > 0 { return w }
         if let h, h > 0 { return h }
         return nil
+    }
+
+    private var normalizedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Actions
@@ -271,9 +291,26 @@ final class BrowseViewModel: ObservableObject {
         return newSelection.first
     }
 
-    private func pruneSelection() {
+    private func pruneSelection(
+        previousDisplayedItems: [MediaItem] = [],
+        previousSelectedIDs: Set<UUID>? = nil,
+        previousPrimarySelectionID: UUID? = nil
+    ) {
         let displayedIDs = Set(displayedItems.map(\.id))
+        let selectedIDsBeforePruning = selectedMediaIDs
         selectedMediaIDs.formIntersection(displayedIDs)
+        if selectedMediaIDs.isEmpty,
+           let fallbackID = fallbackSelectionID(
+               previousDisplayedItems: previousDisplayedItems,
+               previousSelectedIDs: previousSelectedIDs ?? selectedIDsBeforePruning,
+               previousPrimarySelectionID: previousPrimarySelectionID,
+               displayedIDs: displayedIDs
+           ) {
+            selectedMediaIDs = [fallbackID]
+            primarySelectionID = fallbackID
+            selectionAnchorID = fallbackID
+            return
+        }
         if let primarySelectionID, !selectedMediaIDs.contains(primarySelectionID) {
             self.primarySelectionID = displayedItems.first { selectedMediaIDs.contains($0.id) }?.id
         }
@@ -284,6 +321,41 @@ final class BrowseViewModel: ObservableObject {
             primarySelectionID = nil
             selectionAnchorID = nil
         }
+    }
+
+    private func fallbackSelectionID(
+        previousDisplayedItems: [MediaItem],
+        previousSelectedIDs: Set<UUID>,
+        previousPrimarySelectionID: UUID?,
+        displayedIDs: Set<UUID>
+    ) -> UUID? {
+        guard !previousSelectedIDs.isEmpty, !displayedItems.isEmpty else { return nil }
+        let removedSelectedIDs = previousSelectedIDs.subtracting(displayedIDs)
+        guard !removedSelectedIDs.isEmpty else { return nil }
+
+        let removedIndex: Int?
+        if let previousPrimarySelectionID,
+           removedSelectedIDs.contains(previousPrimarySelectionID),
+           let primaryIndex = previousDisplayedItems.firstIndex(where: { $0.id == previousPrimarySelectionID }) {
+            removedIndex = primaryIndex
+        } else {
+            removedIndex = previousDisplayedItems.firstIndex { removedSelectedIDs.contains($0.id) }
+        }
+
+        guard let removedIndex else { return displayedItems.first?.id }
+
+        if let nextID = previousDisplayedItems
+            .dropFirst(removedIndex + 1)
+            .first(where: { displayedIDs.contains($0.id) })?
+            .id {
+            return nextID
+        }
+
+        return previousDisplayedItems
+            .prefix(removedIndex)
+            .reversed()
+            .first(where: { displayedIDs.contains($0.id) })?
+            .id ?? displayedItems.first?.id
     }
 
     func toggleSort(field: SortField) {
@@ -308,6 +380,6 @@ final class BrowseViewModel: ObservableObject {
     }
 
     var hasActiveFilter: Bool {
-        mediaFilter != .all || resolutionThreshold != nil
+        mediaFilter != .all || resolutionThreshold != nil || !normalizedSearchText.isEmpty
     }
 }

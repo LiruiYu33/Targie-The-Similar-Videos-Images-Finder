@@ -52,7 +52,7 @@ final class ScanViewModel: ObservableObject {
 
     @Published var selectedFolders: [URL] = []
     @Published var threshold = 0.88 {
-        didSet { rebuildGroups() }
+        didSet { rebuildGroups(preserving: groups) }
     }
     @Published private(set) var groups: [SimilarityGroup] = []
     @Published var selectedGroupID: UUID?
@@ -329,7 +329,7 @@ final class ScanViewModel: ObservableObject {
             } catch { failures.append("\(media.filename): \(error.localizedDescription)") }
         }
         preserveGroupContinuity(groupsBeforeDeletion, deletedIDs: deletedIDs)
-        rebuildGroups()
+        rebuildGroups(preserving: groupsBeforeDeletion)
         deletePrompt = nil
         if !failures.isEmpty { presentedError = .message(failures.joined(separator: "\n")) }
     }
@@ -348,10 +348,12 @@ final class ScanViewModel: ObservableObject {
     /// Remove a media item from allItems (and related relations/groups).
     /// Used after deletion from Browse mode.
     func removeItem(_ id: UUID) {
+        let groupsBeforeRemoval = groups
         allItems.removeAll { $0.id == id }
         allRelations.removeAll { $0.contains(id) }
         checkedMediaIDs.remove(id)
-        rebuildGroups()
+        preserveGroupContinuity(groupsBeforeRemoval, deletedIDs: [id])
+        rebuildGroups(preserving: groupsBeforeRemoval)
     }
 
     func replaceResultsForTesting(items: [MediaItem], relations: [SimilarityRelation]) {
@@ -364,10 +366,18 @@ final class ScanViewModel: ObservableObject {
         presentedError?.localizedDescription(language)
     }
 
-    private func rebuildGroups() {
-        groups = SimilarityGrouper.groups(items: allItems, relations: allRelations, threshold: threshold)
+    private func rebuildGroups(preserving previousGroups: [SimilarityGroup]? = nil) {
+        let rebuilt = SimilarityGrouper.groups(items: allItems, relations: allRelations, threshold: threshold)
+        groups = groupsByPreservingStableIDs(rebuilt, previousGroups: previousGroups ?? groups)
         checkedMediaIDs.formIntersection(Set(allItems.map(\.id)))
-        if !groups.contains(where: { $0.id == selectedGroupID }) { selectFirstAvailable() }
+        if let selectedGroupID, groups.contains(where: { $0.id == selectedGroupID }) {
+            if let selectedMediaID, selectedGroup?.items.contains(where: { $0.id == selectedMediaID }) == true {
+                return
+            }
+            selectedMediaID = selectedGroup?.items.first?.id
+        } else {
+            selectFirstAvailable()
+        }
     }
 
     private func publish(items: [MediaItem], relations: [SimilarityRelation]) {
@@ -396,6 +406,32 @@ final class ScanViewModel: ObservableObject {
     private func uniqueItemsByURL(_ items: [MediaItem]) -> [MediaItem] {
         var seen = Set<String>()
         return items.filter { seen.insert($0.url.standardizedFileURL.path).inserted }
+    }
+
+    private func groupsByPreservingStableIDs(
+        _ rebuiltGroups: [SimilarityGroup],
+        previousGroups: [SimilarityGroup]
+    ) -> [SimilarityGroup] {
+        guard !previousGroups.isEmpty else { return rebuiltGroups }
+        var availablePreviousGroups = previousGroups
+
+        return rebuiltGroups.map { group in
+            let groupItemIDs = Set(group.items.map(\.id))
+            var bestMatch: (index: Int, overlap: Int)?
+
+            for (index, previousGroup) in availablePreviousGroups.enumerated() where previousGroup.kind == group.kind {
+                let previousItemIDs = Set(previousGroup.items.map(\.id))
+                let overlap = groupItemIDs.intersection(previousItemIDs).count
+                guard overlap >= 2 else { continue }
+                if bestMatch == nil || overlap > bestMatch!.overlap {
+                    bestMatch = (index, overlap)
+                }
+            }
+
+            guard let bestMatch else { return group }
+            let previousGroup = availablePreviousGroups.remove(at: bestMatch.index)
+            return SimilarityGroup(id: previousGroup.id, items: group.items, relations: group.relations)
+        }
     }
 
     private func preserveGroupContinuity(_ previousGroups: [SimilarityGroup], deletedIDs: Set<UUID>) {

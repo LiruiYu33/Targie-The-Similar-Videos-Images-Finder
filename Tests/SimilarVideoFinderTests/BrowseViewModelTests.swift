@@ -112,4 +112,64 @@ final class BrowseViewModelTests: XCTestCase {
         XCTAssertFalse(BrowseViewModel.SortField.fileSize.isResolution)
         XCTAssertFalse(BrowseViewModel.SortField.modifiedTime.isResolution)
     }
+
+    func testSearchTextFiltersDisplayedItemsByFilenameAndPath() {
+        let scanModel = ScanViewModel(hashCache: nil)
+        let holiday = MediaItem(
+            kind: .video,
+            url: URL(fileURLWithPath: "/tmp/camera/HolidayClip.mov"),
+            fileSize: 1000,
+            duration: 10,
+            width: 1920,
+            height: 1080,
+            modifiedAt: nil,
+            thumbnailData: nil
+        )
+        let nested = MediaItem(
+            kind: .video,
+            url: URL(fileURLWithPath: "/tmp/client-project/raw/take.mov"),
+            fileSize: 1000,
+            duration: 10,
+            width: 1920,
+            height: 1080,
+            modifiedAt: nil,
+            thumbnailData: nil
+        )
+        let unrelated = makeItem(name: "notes.mov", width: 1920, height: 1080)
+        scanModel.replaceResultsForTesting(items: [holiday, nested, unrelated], relations: [])
+        let browse = BrowseViewModel(scanModel: scanModel)
+
+        browse.searchText = "holiday"
+        XCTAssertEqual(browse.displayedItems.map(\.id), [holiday.id])
+
+        browse.searchText = "client-project"
+        XCTAssertEqual(browse.displayedItems.map(\.id), [nested.id])
+    }
+
+    func testDeletingSelectedItemSelectsNextDisplayedItem() async throws {
+        let first = makeItem(name: "a.mov", width: 1920, height: 1080)
+        let second = makeItem(name: "b.mov", width: 1920, height: 1080)
+        let third = makeItem(name: "c.mov", width: 1920, height: 1080)
+        let scanModel = ScanViewModel(hashCache: nil)
+        scanModel.replaceResultsForTesting(items: [first, second, third], relations: [])
+        let browse = BrowseViewModel(scanModel: scanModel)
+        browse.selectMedia(second.id)
+
+        scanModel.removeItem(second.id)
+        try await waitUntil { browse.displayedItems.map(\.id) == [first.id, third.id] }
+
+        XCTAssertEqual(browse.primarySelectedID, third.id)
+        XCTAssertEqual(browse.selectedMediaIDs, [third.id])
+    }
+
+    private func waitUntil(
+        timeoutIterations: Int = 200,
+        condition: () -> Bool
+    ) async throws {
+        for _ in 0..<timeoutIterations {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Timed out waiting for browse state")
+    }
 }

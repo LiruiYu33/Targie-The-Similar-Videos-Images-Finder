@@ -160,6 +160,7 @@ enum L10n {
     static func noItemsToBrowse(_ l: AppLanguage) -> String { text(l, "No Items to Browse", "无可浏览的文件", "沒有可瀏覽的檔案", "No hay elementos para explorar", "Aucun élément à parcourir") }
     static func noItemsBrowseHint(_ l: AppLanguage) -> String { text(l, "Add folders and browse to see files.", "添加文件夹并浏览以查看文件。", "新增資料夾並瀏覽以查看檔案。", "Añade carpetas y explora para ver archivos.", "Ajoutez des dossiers et parcourez-les pour voir les fichiers.") }
     static func discoveringFiles(_ l: AppLanguage) -> String { text(l, "Discovering files…", "正在发现文件…", "正在搜尋檔案…", "Buscando archivos…", "Recherche de fichiers…") }
+    static func searchFiles(_ l: AppLanguage) -> String { text(l, "Search files", "搜索文件", "搜尋檔案", "Buscar archivos", "Rechercher des fichiers") }
 
     // Resolution sort
     static func resolutionSort(_ l: AppLanguage) -> String { text(l, "Resolution Sort", "分辨率排序", "解析度排序", "Ordenar por resolución", "Tri par résolution") }

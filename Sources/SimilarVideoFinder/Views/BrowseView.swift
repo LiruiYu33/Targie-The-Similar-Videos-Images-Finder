@@ -84,6 +84,7 @@ struct BrowseView: View {
         }
         .coordinateSpace(name: "browseSplit")
         .background(WindowTitleUpdater(title: L10n.browseItemCount(browseModel.displayedItems.count, language)))
+        .searchable(text: $browseModel.searchText, placement: .toolbar, prompt: Text(L10n.searchFiles(language)))
         .toolbar {
             ToolbarItemGroup {
                 if browseModel.isBatchSelectionMode {
