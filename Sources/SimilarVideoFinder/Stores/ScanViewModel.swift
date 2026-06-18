@@ -52,7 +52,21 @@ final class ScanViewModel: ObservableObject {
 
     @Published var selectedFolders: [URL] = []
     @Published var threshold = 0.88 {
-        didSet { rebuildGroups(preserving: groups) }
+        didSet { scheduleThresholdRebuild() }
+    }
+
+    /// Coalesces threshold-driven group rebuilds so dragging the slider does
+    /// not recompute groups on every intermediate value (which freezes the UI
+    /// on large libraries). The rebuild fires shortly after the last change.
+    private var thresholdRebuildTask: Task<Void, Never>?
+
+    private func scheduleThresholdRebuild() {
+        thresholdRebuildTask?.cancel()
+        thresholdRebuildTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            self?.rebuildGroups(preserving: self?.groups ?? [])
+        }
     }
     @Published private(set) var groups: [SimilarityGroup] = []
     @Published var selectedGroupID: UUID?
@@ -176,15 +190,8 @@ final class ScanViewModel: ObservableObject {
                 var relations: [SimilarityRelation] = []
                 var scanIssues: [ScanIssue] = []
                 if scanMode != .images {
-                    var videos: [MediaItem] = []
-                    for folder in folders {
-                        try Task.checkCancellation()
-                        let scanned = try await scanner.scan(folder: folder) { [weak self] update in await MainActor.run { self?.progress = update } }
-                        videos.append(contentsOf: scanned.videos)
-                        scanIssues.append(contentsOf: scanned.issues)
-                    }
-                    videos = uniqueItemsByURL(videos)
-                    issues = scanIssues
+                    let (videos, videoIssues) = try await scanFolders(folders, load: loadVideos(folder:))
+                    scanIssues.append(contentsOf: videoIssues)
                     try Task.checkCancellation()
                     let result = try await pipeline.process(videos: videos, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
                     items.append(contentsOf: result.videos)
@@ -192,15 +199,8 @@ final class ScanViewModel: ObservableObject {
                     publish(items: items, relations: relations)
                 }
                 if scanMode != .videos {
-                    var images: [MediaItem] = []
-                    for folder in folders {
-                        try Task.checkCancellation()
-                        let scanned = try await imageScanner.scan(folder: folder) { [weak self] update in await MainActor.run { self?.progress = update } }
-                        images.append(contentsOf: scanned.images)
-                        scanIssues.append(contentsOf: scanned.issues)
-                    }
-                    images = uniqueItemsByURL(images)
-                    issues = scanIssues
+                    let (images, imageIssues) = try await scanFolders(folders, load: loadImages(folder:))
+                    scanIssues.append(contentsOf: imageIssues)
                     try Task.checkCancellation()
                     let result = try await imagePipeline.process(images: images, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
                     items.append(contentsOf: result.images)
@@ -208,10 +208,9 @@ final class ScanViewModel: ObservableObject {
                     publish(items: items, relations: relations)
                 }
                 try Task.checkCancellation()
-                allItems = items
-                allRelations = relations
-                groups = SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
-                selectFirstAvailable()
+                // `publish` already wrote the final combined items/relations/groups,
+                // so only the progress and cache cleanup remain here.
+                issues = scanIssues
                 progress = ScanProgress(stage: .completed, fraction: 1, discoveredCount: items.count)
 
                 // 清理缓存中已不存在的视频条目
@@ -227,6 +226,38 @@ final class ScanViewModel: ObservableObject {
                 progress = ScanProgress(stage: .idle)
             }
         }
+    }
+
+    /// Scans every folder with the given loader, deduping items by URL and
+    /// collecting issues. Shared by `startScan` and `discoverFiles` so the
+    /// folder-iteration/cancellation/progress logic lives in one place.
+    private func scanFolders(
+        _ folders: [URL],
+        load: (URL) async throws -> (items: [MediaItem], issues: [ScanIssue])
+    ) async throws -> (items: [MediaItem], issues: [ScanIssue]) {
+        var items: [MediaItem] = []
+        var issues: [ScanIssue] = []
+        for folder in folders {
+            try Task.checkCancellation()
+            let result = try await load(folder)
+            items.append(contentsOf: result.items)
+            issues.append(contentsOf: result.issues)
+        }
+        return (uniqueItemsByURL(items), issues)
+    }
+
+    private func loadVideos(folder: URL) async throws -> (items: [MediaItem], issues: [ScanIssue]) {
+        let scanned = try await scanner.scan(folder: folder) { [weak self] update in
+            await MainActor.run { self?.progress = update }
+        }
+        return (scanned.videos, scanned.issues)
+    }
+
+    private func loadImages(folder: URL) async throws -> (items: [MediaItem], issues: [ScanIssue]) {
+        let scanned = try await imageScanner.scan(folder: folder) { [weak self] update in
+            await MainActor.run { self?.progress = update }
+        }
+        return (scanned.images, scanned.issues)
     }
 
     func cancelScan() {
@@ -247,26 +278,20 @@ final class ScanViewModel: ObservableObject {
             guard let self else { return }
             do {
                 var items: [MediaItem] = []
+                var scanIssues: [ScanIssue] = []
                 if scanMode != .images {
-                    for folder in folders {
-                        try Task.checkCancellation()
-                        let result = try await scanner.scan(folder: folder) { [weak self] update in
-                            await MainActor.run { self?.progress = update }
-                        }
-                        items.append(contentsOf: result.videos)
-                    }
+                    let (videos, videoIssues) = try await scanFolders(folders, load: loadVideos(folder:))
+                    items.append(contentsOf: videos)
+                    scanIssues.append(contentsOf: videoIssues)
                 }
                 if scanMode != .videos {
-                    for folder in folders {
-                        try Task.checkCancellation()
-                        let result = try await imageScanner.scan(folder: folder) { [weak self] update in
-                            await MainActor.run { self?.progress = update }
-                        }
-                        items.append(contentsOf: result.images)
-                    }
+                    let (images, imageIssues) = try await scanFolders(folders, load: loadImages(folder:))
+                    items.append(contentsOf: images)
+                    scanIssues.append(contentsOf: imageIssues)
                 }
-                items = uniqueItemsByURL(items)
+                try Task.checkCancellation()
                 allItems = items
+                issues = scanIssues
                 progress = ScanProgress(stage: .completed, fraction: 1, discoveredCount: items.count)
             } catch is CancellationError {
                 progress = ScanProgress(stage: .cancelled)
