@@ -60,9 +60,12 @@ let glassTint = CGColor(red: 0.92, green: 0.92, blue: 0.92, alpha: 1.0)
 // MARK: - Background tile (flat fill + liquid-glass layers)
 
 let tileRect = CGRect(x: 0, y: 0, width: size, height: size)
-let cornerRadius: CGFloat = size * 0.225  // matches Big Sur+ app-icon corner
-
-let tilePath = CGPath(roundedRect: tileRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+// macOS applies its own squircle mask to the .icns at render time. We fill
+// the background across the entire square canvas (no rounded-rect path, no
+// transparent corners) so no view — including Finder list view and Quick
+// Look, which may not apply the mask at small sizes — can show the desktop
+// color bleeding through a transparent margin as a gray frame.
+let cornerRadius: CGFloat = size * 0.225  // used only for the inner edge rim
 
 // Build a CGGradient from the glass tint at one alpha to the same tint at
 // another alpha. Keeps the liquid-glass layers subtle and flat in spirit.
@@ -77,8 +80,10 @@ func glassGradient(fromAlpha a0: CGFloat, toAlpha a1: CGFloat) -> CGGradient {
 }
 
 context.saveGState()
-context.addPath(tilePath)
-context.clip()
+// Clip to the full square (the system squircle mask rounds the corners);
+// drawing a rounded-rect here would leave transparent corners that show
+// through as gray in Finder list view.
+context.clip(to: tileRect)
 
 // Base flat fill
 context.setFillColor(tileColor)
