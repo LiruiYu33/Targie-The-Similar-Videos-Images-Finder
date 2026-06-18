@@ -46,15 +46,13 @@ context.setShouldAntialias(true)
 context.interpolationQuality = .high
 
 // MARK: - Safe-area padding
-// macOS app icons must keep the artwork centered within ~80% of the canvas,
-// leaving a transparent margin. Without this, runtime icons assigned via
-// NSApplication.shared.applicationIconImage fill the full tile and render
-// oversized in the Dock / app switcher (which don't apply a system mask).
-// We scale the entire drawing into a centered 82% inset and keep the area
-// outside transparent.
-let artworkScale: CGFloat = 0.82
-context.translateBy(x: size * (1 - artworkScale) / 2, y: size * (1 - artworkScale) / 2)
-context.scaleBy(x: artworkScale, y: artworkScale)
+// Only the *artwork* (video frames + magnifying glass) is scaled into a
+// centered ~82% inset so it doesn't crowd the tile edges. The background
+// tile itself fills the entire canvas — the system applies the squircle
+// mask for the Dock / app switcher, and a full-bleed background avoids a
+// transparent margin that would show through as a gray frame in Quick Look
+// (which previews the icon image directly, without any mask).
+let artworkScale: CGFloat = 0.90
 
 let tileColor = CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
 let glassTint = CGColor(red: 0.92, green: 0.92, blue: 0.92, alpha: 1.0)
@@ -126,6 +124,12 @@ context.restoreGState()
 
 context.restoreGState()
 
+// MARK: - Artwork (scaled into the centered safe-area inset)
+
+context.saveGState()
+context.translateBy(x: size * (1 - artworkScale) / 2, y: size * (1 - artworkScale) / 2)
+context.scaleBy(x: artworkScale, y: artworkScale)
+
 // MARK: - Two overlapping video frames
 
 func drawVideoFrame(center: CGPoint, frameSize: CGSize, rotation: CGFloat, fill: CGColor, stroke: CGColor) {
@@ -167,7 +171,7 @@ func drawVideoFrame(center: CGPoint, frameSize: CGSize, rotation: CGFloat, fill:
     context.restoreGState()
 }
 
-let frameW: CGFloat = size * 0.46
+let frameW: CGFloat = size * 0.52
 let frameH: CGFloat = frameW * 9.0 / 16.0  // 16:9 video frame
 
 // Back frame: cool teal, tilted left, slightly higher
@@ -242,6 +246,7 @@ context.setLineCap(.round)
 context.strokePath()
 
 context.restoreGState()  // pop the glass shadow
+context.restoreGState()  // pop the artwork safe-area scale
 
 // MARK: - Write PNG
 
