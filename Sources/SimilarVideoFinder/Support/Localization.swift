@@ -170,6 +170,8 @@ enum L10n {
     static func sortByWidth(_ l: AppLanguage) -> String { text(l, "Width (left)", "宽度（左）", "寬度（左）", "Ancho (izquierda)", "Largeur (gauche)") }
     static func sortByHeight(_ l: AppLanguage) -> String { text(l, "Height (right)", "高度（右）", "高度（右）", "Alto (derecha)", "Hauteur (droite)") }
     static func sortDirection(_ l: AppLanguage) -> String { text(l, "Direction", "方向", "方向", "Dirección", "Sens") }
+    static func sort(_ l: AppLanguage) -> String { text(l, "Sort", "排序", "排序", "Ordenar", "Trier") }
+    static func sortSimilarity(_ l: AppLanguage) -> String { text(l, "Similarity", "相似度", "相似度", "Similitud", "Similarité") }
     static func ascending(_ l: AppLanguage) -> String { text(l, "Ascending", "升序", "升冪", "Ascendente", "Croissant") }
     static func descending(_ l: AppLanguage) -> String { text(l, "Descending", "降序", "降冪", "Descendente", "Décroissant") }
 

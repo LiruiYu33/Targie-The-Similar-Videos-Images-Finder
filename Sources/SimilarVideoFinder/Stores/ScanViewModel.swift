@@ -28,6 +28,17 @@ enum DeletePromptStep: Equatable {
     case confirmingPermanent
 }
 
+/// Sort dimension for the cards within a single similar group (Compare Media).
+/// Mirrors `BrowseViewModel.SortField` but adds `similarity` and `duration`,
+/// which only make sense within a group.
+enum GroupSortField: String, CaseIterable, Identifiable, Sendable {
+    case similarity, fileSize, name, duration, resolutionWidth, resolutionHeight
+    var id: String { rawValue }
+
+    /// Whether this field sorts by a resolution dimension (width or height).
+    var isResolution: Bool { self == .resolutionWidth || self == .resolutionHeight }
+}
+
 struct DeletePrompt: Identifiable, Equatable {
     let id = UUID()
     let media: [MediaItem]
@@ -71,6 +82,25 @@ final class ScanViewModel: ObservableObject {
     @Published private(set) var groups: [SimilarityGroup] = []
     @Published var selectedGroupID: UUID?
     @Published var selectedMediaID: UUID?
+
+    /// Sort order for the cards within the selected group (Compare Media).
+    /// Default is similarity descending: the most-similar item surfaces first,
+    /// which fits the "pick a keeper, delete the rest" workflow.
+    @Published var groupSortField: GroupSortField = .similarity {
+        didSet { recomputeSortedGroupItems() }
+    }
+    @Published var groupSortAscending = false {
+        didSet { recomputeSortedGroupItems() }
+    }
+
+    /// Cached sort of the selected group's items. Stored (not computed) so the
+    /// Compare Media grid reads a stable array identity across unrelated model
+    /// changes — e.g. dragging the display threshold fires `objectWillChange`
+    /// every frame, and a computed `sortedItems` would hand `ForEach` a fresh
+    /// array each frame, rebuilding every card (each decoding its thumbnail
+    /// from disk) and freezing the UI. Refreshed only when the selected group,
+    /// its contents, or the sort field/direction actually change.
+    @Published private(set) var sortedGroupItems: [MediaItem] = []
     @Published private(set) var progress = ScanProgress()
     @Published private(set) var issues: [ScanIssue] = []
     @Published var presentedError: PresentedError?
@@ -319,6 +349,70 @@ final class ScanViewModel: ObservableObject {
     func selectGroup(_ id: UUID?) {
         selectedGroupID = id
         selectedMediaID = selectedGroup?.items.first?.id
+        recomputeSortedGroupItems()
+    }
+
+    /// Recomputes `sortedGroupItems` from the currently selected group. Cheap
+    /// (one group's worth of items), and called only when the selected group,
+    /// its contents, or the sort field/direction change — never on every frame
+    /// of an unrelated change like dragging the display threshold.
+    private func recomputeSortedGroupItems() {
+        guard let group = selectedGroup else {
+            sortedGroupItems = []
+            return
+        }
+        sortedGroupItems = sorted(group.items, in: group)
+    }
+
+    /// Sorts `items` by the current Compare Media field and direction. Uses a
+    /// filename-sorted base so equal keys stay stable.
+    private func sorted(_ items: [MediaItem], in group: SimilarityGroup) -> [MediaItem] {
+        // Stable base order, then stable-sort by the primary key.
+        let base = items.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+        let ascending = groupSortAscending
+        let primary: (MediaItem, MediaItem) -> Bool
+        switch groupSortField {
+        case .similarity:
+            primary = { group.score(for: $0.id) < group.score(for: $1.id) }
+        case .fileSize:
+            primary = { $0.fileSize < $1.fileSize }
+        case .name:
+            primary = { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+        case .duration:
+            primary = { ($0.duration ?? 0) < ($1.duration ?? 0) }
+        case .resolutionWidth:
+            primary = { $0.width < $1.width }
+        case .resolutionHeight:
+            primary = { $0.height < $1.height }
+        }
+        // Swift's sort isn't guaranteed stable; emulate by ignoring order when
+        // the primary key ties (falls through to the `base` order). Direction is
+        // applied by flipping the comparator (not by reversing the array), so
+        // tied items always keep their filename-ascending order regardless of
+        // ascending vs descending — reversing the array would also flip ties,
+        // which reads as random.
+        return base.sorted { a, b in
+            let less = primary(a, b)
+            let greater = primary(b, a)
+            if less == greater {
+                return false // tie → keep base order
+            }
+            return ascending ? less : greater
+        }
+    }
+
+    /// Toggles a Compare Media sort field: selecting the active field flips
+    /// direction; a newly selected field starts descending (first click =
+    /// descending, second click on the same field = ascending), which surfaces
+    /// the "biggest / most-similar / longest" item at the top — the usual intent
+    /// when reviewing duplicates.
+    func toggleGroupSort(field: GroupSortField) {
+        if groupSortField == field {
+            groupSortAscending.toggle()
+        } else {
+            groupSortField = field
+            groupSortAscending = false
+        }
     }
 
     func requestDeletion(of media: MediaItem) {
@@ -401,42 +495,48 @@ final class ScanViewModel: ObservableObject {
 
     private func rebuildGroups(preserving previousGroups: [SimilarityGroup]? = nil) {
         let beforeRebuild = previousGroups ?? groups
+        // Remember where the selected group sat in the visible list before the
+        // rebuild, so if it dissolves we can keep the cursor near that spot
+        // (rather than the next group by ID/old-array order, which may have
+        // reshuffled after a deletion changed scores).
+        let selectedIndexBefore = selectedGroupID.flatMap { id in
+            beforeRebuild.firstIndex(where: { $0.id == id })
+        }
         let rebuilt = SimilarityGrouper.groups(items: allItems, relations: allRelations, threshold: threshold)
         groups = groupsByPreservingStableIDs(rebuilt, previousGroups: beforeRebuild)
         checkedMediaIDs.formIntersection(Set(allItems.map(\.id)))
         if let selectedGroupID, groups.contains(where: { $0.id == selectedGroupID }) {
-            if let selectedMediaID, selectedGroup?.items.contains(where: { $0.id == selectedMediaID }) == true {
-                return
+            let stillPresent = selectedMediaID.map { id in
+                selectedGroup?.items.contains(where: { $0.id == id }) ?? false
+            } ?? false
+            if !stillPresent {
+                selectedMediaID = selectedGroup?.items.first?.id
             }
-            selectedMediaID = selectedGroup?.items.first?.id
         } else {
             // The selected group vanished (e.g. its last duplicate was deleted).
-            // Keep the user's place in the list by jumping to the nearest
-            // surviving group — the next one down, or the preceding one if
-            // there is none — rather than snapping back to the top.
-            selectNearestSurvivingGroup(previousGroups: beforeRebuild)
+            // Keep the cursor in the same place visually: jump to the group that
+            // now occupies the same list index (clamped), rather than snapping
+            // back to the top or to wherever a reshuffled ID landed.
+            selectGroupAtOrNearest(index: selectedIndexBefore)
         }
+        // Group contents may have changed (deletion, threshold drag) — refresh
+        // the cached sort so the Compare Media grid reads a stable array.
+        recomputeSortedGroupItems()
     }
 
-    private func selectNearestSurvivingGroup(previousGroups: [SimilarityGroup]) {
-        let survivingIDs = Set(groups.map(\.id))
-        guard !survivingIDs.isEmpty else {
+    /// Selects the group at `index` in the rebuilt `groups` list; if that index
+    /// is out of range (the list shrank), falls back to the last group, and if
+    /// the list is empty clears selection. Used to keep the cursor's visual
+    /// position stable when a group dissolves.
+    private func selectGroupAtOrNearest(index: Int?) {
+        guard !groups.isEmpty else {
             selectedGroupID = nil
             selectedMediaID = nil
             return
         }
-        if let selectedGroupID,
-           let index = previousGroups.firstIndex(where: { $0.id == selectedGroupID }) {
-            for group in previousGroups.dropFirst(index + 1) where survivingIDs.contains(group.id) {
-                selectGroup(group.id)
-                return
-            }
-            for group in previousGroups.prefix(index).reversed() where survivingIDs.contains(group.id) {
-                selectGroup(group.id)
-                return
-            }
-        }
-        selectFirstAvailable()
+        let clamped = min(index ?? 0, groups.count - 1)
+        let group = groups[max(0, clamped)]
+        selectGroup(group.id)
     }
 
     private func publish(items: [MediaItem], relations: [SimilarityRelation]) {
@@ -444,6 +544,7 @@ final class ScanViewModel: ObservableObject {
         allRelations = relations
         groups = SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
         selectFirstAvailable()
+        recomputeSortedGroupItems()
     }
 
     private func selectFirstAvailable() {
@@ -457,6 +558,7 @@ final class ScanViewModel: ObservableObject {
         groups = []
         selectedGroupID = nil
         selectedMediaID = nil
+        sortedGroupItems = []
         checkedMediaIDs = []
         progress = ScanProgress()
         issues = []
