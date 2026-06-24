@@ -58,7 +58,7 @@ env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 swift test
 # --- Build -------------------------------------------------------------------
 
 echo "▶ Building universal app bundle..."
-APP_BUNDLE="$(APP_VERSION="$VERSION" BUILD_NUMBER="${BUILD_NUMBER:-1}" BUILD_ARCHS=universal "$ROOT_DIR/script/build_app.sh" | tail -1)"
+APP_BUNDLE="$(APP_VERSION="$VERSION" BUILD_ARCHS=universal "$ROOT_DIR/script/build_app.sh" | tail -1)"
 
 if [ ! -d "$APP_BUNDLE" ]; then
   echo "error: build_app.sh did not produce an .app bundle (got '$APP_BUNDLE')" >&2
