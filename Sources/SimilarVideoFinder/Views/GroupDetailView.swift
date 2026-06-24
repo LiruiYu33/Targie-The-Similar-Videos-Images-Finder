@@ -43,10 +43,11 @@ struct GroupDetailView: View {
                             }
                             Text(L10n.highestSimilarity(DisplayFormatters.percent(group.maximumScore), language))
                                 .font(.callout.weight(.medium))
+                            GroupSortMenu(model: model, language: language)
                         }
 
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 14)], spacing: 14) {
-                            ForEach(group.items) { video in
+                            ForEach(model.sortedGroupItems) { video in
                                 VideoCardView(
                                     video: video,
                                     score: group.score(for: video.id),
@@ -71,5 +72,54 @@ struct GroupDetailView: View {
             }
         }
         .navigationTitle(model.selectedGroup == nil ? L10n.mediaComparison(language) : L10n.similarMediaCount(model.selectedGroup!.items.count, language))
+    }
+}
+
+/// Sort menu for the Compare Media card grid. Each dimension is a button:
+/// click to activate it (descending on first click), click again to flip to
+/// ascending — no separate direction control. The active field shows its
+/// current direction with a chevron.
+private struct GroupSortMenu: View {
+    @ObservedObject var model: ScanViewModel
+    let language: AppLanguage
+
+    var body: some View {
+        Menu {
+            ForEach(GroupSortField.allCases) { field in
+                Button {
+                    model.toggleGroupSort(field: field)
+                } label: {
+                    if model.groupSortField == field {
+                        // "Similarity ↓" / "Similarity ↑" — direction inline on the active item.
+                        Label(
+                            "\(label(for: field)) \(model.groupSortAscending ? "↑" : "↓")",
+                            systemImage: model.groupSortAscending ? "chevron.up" : "chevron.down"
+                        )
+                    } else {
+                        Text(label(for: field))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: model.groupSortAscending ? "chevron.up" : "chevron.down")
+                    .font(.caption2)
+                Text(label(for: model.groupSortField))
+                    .font(.callout.weight(.medium))
+            }
+        }
+        .menuStyle(.button)
+        .fixedSize()
+    }
+
+    private func label(for field: GroupSortField) -> String {
+        switch field {
+        case .similarity: L10n.sortSimilarity(language)
+        case .fileSize: L10n.fileSize(language)
+        case .name: L10n.name(language)
+        case .duration: L10n.duration(language)
+        case .resolutionWidth: L10n.sortByWidth(language)
+        case .resolutionHeight: L10n.sortByHeight(language)
+        }
     }
 }

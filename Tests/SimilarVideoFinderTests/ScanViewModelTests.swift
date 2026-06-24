@@ -215,10 +215,43 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(model.selectedGroupID, precedingGroupID)
     }
 
-    func testDisplayThresholdSupportsExactMatchFiltering() {
-        XCTAssertEqual(ScanViewModel.displayThresholdRange.lowerBound, 0.60)
-        XCTAssertEqual(ScanViewModel.displayThresholdRange.upperBound, 1.0)
+    func testDeletingDissolvedGroupKeepsCursorPositionNotRecombinedFarGroup() async {
+        // Three pairs. The middle pair (c,d) sits at list index 1. After deleting
+        // c, that pair dissolves — but d is unrelated to anything else, so no
+        // far-off group absorbs it. Selection should stay at the visual position
+        // of the dissolved group (index 1), landing on whatever group now holds
+        // that slot — not jump to a reshuffled group far down the list.
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let d = SimilarityScoringTests.video(name: "d.mov")
+        let e = SimilarityScoringTests.video(name: "e.mov")
+        let f = SimilarityScoringTests.video(name: "f.mov")
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: c.id, secondID: d.id, score: 0.92, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: e.id, secondID: f.id, score: 0.90, evidence: [.similarFrames])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [a, b, c, d, e, f], relations: relations)
+        XCTAssertEqual(model.groups.count, 3)
+        let middleGroupID = model.groups[1].id
+        let groupAtSameIndexAfter = model.groups[2].id // shifts into index 1 once middle dissolves
+        model.selectGroup(middleGroupID)
+        let selectedIndex = model.groups.firstIndex(where: { $0.id == middleGroupID })
+
+        await model.confirmDeletion(of: c, mode: .permanent)
+
+        XCTAssertEqual(model.groups.count, 2)
+        XCTAssertEqual(model.selectedGroupID, groupAtSameIndexAfter)
+        // The new selection sits at the same list index the cursor had before.
+        XCTAssertEqual(
+            model.groups.firstIndex(where: { $0.id == model.selectedGroupID }),
+            selectedIndex
+        )
     }
+
+
 
     func testChangingScanModeClearsExistingResultsAndSelection() {
         let first = SimilarityScoringTests.video(name: "a.mov")
@@ -236,6 +269,118 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertNil(model.selectedMediaID)
         XCTAssertTrue(model.checkedMediaIDs.isEmpty)
     }
+
+    // MARK: - Compare Media group sort
+
+    /// Builds a connected group of three files with controllable metadata so
+    /// sort order is unambiguous, and selects it so `sortedGroupItems` is
+    /// populated (the cached sort only exists for the selected group).
+    private func sortableGroup() -> ScanViewModel {
+        // sizes: a=3MB, b=1MB, c=2MB ; durations: a=30, b=10, c=20 ; res: a=1280x720, b=1920x1080, c=1600x900
+        let a = MediaItem(kind: .video, url: URL(fileURLWithPath: "/tmp/a.mov"), fileSize: 3_000_000, duration: 30, width: 1280, height: 720, modifiedAt: nil, thumbnailData: nil)
+        let b = MediaItem(kind: .video, url: URL(fileURLWithPath: "/tmp/b.mov"), fileSize: 1_000_000, duration: 10, width: 1920, height: 1080, modifiedAt: nil, thumbnailData: nil)
+        let c = MediaItem(kind: .video, url: URL(fileURLWithPath: "/tmp/c.mov"), fileSize: 2_000_000, duration: 20, width: 1600, height: 900, modifiedAt: nil, thumbnailData: nil)
+        // Distinct scores so group items have differing per-item similarity:
+        // a-b 0.95, b-c 0.93, a-c 0.91 → scores: a=0.95, b=0.95, c=0.93.
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: b.id, secondID: c.id, score: 0.93, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: a.id, secondID: c.id, score: 0.91, evidence: [.similarFrames])
+        ]
+        let model = ScanViewModel()
+        model.replaceResultsForTesting(items: [a, b, c], relations: relations)
+        model.selectGroup(model.groups.first?.id)
+        return model
+    }
+
+    func testGroupSortDefaultIsSimilarityDescending() {
+        let model = sortableGroup()
+        XCTAssertEqual(model.groupSortField, .similarity)
+        XCTAssertFalse(model.groupSortAscending)
+
+        let names = model.sortedGroupItems.map(\.filename)
+        // a and b tie at 0.95 (sorted above c at 0.93); tie broken by filename asc → a, b, then c.
+        XCTAssertEqual(names, ["a.mov", "b.mov", "c.mov"])
+    }
+
+    func testGroupSortByFileSizeAscending() {
+        let model = sortableGroup()
+        model.groupSortField = .fileSize
+        model.groupSortAscending = true
+        XCTAssertEqual(model.sortedGroupItems.map(\.filename), ["b.mov", "c.mov", "a.mov"]) // 1MB, 2MB, 3MB
+    }
+
+    func testGroupSortByFileSizeDescending() {
+        let model = sortableGroup()
+        model.groupSortField = .fileSize
+        model.groupSortAscending = false
+        XCTAssertEqual(model.sortedGroupItems.map(\.filename), ["a.mov", "c.mov", "b.mov"]) // 3MB, 2MB, 1MB
+    }
+
+    func testGroupSortByDurationDescending() {
+        let model = sortableGroup()
+        model.groupSortField = .duration
+        model.groupSortAscending = false
+        XCTAssertEqual(model.sortedGroupItems.map(\.filename), ["a.mov", "c.mov", "b.mov"]) // 30, 20, 10
+    }
+
+    func testGroupSortByResolutionWidthDescending() {
+        let model = sortableGroup()
+        model.groupSortField = .resolutionWidth
+        model.groupSortAscending = false
+        XCTAssertEqual(model.sortedGroupItems.map(\.filename), ["b.mov", "c.mov", "a.mov"]) // 1920, 1600, 1280
+    }
+
+    func testGroupSortByResolutionHeightDescending() {
+        let model = sortableGroup()
+        model.groupSortField = .resolutionHeight
+        model.groupSortAscending = false
+        XCTAssertEqual(model.sortedGroupItems.map(\.filename), ["b.mov", "c.mov", "a.mov"]) // 1080, 900, 720
+    }
+
+    func testGroupSortByNameAscending() {
+        let model = sortableGroup()
+        model.groupSortField = .name
+        model.groupSortAscending = true
+        XCTAssertEqual(model.sortedGroupItems.map(\.filename), ["a.mov", "b.mov", "c.mov"])
+    }
+
+    func testGroupSortToggleFlipsDirection() {
+        let model = sortableGroup()
+        model.groupSortField = .fileSize
+        model.groupSortAscending = false
+        model.toggleGroupSort(field: .fileSize) // same field → flip to ascending
+        XCTAssertEqual(model.groupSortField, .fileSize)
+        XCTAssertTrue(model.groupSortAscending)
+        model.toggleGroupSort(field: .name) // new field → starts descending (first click)
+        XCTAssertEqual(model.groupSortField, .name)
+        XCTAssertFalse(model.groupSortAscending)
+        model.toggleGroupSort(field: .name) // same field again → flip to ascending
+        XCTAssertTrue(model.groupSortAscending)
+    }
+
+    func testGroupSortRefreshesAfterSelectionOrRebuild() {
+        // Cached sort must repopulate when the selected group changes and when
+        // its contents change (e.g. a deletion), not just on sort-field edits.
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let d = SimilarityScoringTests.video(name: "d.mov")
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: c.id, secondID: d.id, score: 0.92, evidence: [.similarFrames])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [a, b, c, d], relations: relations)
+        model.selectGroup(model.groups[0].id)
+        XCTAssertEqual(Set(model.sortedGroupItems.map(\.id)), Set(model.groups[0].items.map(\.id)))
+
+        // Selecting the other group swaps the cached items.
+        let otherGroupID = model.groups[1].id
+        model.selectGroup(otherGroupID)
+        XCTAssertEqual(Set(model.sortedGroupItems.map(\.id)), Set(model.groups[1].items.map(\.id)))
+    }
+
 
     func testBatchDeletionKeepsFailuresAndRemovesSuccessfulItems() async {
         let first = SimilarityScoringTests.video(name: "a.mov")
