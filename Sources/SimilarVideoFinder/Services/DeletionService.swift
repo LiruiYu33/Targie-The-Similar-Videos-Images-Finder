@@ -54,12 +54,6 @@ final class DeletionService: DeletionServicing {
             switch mode {
             case .trash:
                 let resolved = url.standardizedFileURL
-                // iCloud Drive files may be evicted (placeholder-only). Force
-                // them to download so the local filesystem can properly record
-                // the Put Back metadata when the item is trashed.
-                if FileManager.default.isUbiquitousItem(at: resolved) {
-                    try FileManager.default.startDownloadingUbiquitousItem(at: resolved)
-                }
                 var coordinatorError: NSError?
                 var trashError: Error?
                 NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: resolved, options: .forDeleting, error: &coordinatorError) { coordinatedURL in
