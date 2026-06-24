@@ -51,7 +51,9 @@ echo "▶ Releasing Targie $TAG from branch '$CURRENT_BRANCH' (commit $(git rev-
 # --- Test --------------------------------------------------------------------
 
 echo "▶ Running tests..."
-swift test
+# Unset the sandbox-injected safe.bareRepository=explicit env so SwiftPM can
+# reuse its bare-cache repo for GRDB instead of re-fetching (~30s) each run.
+env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 swift test
 
 # --- Build -------------------------------------------------------------------
 
