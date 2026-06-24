@@ -96,7 +96,7 @@ printf '%s\n' \
   '<key>CFBundleName</key><string>Targie</string>' \
   '<key>CFBundleDisplayName</key><string>Targie</string>' \
   "<key>CFBundleShortVersionString</key><string>$APP_VERSION</string>" \
-  "<key>CFBundleVersion</key><string>$APP_VERSION</string>" \
+  "<key>CFBundleVersion</key><string>$BUILD_NUMBER</string>" \
   '<key>CFBundleIconFile</key><string>AppIcon</string>' \
   '<key>CFBundleIconName</key><string>AppIcon</string>' \
   '<key>CFBundlePackageType</key><string>APPL</string>' \
