@@ -228,13 +228,14 @@ final class ScanViewModel: ObservableObject {
                 let result = try await pipeline.process(videos: videos, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
                 items.append(contentsOf: result.videos)
                 relations.append(contentsOf: result.relations)
-                publish(items: items, relations: relations)
                 let (images, imageIssues) = try await scanFolders(folders, load: loadImages(folder:))
                 scanIssues.append(contentsOf: imageIssues)
                 try Task.checkCancellation()
                 let imageResult = try await imagePipeline.process(images: images, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
                 items.append(contentsOf: imageResult.images)
                 relations.append(contentsOf: imageResult.relations)
+                // Publish the combined results once, after both kinds are done —
+                // the sidebar shows groups only when scanning is complete.
                 publish(items: items, relations: relations)
                 try Task.checkCancellation()
                 // `publish` already wrote the final combined items/relations/groups,
@@ -508,14 +509,14 @@ final class ScanViewModel: ObservableObject {
 
     private func rebuildGroups(preserving previousGroups: [SimilarityGroup]? = nil) {
         let beforeRebuild = previousGroups ?? groups
-        // Remember where the selected group sat in the visible list before the
-        // rebuild, so if it dissolves we can keep the cursor near that spot
-        // (rather than the next group by ID/old-array order, which may have
-        // reshuffled after a deletion changed scores).
-        let selectedIndexBefore = selectedGroupID.flatMap { id in
-            beforeRebuild.firstIndex(where: { $0.id == id })
+        // Remember where the selected group sat in the *visible* list before the
+        // rebuild, so if it dissolves we can keep the cursor near that spot.
+        let visibleBefore = beforeRebuild.filter { $0.kind.map { visibleKinds.contains($0) } ?? false }
+        let visibleIndexBefore = selectedGroupID.flatMap { id in
+            visibleBefore.firstIndex(where: { $0.id == id })
         }
         let rebuilt = SimilarityGrouper.groups(items: allItems, relations: allRelations, threshold: threshold)
+        let dissolvedGroupKind = selectedGroup?.kind
         groups = groupsByPreservingStableIDs(rebuilt, previousGroups: beforeRebuild)
         checkedMediaIDs.formIntersection(Set(allItems.map(\.id)))
         if let selectedGroupID, groups.contains(where: { $0.id == selectedGroupID }) {
@@ -530,26 +531,92 @@ final class ScanViewModel: ObservableObject {
             }
         } else {
             // The selected group vanished (e.g. its last duplicate was deleted).
-            // Keep the cursor in the same place visually: jump to the group that
-            // now occupies the same list index (clamped), rather than snapping
-            // back to the top or to wherever a reshuffled ID landed.
-            selectGroupAtOrNearest(index: selectedIndexBefore)
+            // Pick the next group the user would expect to see: prefer the same
+            // media kind at/near the old position, and stay within the current
+            // scanMode's visible groups. Only cross kinds in .all mode, and only
+            // after every same-kind group is exhausted.
+            selectNextVisibleGroup(afterDissolving: dissolvedGroupKind, at: visibleIndexBefore)
         }
     }
 
-    /// Selects the group at `index` in the rebuilt `groups` list; if that index
-    /// is out of range (the list shrank), falls back to the last group, and if
-    /// the list is empty clears selection. Used to keep the cursor's visual
-    /// position stable when a group dissolves.
-    private func selectGroupAtOrNearest(index: Int?) {
-        guard !groups.isEmpty else {
-            selectedGroupID = nil
-            selectedMediaID = nil
+    /// The groups currently visible in the sidebar, in the order they're shown.
+    /// In `.all` mode that's every video group followed by every image group
+    /// (matching the sidebar's Videos/Images sections); in `.videos`/`.images`
+    /// mode only the matching kind.
+    private var visibleGroups: [SimilarityGroup] {
+        switch scanMode {
+        case .all: groups // sidebar renders videos-then-images, but the relative
+                          // ordering within a kind is preserved, so a same-kind
+                          // "next" lookup works on `groups` directly.
+        case .videos: groups.filter { $0.kind == .video }
+        case .images: groups.filter { $0.kind == .image }
+        }
+    }
+
+    /// The media kinds shown under the current scanMode.
+    private var visibleKinds: Set<MediaKind> {
+        switch scanMode {
+        case .all: [.video, .image]
+        case .videos: [.video]
+        case .images: [.image]
+        }
+    }
+
+    /// After a group dissolves, pick the group the user expects to see next:
+    /// prefer the next same-kind group in the visible list; if none follows,
+    /// the preceding same-kind group (keeps the cursor near the old spot);
+    /// only .all mode crosses to the other kind once same-kind groups are
+    /// exhausted. In a single-kind mode, exhausting same-kind clears selection
+    /// rather than jumping to a hidden group.
+    private func selectNextVisibleGroup(afterDissolving kind: MediaKind?, at index: Int?) {
+        let visible = visibleGroups
+        guard !visible.isEmpty else {
+            selectGroup(nil)
             return
         }
-        let clamped = min(index ?? 0, groups.count - 1)
-        let group = groups[max(0, clamped)]
-        selectGroup(group.id)
+
+        // Same-kind groups in visible order.
+        let sameKind = visible.filter { $0.kind == kind }
+        guard let kind else {
+            selectGroup(visible.last?.id)
+            return
+        }
+
+        // Old visible index, clamped to the (already-rebuilt, shorter) list.
+        let start = index.map { min(max($0, 0), max(visible.count - 1, 0)) } ?? 0
+
+        // First same-kind group at or after the old position.
+        if let after = visible.indices.dropFirst(start).first(where: { visible[$0].kind == kind }).map({ visible[$0] }) {
+            selectGroup(after.id)
+            return
+        }
+        // Else the nearest preceding same-kind group (keeps the cursor put).
+        if let before = visible.indices.prefix(start).reversed().first(where: { visible[$0].kind == kind }).map({ visible[$0] }) {
+            selectGroup(before.id)
+            return
+        }
+
+        // No same-kind group remains at all.
+        if scanMode == .all {
+            // Fall back to the other kind at the same spot.
+            let otherKind = other(kind)
+            if let afterOther = visible.indices.dropFirst(start).first(where: { visible[$0].kind == otherKind }).map({ visible[$0] }) {
+                selectGroup(afterOther.id)
+            } else {
+                selectGroup(visible.last?.id)
+            }
+        } else {
+            // Single-kind mode: nothing visible of this kind left.
+            selectGroup(nil)
+        }
+    }
+
+    private func other(_ kind: MediaKind?) -> MediaKind? {
+        switch kind {
+        case .video: .image
+        case .image: .video
+        default: nil
+        }
     }
 
     private func publish(items: [MediaItem], relations: [SimilarityRelation]) {

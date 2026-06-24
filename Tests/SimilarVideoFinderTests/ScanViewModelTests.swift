@@ -251,6 +251,116 @@ final class ScanViewModelTests: XCTestCase {
         )
     }
 
+    func testDeletingVideoGroupInAllModeSelectsNextVideoNotFarImageGroup() async {
+        // Two video pairs + two image pairs. Videos section comes first in
+        // .all mode. Deleting a file from the first video group should dissolve
+        // it and select the NEXT video group — not jump to an image group.
+        let v1 = SimilarityScoringTests.video(name: "v1.mov")
+        let v2 = SimilarityScoringTests.video(name: "v2.mov")
+        let v3 = SimilarityScoringTests.video(name: "v3.mov")
+        let v4 = SimilarityScoringTests.video(name: "v4.mov")
+        let i1 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i1.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let i2 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i2.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let i3 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i3.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let i4 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i4.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let relations = [
+            SimilarityRelation(firstID: v1.id, secondID: v2.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: v3.id, secondID: v4.id, score: 0.94, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: i1.id, secondID: i2.id, score: 0.93, evidence: [.similarPerceptualHash]),
+            SimilarityRelation(firstID: i3.id, secondID: i4.id, score: 0.92, evidence: [.similarPerceptualHash])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [v1, v2, v3, v4, i1, i2, i3, i4], relations: relations)
+        model.setScanMode(.all)
+        let firstVideoGroupID = model.groups.first { $0.items.first?.kind == .video }!.id
+        let secondVideoGroupID = model.groups.filter { $0.items.first?.kind == .video }[1].id
+        model.selectGroup(firstVideoGroupID)
+
+        await model.confirmDeletion(of: v1, mode: .permanent)
+
+        // Should land on the next video group, not any image group.
+        XCTAssertEqual(model.selectedGroupID, secondVideoGroupID)
+        XCTAssertEqual(model.selectedGroup?.kind, .video)
+    }
+
+    func testDeletingLastVideoGroupInAllModeFallsBackToImageGroup() async {
+        // One video pair + one image pair. Deleting the only video group's file
+        // dissolves it; .all mode should then fall back to the image group.
+        let v1 = SimilarityScoringTests.video(name: "v1.mov")
+        let v2 = SimilarityScoringTests.video(name: "v2.mov")
+        let i1 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i1.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let i2 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i2.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let relations = [
+            SimilarityRelation(firstID: v1.id, secondID: v2.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: i1.id, secondID: i2.id, score: 0.93, evidence: [.similarPerceptualHash])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [v1, v2, i1, i2], relations: relations)
+        model.setScanMode(.all)
+        let imageGroupID = model.groups.first { $0.items.first?.kind == .image }!.id
+        model.selectGroup(model.groups.first { $0.items.first?.kind == .video }!.id)
+
+        await model.confirmDeletion(of: v1, mode: .permanent)
+
+        XCTAssertEqual(model.selectedGroupID, imageGroupID)
+    }
+
+    func testDeletingVideoGroupInVideosModeDoesNotSelectImageGroup() async {
+        // .videos mode hides image groups entirely. Deleting the last video
+        // group's file dissolves it; selection must NOT jump to a (hidden)
+        // image group — it clears instead.
+        let v1 = SimilarityScoringTests.video(name: "v1.mov")
+        let v2 = SimilarityScoringTests.video(name: "v2.mov")
+        let i1 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i1.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let i2 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i2.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let relations = [
+            SimilarityRelation(firstID: v1.id, secondID: v2.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: i1.id, secondID: i2.id, score: 0.93, evidence: [.similarPerceptualHash])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [v1, v2, i1, i2], relations: relations)
+        model.setScanMode(.videos)
+        model.selectGroup(model.groups.first { $0.items.first?.kind == .video }!.id)
+
+        await model.confirmDeletion(of: v1, mode: .permanent)
+
+        // No video group remains; selection clears rather than landing on a
+        // hidden image group.
+        XCTAssertNil(model.selectedGroupID)
+    }
+
+    func testDeletingLastVideoGroupInVideosModeClearsNotLast() async {
+        // Three video pairs in .videos mode. Deleting the last pair's file
+        // dissolves it; there's no same-kind group after it, so selection
+        // should move to the PRECEDING video group (keep cursor near old spot),
+        // not jump to "the last visible group" which would be the same wrong
+        // behavior the user saw (selecting the now-last group arbitrarily).
+        let v1 = SimilarityScoringTests.video(name: "v1.mov")
+        let v2 = SimilarityScoringTests.video(name: "v2.mov")
+        let v3 = SimilarityScoringTests.video(name: "v3.mov")
+        let v4 = SimilarityScoringTests.video(name: "v4.mov")
+        let v5 = SimilarityScoringTests.video(name: "v5.mov")
+        let v6 = SimilarityScoringTests.video(name: "v6.mov")
+        let relations = [
+            SimilarityRelation(firstID: v1.id, secondID: v2.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: v3.id, secondID: v4.id, score: 0.94, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: v5.id, secondID: v6.id, score: 0.93, evidence: [.similarFrames])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [v1, v2, v3, v4, v5, v6], relations: relations)
+        model.setScanMode(.videos)
+        let videoGroups = model.groups.filter { $0.items.first?.kind == .video }
+        let lastVideoGroupID = videoGroups.last!.id
+        let precedingVideoGroupID = videoGroups[videoGroups.count - 2].id
+        model.selectGroup(lastVideoGroupID)
+
+        await model.confirmDeletion(of: v5, mode: .permanent)
+
+        // Falls back to the preceding video group, not the (now) last one arbitrarily.
+        XCTAssertEqual(model.selectedGroupID, precedingVideoGroupID)
+        XCTAssertEqual(model.selectedGroup?.kind, .video)
+    }
+
 
 
     func testChangingScanModePreservesResultsButClearsSelection() {
@@ -461,7 +571,10 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertNotNil(model.presentedError)
     }
 
-    func testCancellingImageStageKeepsCompletedVideoGroups() async throws {
+    func testCancellingImageStageShowsNoGroups() async throws {
+        // Groups are published only after both kinds finish; cancelling during
+        // the image stage means nothing was published yet, so the sidebar shows
+        // no groups.
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ScanCancellation-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -504,13 +617,13 @@ final class ScanViewModelTests: XCTestCase {
         model.selectedFolders = [root]
 
         model.startScan()
-        try await waitUntil { model.groups.count == 1 && model.progress.stage == .readingMetadata }
+        // Wait until the image stage is underway (videos already processed but
+        // no groups published yet).
+        try await waitUntil { model.progress.stage == .readingMetadata }
         model.cancelScan()
         try await waitUntil { model.progress.stage == .cancelled }
 
-        XCTAssertEqual(model.groups.count, 1)
-        XCTAssertEqual(model.groups[0].kind, .video)
-        XCTAssertEqual(model.groups[0].items.count, 2)
+        XCTAssertTrue(model.groups.isEmpty)
     }
 
     private func waitUntil(
