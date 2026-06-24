@@ -381,6 +381,39 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(Set(model.sortedGroupItems.map(\.id)), Set(model.groups[1].items.map(\.id)))
     }
 
+    func testGroupSortPersistsAfterDeletionDissolvesGroup() async {
+        // Group 0: two files, score 0.95. Group 1: two files, score 0.92.
+        // Set sort to fileSize descending. Delete one file from group 0 so it
+        // dissolves. The auto-selected group 1 must stay sorted by fileSize
+        // (not revert to the grouper's filename order).
+        let a = SimilarityScoringTests.video(name: "a.mov", size: 3_000_000)
+        let b = SimilarityScoringTests.video(name: "b.mov", size: 1_000_000)
+        let c = SimilarityScoringTests.video(name: "c.mov", size: 5_000_000)
+        let d = SimilarityScoringTests.video(name: "d.mov", size: 2_000_000)
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: c.id, secondID: d.id, score: 0.92, evidence: [.similarFrames])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [a, b, c, d], relations: relations)
+        XCTAssertEqual(model.groups.count, 2)
+
+        model.groupSortField = .fileSize
+        model.groupSortAscending = false
+        model.selectGroup(model.groups[0].id)
+        // fileSize descending: a(3MB) then b(1MB).
+        XCTAssertEqual(model.sortedGroupItems.map(\.filename), ["a.mov", "b.mov"])
+
+        // Deleting b dissolves group 0 (a becomes a singleton).
+        await model.confirmDeletion(of: b, mode: .trash)
+
+        // Group 1 should now be selected with items still sorted by fileSize desc.
+        XCTAssertEqual(model.groups.count, 1)
+        XCTAssertEqual(model.groupSortField, .fileSize)
+        XCTAssertFalse(model.groupSortAscending)
+        XCTAssertEqual(model.sortedGroupItems.map(\.filename), ["c.mov", "d.mov"], "must stay sorted by fileSize descending, not filename order")
+    }
+
 
     func testBatchDeletionKeepsFailuresAndRemovesSuccessfulItems() async {
         let first = SimilarityScoringTests.video(name: "a.mov")

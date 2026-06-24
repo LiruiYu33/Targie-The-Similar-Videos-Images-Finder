@@ -348,8 +348,10 @@ final class ScanViewModel: ObservableObject {
 
     func selectGroup(_ id: UUID?) {
         selectedGroupID = id
-        selectedMediaID = selectedGroup?.items.first?.id
         recomputeSortedGroupItems()
+        // Select the first item *under the current sort order*, not the
+        // grouper's raw items order, so the highlight matches the visual.
+        selectedMediaID = sortedGroupItems.first?.id
     }
 
     /// Recomputes `sortedGroupItems` from the currently selected group. Cheap
@@ -506,11 +508,14 @@ final class ScanViewModel: ObservableObject {
         groups = groupsByPreservingStableIDs(rebuilt, previousGroups: beforeRebuild)
         checkedMediaIDs.formIntersection(Set(allItems.map(\.id)))
         if let selectedGroupID, groups.contains(where: { $0.id == selectedGroupID }) {
+            // Group still exists; recompute the cached sort so the fallback below
+            // picks the sorted-first item (not the grouper's raw first item).
+            recomputeSortedGroupItems()
             let stillPresent = selectedMediaID.map { id in
                 selectedGroup?.items.contains(where: { $0.id == id }) ?? false
             } ?? false
             if !stillPresent {
-                selectedMediaID = selectedGroup?.items.first?.id
+                selectedMediaID = sortedGroupItems.first?.id
             }
         } else {
             // The selected group vanished (e.g. its last duplicate was deleted).
@@ -519,9 +524,6 @@ final class ScanViewModel: ObservableObject {
             // back to the top or to wherever a reshuffled ID landed.
             selectGroupAtOrNearest(index: selectedIndexBefore)
         }
-        // Group contents may have changed (deletion, threshold drag) — refresh
-        // the cached sort so the Compare Media grid reads a stable array.
-        recomputeSortedGroupItems()
     }
 
     /// Selects the group at `index` in the rebuilt `groups` list; if that index
@@ -545,6 +547,9 @@ final class ScanViewModel: ObservableObject {
         groups = SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
         selectFirstAvailable()
         recomputeSortedGroupItems()
+        // Selected media must follow the current sort order — override
+        // selectFirstAvailable's raw-items-order pick with the sorted first.
+        selectedMediaID = sortedGroupItems.first?.id
     }
 
     private func selectFirstAvailable() {
