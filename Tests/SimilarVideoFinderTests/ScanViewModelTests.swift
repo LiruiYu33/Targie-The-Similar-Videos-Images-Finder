@@ -160,6 +160,27 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(Set(model.groups[0].items.map(\.id)), [a.id, c.id])
     }
 
+    func testDeletingOneImageFromTripletImageGroupKeepsSelection() async {
+        let a = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/a.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let b = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/b.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let c = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/c.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarPerceptualHash]),
+            SimilarityRelation(firstID: b.id, secondID: c.id, score: 0.94, evidence: [.similarPerceptualHash]),
+            SimilarityRelation(firstID: a.id, secondID: c.id, score: 0.93, evidence: [.similarPerceptualHash])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [a, b, c], relations: relations)
+        model.setScanMode(.images)
+        let originalGroupID = model.groups[0].id
+        model.selectGroup(originalGroupID)
+
+        await model.confirmDeletion(of: b, mode: .trash)
+
+        XCTAssertEqual(model.groups.count, 1, "triplet → pair, group survives")
+        XCTAssertEqual(model.selectedGroupID, originalGroupID, "same group must stay selected")
+    }
+
     func testDeletingDissolvedGroupSelectsNextGroupNotFirst() async {
         // Three independent duplicate pairs → three groups. Distinct scores pin
         // the display order (highest score first) so the test is deterministic.
