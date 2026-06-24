@@ -219,7 +219,8 @@ struct SidebarView: View {
                     Section(L10n.videos(language)) { groupRows(model.groups.filter { $0.items.first?.kind == .video }) }
                     Section(L10n.images(language)) { groupRows(model.groups.filter { $0.items.first?.kind == .image }) }
                 } else {
-                    groupRows(model.groups)
+                    let kind: MediaKind = model.scanMode == .videos ? .video : .image
+                    groupRows(model.groups.filter { $0.items.first?.kind == kind })
                 }
             }
             .listStyle(.sidebar)

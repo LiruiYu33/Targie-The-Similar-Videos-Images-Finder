@@ -336,14 +336,12 @@ final class ScanViewModel: ObservableObject {
         guard scanMode != mode else { return }
         scanTask?.cancel()
         scanMode = mode
-        allItems = []
-        allRelations = []
-        groups = []
+        // Just reset the selection — scanned groups/items/relations persist so
+        // switching between All / Images / Videos is instant and doesn't
+        // require re-scanning.
         selectedGroupID = nil
         selectedMediaID = nil
         checkedMediaIDs = []
-        issues = []
-        progress = ScanProgress()
     }
 
     func selectGroup(_ id: UUID?) {

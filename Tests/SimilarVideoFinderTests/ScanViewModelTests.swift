@@ -253,7 +253,7 @@ final class ScanViewModelTests: XCTestCase {
 
 
 
-    func testChangingScanModeClearsExistingResultsAndSelection() {
+    func testChangingScanModePreservesResultsButClearsSelection() {
         let first = SimilarityScoringTests.video(name: "a.mov")
         let second = SimilarityScoringTests.video(name: "b.mov")
         let relation = SimilarityRelation(firstID: first.id, secondID: second.id, score: 0.95, evidence: [.similarFrames])
@@ -264,7 +264,10 @@ final class ScanViewModelTests: XCTestCase {
         model.setScanMode(.images)
 
         XCTAssertEqual(model.scanMode, .images)
-        XCTAssertTrue(model.groups.isEmpty)
+        // Groups persist — switching mode isn't a re-scan.
+        XCTAssertFalse(model.groups.isEmpty)
+        // Selection and checked state are reset so stale video selections don't
+        // show under Images mode.
         XCTAssertNil(model.selectedGroupID)
         XCTAssertNil(model.selectedMediaID)
         XCTAssertTrue(model.checkedMediaIDs.isEmpty)
