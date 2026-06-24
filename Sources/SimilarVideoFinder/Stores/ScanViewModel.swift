@@ -529,7 +529,7 @@ final class ScanViewModel: ObservableObject {
             if !stillPresent {
                 selectedMediaID = sortedGroupItems.first?.id
             }
-        } else {
+        } else if selectedGroupID != nil {
             // The selected group vanished (e.g. its last duplicate was deleted).
             // Pick the next group the user would expect to see: prefer the same
             // media kind at/near the old position, and stay within the current
@@ -537,6 +537,7 @@ final class ScanViewModel: ObservableObject {
             // after every same-kind group is exhausted.
             selectNextVisibleGroup(afterDissolving: dissolvedGroupKind, at: visibleIndexBefore)
         }
+        // else: nothing was selected before — leave it that way.
     }
 
     /// The groups currently visible in the sidebar, in the order they're shown.
@@ -623,16 +624,11 @@ final class ScanViewModel: ObservableObject {
         allItems = items
         allRelations = relations
         groups = SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
-        selectFirstAvailable()
-        recomputeSortedGroupItems()
-        // Selected media must follow the current sort order — override
-        // selectFirstAvailable's raw-items-order pick with the sorted first.
-        selectedMediaID = sortedGroupItems.first?.id
-    }
-
-    private func selectFirstAvailable() {
-        selectedGroupID = groups.first?.id
-        selectedMediaID = groups.first?.items.first?.id
+        // Don't auto-select a group — let the user pick. The right pane shows
+        // "Select a similar group" / "Select a file" until the user clicks.
+        selectedGroupID = nil
+        selectedMediaID = nil
+        sortedGroupItems = []
     }
 
     private func resetResults() {
