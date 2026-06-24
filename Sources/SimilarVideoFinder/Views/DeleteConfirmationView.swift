@@ -45,6 +45,12 @@ struct DeleteConfirmationView: View {
                     Text(L10n.trashExplanation(language))
                         .foregroundStyle(.secondary)
                     HStack {
+                        Spacer()
+                        Text(L10n.trashShortcutHint(language))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
                         Button(L10n.cancel(language)) { cancel() }
                             .keyboardShortcut(.cancelAction)
                         Spacer()
@@ -55,6 +61,7 @@ struct DeleteConfirmationView: View {
                                 if model.deletePrompt == nil { dismiss() }
                             }
                         }
+                        .keyboardShortcut(.space, modifiers: [])
                     }
                 } else {
                     Text(L10n.irreversible(language))

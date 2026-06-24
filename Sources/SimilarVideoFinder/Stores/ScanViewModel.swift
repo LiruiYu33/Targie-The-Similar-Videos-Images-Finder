@@ -400,8 +400,9 @@ final class ScanViewModel: ObservableObject {
     }
 
     private func rebuildGroups(preserving previousGroups: [SimilarityGroup]? = nil) {
+        let beforeRebuild = previousGroups ?? groups
         let rebuilt = SimilarityGrouper.groups(items: allItems, relations: allRelations, threshold: threshold)
-        groups = groupsByPreservingStableIDs(rebuilt, previousGroups: previousGroups ?? groups)
+        groups = groupsByPreservingStableIDs(rebuilt, previousGroups: beforeRebuild)
         checkedMediaIDs.formIntersection(Set(allItems.map(\.id)))
         if let selectedGroupID, groups.contains(where: { $0.id == selectedGroupID }) {
             if let selectedMediaID, selectedGroup?.items.contains(where: { $0.id == selectedMediaID }) == true {
@@ -409,8 +410,33 @@ final class ScanViewModel: ObservableObject {
             }
             selectedMediaID = selectedGroup?.items.first?.id
         } else {
-            selectFirstAvailable()
+            // The selected group vanished (e.g. its last duplicate was deleted).
+            // Keep the user's place in the list by jumping to the nearest
+            // surviving group — the next one down, or the preceding one if
+            // there is none — rather than snapping back to the top.
+            selectNearestSurvivingGroup(previousGroups: beforeRebuild)
         }
+    }
+
+    private func selectNearestSurvivingGroup(previousGroups: [SimilarityGroup]) {
+        let survivingIDs = Set(groups.map(\.id))
+        guard !survivingIDs.isEmpty else {
+            selectedGroupID = nil
+            selectedMediaID = nil
+            return
+        }
+        if let selectedGroupID,
+           let index = previousGroups.firstIndex(where: { $0.id == selectedGroupID }) {
+            for group in previousGroups.dropFirst(index + 1) where survivingIDs.contains(group.id) {
+                selectGroup(group.id)
+                return
+            }
+            for group in previousGroups.prefix(index).reversed() where survivingIDs.contains(group.id) {
+                selectGroup(group.id)
+                return
+            }
+        }
+        selectFirstAvailable()
     }
 
     private func publish(items: [MediaItem], relations: [SimilarityRelation]) {

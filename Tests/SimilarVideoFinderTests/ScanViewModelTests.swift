@@ -160,6 +160,61 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(Set(model.groups[0].items.map(\.id)), [a.id, c.id])
     }
 
+    func testDeletingDissolvedGroupSelectsNextGroupNotFirst() async {
+        // Three independent duplicate pairs → three groups. Distinct scores pin
+        // the display order (highest score first) so the test is deterministic.
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let d = SimilarityScoringTests.video(name: "d.mov")
+        let e = SimilarityScoringTests.video(name: "e.mov")
+        let f = SimilarityScoringTests.video(name: "f.mov")
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: c.id, secondID: d.id, score: 0.92, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: e.id, secondID: f.id, score: 0.90, evidence: [.similarFrames])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [a, b, c, d, e, f], relations: relations)
+        XCTAssertEqual(model.groups.count, 3)
+        let middleGroupID = model.groups[1].id
+        let nextGroupID = model.groups[2].id
+        model.selectGroup(middleGroupID)
+
+        // Delete one file of the middle pair → that group dissolves.
+        await model.confirmDeletion(of: c, mode: .permanent)
+
+        XCTAssertEqual(model.groups.count, 2)
+        XCTAssertEqual(model.selectedGroupID, nextGroupID)
+    }
+
+    func testDeletingLastDissolvedGroupSelectsPrecedingGroup() async {
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let d = SimilarityScoringTests.video(name: "d.mov")
+        let e = SimilarityScoringTests.video(name: "e.mov")
+        let f = SimilarityScoringTests.video(name: "f.mov")
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: c.id, secondID: d.id, score: 0.92, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: e.id, secondID: f.id, score: 0.90, evidence: [.similarFrames])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [a, b, c, d, e, f], relations: relations)
+        XCTAssertEqual(model.groups.count, 3)
+        let lastGroupID = model.groups[2].id
+        let precedingGroupID = model.groups[1].id
+        model.selectGroup(lastGroupID)
+
+        // Delete one file of the last pair → that group dissolves; no group
+        // follows it, so selection should fall back to the preceding group.
+        await model.confirmDeletion(of: e, mode: .permanent)
+
+        XCTAssertEqual(model.groups.count, 2)
+        XCTAssertEqual(model.selectedGroupID, precedingGroupID)
+    }
+
     func testDisplayThresholdSupportsExactMatchFiltering() {
         XCTAssertEqual(ScanViewModel.displayThresholdRange.lowerBound, 0.60)
         XCTAssertEqual(ScanViewModel.displayThresholdRange.upperBound, 1.0)

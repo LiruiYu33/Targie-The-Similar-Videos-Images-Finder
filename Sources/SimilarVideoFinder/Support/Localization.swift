@@ -133,6 +133,7 @@ enum L10n {
     static func cancel(_ l: AppLanguage) -> String { text(l, "Cancel", "取消", "取消", "Cancelar", "Annuler") }
     static func permanentDelete(_ l: AppLanguage) -> String { text(l, "Delete Permanently…", "永久删除…", "永久刪除…", "Eliminar permanentemente…", "Supprimer définitivement…") }
     static func moveToTrash(_ l: AppLanguage) -> String { text(l, "Move to Trash", "移到废纸篓", "移到垃圾桶", "Mover a la papelera", "Déplacer vers la corbeille") }
+    static func trashShortcutHint(_ l: AppLanguage) -> String { text(l, "Press Space to move to Trash.", "按空格键移到废纸篓。", "按空白鍵移到垃圾桶。", "Pulsa Espacio para mover a la papelera.", "Appuyez sur Espace pour déplacer vers la corbeille.") }
     static func irreversible(_ l: AppLanguage) -> String { text(l, "This bypasses Trash and cannot be undone.", "此操作不会经过废纸篓，文件将无法恢复。", "此操作會略過垃圾桶，無法復原。", "Esto omite la papelera y no se puede deshacer.", "Cette action contourne la corbeille et ne peut pas être annulée.") }
     static func back(_ l: AppLanguage) -> String { text(l, "Back", "返回", "返回", "Atrás", "Retour") }
     static func confirmPermanent(_ l: AppLanguage) -> String { text(l, "Confirm Permanent Delete", "确认永久删除", "確認永久刪除", "Confirmar eliminación permanente", "Confirmer la suppression définitive") }
