@@ -266,11 +266,36 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(model.scanMode, .images)
         // Groups persist — switching mode isn't a re-scan.
         XCTAssertFalse(model.groups.isEmpty)
-        // Selection and checked state are reset so stale video selections don't
-        // show under Images mode.
-        XCTAssertNil(model.selectedGroupID)
-        XCTAssertNil(model.selectedMediaID)
+        // The checked video item isn't visible under Images mode, so it's pruned.
         XCTAssertTrue(model.checkedMediaIDs.isEmpty)
+    }
+
+    func testChangingScanModeClearsSelectionWhenGroupNotVisibleUnderNewMode() {
+        // Selected video group must drop when switching to Images (it's hidden),
+        // and re-selecting it is still possible back under Videos.
+        let v1 = SimilarityScoringTests.video(name: "v1.mov")
+        let v2 = SimilarityScoringTests.video(name: "v2.mov")
+        let img1 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i1.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let img2 = MediaItem(kind: .image, url: URL(fileURLWithPath: "/tmp/i2.png"), fileSize: 1_000, duration: nil, width: 100, height: 100, modifiedAt: nil, thumbnailData: nil)
+        let relations = [
+            SimilarityRelation(firstID: v1.id, secondID: v2.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: img1.id, secondID: img2.id, score: 0.94, evidence: [.similarPerceptualHash])
+        ]
+        let model = ScanViewModel()
+        model.replaceResultsForTesting(items: [v1, v2, img1, img2], relations: relations)
+        let videoGroupID = model.groups.first { $0.items.first?.kind == .video }!.id
+        model.selectGroup(videoGroupID)
+        XCTAssertEqual(model.selectedGroupID, videoGroupID)
+
+        model.setScanMode(.images)
+        XCTAssertEqual(model.scanMode, .images)
+        XCTAssertNil(model.selectedGroupID, "video group selection hidden under Images must clear")
+
+        model.setScanMode(.videos)
+        XCTAssertEqual(model.scanMode, .videos)
+        // Selecting the video group again works — data was never dropped.
+        model.selectGroup(videoGroupID)
+        XCTAssertEqual(model.selectedGroupID, videoGroupID)
     }
 
     // MARK: - Compare Media group sort

@@ -219,24 +219,23 @@ final class ScanViewModel: ObservableObject {
                 var items: [MediaItem] = []
                 var relations: [SimilarityRelation] = []
                 var scanIssues: [ScanIssue] = []
-                if scanMode != .images {
-                    let (videos, videoIssues) = try await scanFolders(folders, load: loadVideos(folder:))
-                    scanIssues.append(contentsOf: videoIssues)
-                    try Task.checkCancellation()
-                    let result = try await pipeline.process(videos: videos, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
-                    items.append(contentsOf: result.videos)
-                    relations.append(contentsOf: result.relations)
-                    publish(items: items, relations: relations)
-                }
-                if scanMode != .videos {
-                    let (images, imageIssues) = try await scanFolders(folders, load: loadImages(folder:))
-                    scanIssues.append(contentsOf: imageIssues)
-                    try Task.checkCancellation()
-                    let result = try await imagePipeline.process(images: images, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
-                    items.append(contentsOf: result.images)
-                    relations.append(contentsOf: result.relations)
-                    publish(items: items, relations: relations)
-                }
+                // Always scan both kinds so the user can switch All / Images /
+                // Videos after scanning without re-scanning; `scanMode` only
+                // filters the sidebar display.
+                let (videos, videoIssues) = try await scanFolders(folders, load: loadVideos(folder:))
+                scanIssues.append(contentsOf: videoIssues)
+                try Task.checkCancellation()
+                let result = try await pipeline.process(videos: videos, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
+                items.append(contentsOf: result.videos)
+                relations.append(contentsOf: result.relations)
+                publish(items: items, relations: relations)
+                let (images, imageIssues) = try await scanFolders(folders, load: loadImages(folder:))
+                scanIssues.append(contentsOf: imageIssues)
+                try Task.checkCancellation()
+                let imageResult = try await imagePipeline.process(images: images, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
+                items.append(contentsOf: imageResult.images)
+                relations.append(contentsOf: imageResult.relations)
+                publish(items: items, relations: relations)
                 try Task.checkCancellation()
                 // `publish` already wrote the final combined items/relations/groups,
                 // so only the progress and cache cleanup remain here.
@@ -309,16 +308,13 @@ final class ScanViewModel: ObservableObject {
             do {
                 var items: [MediaItem] = []
                 var scanIssues: [ScanIssue] = []
-                if scanMode != .images {
-                    let (videos, videoIssues) = try await scanFolders(folders, load: loadVideos(folder:))
-                    items.append(contentsOf: videos)
-                    scanIssues.append(contentsOf: videoIssues)
-                }
-                if scanMode != .videos {
-                    let (images, imageIssues) = try await scanFolders(folders, load: loadImages(folder:))
-                    items.append(contentsOf: images)
-                    scanIssues.append(contentsOf: imageIssues)
-                }
+                // Always scan both kinds (see startScan); scanMode only filters.
+                let (videos, videoIssues) = try await scanFolders(folders, load: loadVideos(folder:))
+                items.append(contentsOf: videos)
+                scanIssues.append(contentsOf: videoIssues)
+                let (images, imageIssues) = try await scanFolders(folders, load: loadImages(folder:))
+                items.append(contentsOf: images)
+                scanIssues.append(contentsOf: imageIssues)
                 try Task.checkCancellation()
                 allItems = items
                 issues = scanIssues
@@ -334,14 +330,31 @@ final class ScanViewModel: ObservableObject {
 
     func setScanMode(_ mode: ScanMode) {
         guard scanMode != mode else { return }
-        scanTask?.cancel()
         scanMode = mode
-        // Just reset the selection — scanned groups/items/relations persist so
-        // switching between All / Images / Videos is instant and doesn't
-        // require re-scanning.
-        selectedGroupID = nil
-        selectedMediaID = nil
-        checkedMediaIDs = []
+        // Scanning always covers both kinds, so switching mode is a pure
+        // display filter — keep the data and selection; SidebarView filters
+        // the group list by kind. If the selected group isn't visible under
+        // the new mode, clear the selection so the detail pane doesn't show a
+        // hidden group.
+        if let selectedGroup, selectedGroup.kind != kind(for: mode) {
+            selectedGroupID = nil
+            selectedMediaID = nil
+            sortedGroupItems = []
+        }
+        checkedMediaIDs.formIntersection(visibleItemIDs(for: mode))
+    }
+
+    private func kind(for mode: ScanMode) -> MediaKind? {
+        switch mode {
+        case .all: nil
+        case .videos: .video
+        case .images: .image
+        }
+    }
+
+    private func visibleItemIDs(for mode: ScanMode) -> Set<UUID> {
+        guard let k = kind(for: mode) else { return Set(allItems.map(\.id)) }
+        return Set(allItems.filter { $0.kind == k }.map(\.id))
     }
 
     func selectGroup(_ id: UUID?) {
