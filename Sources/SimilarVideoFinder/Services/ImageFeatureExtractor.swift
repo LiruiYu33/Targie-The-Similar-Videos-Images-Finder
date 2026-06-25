@@ -36,19 +36,70 @@ struct ImageFeatureExtractor: ImageFeatureExtracting {
     }
 }
 
+// MARK: - VNFeaturePrintObservation Serialization
+
+enum ImageFeatureSerializer {
+    /// Archives a `VNFeaturePrintObservation` to a blob for SQLite storage.
+    static func serialize(_ observation: VNFeaturePrintObservation) throws -> Data {
+        try NSKeyedArchiver.archivedData(withRootObject: observation, requiringSecureCoding: true)
+    }
+
+    /// Unarchives a `VNFeaturePrintObservation` from a previously stored blob.
+    static func deserialize(_ data: Data) throws -> VNFeaturePrintObservation {
+        guard let observation = try NSKeyedUnarchiver.unarchivedObject(
+            ofClass: VNFeaturePrintObservation.self, from: data
+        ) else {
+            throw CocoaError(.coderReadCorrupt)
+        }
+        return observation
+    }
+}
+
 actor ImageFeatureCache {
     private let extractor: any ImageFeatureExtracting
     private var storage: [URL: Result<ImageFeature, Error>] = [:]
+    private let persistentCache: (any HashCaching)?
 
-    init(extractor: any ImageFeatureExtracting = ImageFeatureExtractor()) {
+    init(
+        extractor: any ImageFeatureExtracting = ImageFeatureExtractor(),
+        persistentCache: (any HashCaching)? = nil
+    ) {
         self.extractor = extractor
+        self.persistentCache = persistentCache
     }
 
     func feature(for url: URL) async throws -> ImageFeature {
         if let cached = storage[url] { return try cached.get() }
+
+        // Check persistent SQLite cache — avoids Vision neural-network inference
+        // on re-scan when the image file hasn't changed.
+        if let pc = persistentCache,
+           let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+           let data = await pc.lookupImageFeature(
+               filePath: url.path,
+               fileSize: Int64(values.fileSize ?? 0),
+               modifiedAt: values.contentModificationDate
+           ),
+           let observation = try? ImageFeatureSerializer.deserialize(data) {
+            let feature = ImageFeature(observation: observation)
+            storage[url] = .success(feature)
+            return feature
+        }
+
         do {
             let feature = try await extractor.feature(for: url)
             storage[url] = .success(feature)
+            // Persist to SQLite for next launch.
+            if let pc = persistentCache,
+               let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+               let data = try? ImageFeatureSerializer.serialize(feature.observation) {
+                await pc.upsertImageFeature(
+                    filePath: url.path,
+                    fileSize: Int64(values.fileSize ?? 0),
+                    modifiedAt: values.contentModificationDate,
+                    featureData: data
+                )
+            }
             return feature
         } catch {
             storage[url] = .failure(error)

@@ -599,8 +599,6 @@ final class ScanViewModel: ObservableObject {
             return
         }
 
-        // Same-kind groups in visible order.
-        let sameKind = visible.filter { $0.kind == kind }
         guard let kind else {
             selectGroup(visible.last?.id)
             return

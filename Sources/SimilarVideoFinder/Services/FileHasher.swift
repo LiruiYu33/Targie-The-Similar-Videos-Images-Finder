@@ -36,4 +36,22 @@ enum FileHasher {
             return hasher.finalize().map { String(format: "%02x", $0) }.joined()
         }.value
     }
+
+    /// Cache-aware SHA-256 — checks the persistent cache before reading the file,
+    /// and stores the result after computing.  Avoids re-reading every byte of
+    /// same-size files on every re-scan.
+    static func sha256(of url: URL, cache: (any HashCaching)?) async throws -> String {
+        guard let cache else { return try await sha256(of: url) }
+
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let fileSize = Int64(values.fileSize ?? 0)
+        let modifiedAt = values.contentModificationDate
+
+        if let cached = await cache.lookupSHA256(filePath: url.path, fileSize: fileSize, modifiedAt: modifiedAt) {
+            return cached
+        }
+        let hash = try await sha256(of: url)
+        await cache.upsertSHA256(filePath: url.path, fileSize: fileSize, modifiedAt: modifiedAt, sha256: hash)
+        return hash
+    }
 }

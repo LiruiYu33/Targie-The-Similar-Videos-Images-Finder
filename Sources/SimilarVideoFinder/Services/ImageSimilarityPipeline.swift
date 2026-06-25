@@ -34,7 +34,7 @@ struct ImageSimilarityPipeline: Sendable {
         try Task.checkCancellation()
         await progress(ScanProgress(stage: .comparing, fraction: 0, discoveredCount: images.count))
         let byID = Dictionary(uniqueKeysWithValues: images.map { ($0.id, $0) })
-        let featureCache = ImageFeatureCache(extractor: featureExtractor)
+        let featureCache = ImageFeatureCache(extractor: featureExtractor, persistentCache: cache)
         var seen = Set<ImagePairKey>()
         var relations: [SimilarityRelation] = []
         for (index, image) in images.enumerated() {
@@ -46,8 +46,8 @@ struct ImageSimilarityPipeline: Sendable {
                 let perceptual = hash.similarity(to: neighbor.item)
                 var exact = false
                 if image.fileSize > 0 && image.fileSize == other.fileSize && neighbor.dist == 0,
-                   let firstHash = try? await FileHasher.sha256(of: image.url),
-                   let secondHash = try? await FileHasher.sha256(of: other.url) {
+                   let firstHash = try? await FileHasher.sha256(of: image.url, cache: cache),
+                   let secondHash = try? await FileHasher.sha256(of: other.url, cache: cache) {
                     exact = firstHash == secondHash
                 }
                 try Task.checkCancellation()

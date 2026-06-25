@@ -33,9 +33,31 @@ struct ThumbnailStore: Sendable {
     /// Returns the persisted thumbnail URL for `sourceURL` if one already exists
     /// on disk, without generating anything. Lets scanners skip the expensive
     /// thumbnail generation (video frame decode / image downscale) on re-scan.
+    ///
+    /// When the primary path-based lookup misses (e.g. the file was moved to a
+    /// different folder), a secondary search by `modifiedAt` finds the old
+    /// thumbnail and migrates it to the new path — so moves don't invalidate
+    /// the thumbnail cache either.
     func existingThumbnailURL(for sourceURL: URL, modifiedAt: Date?) -> URL? {
         let expected = destinationURL(pathKey: pathKey(for: sourceURL), modifiedAt: modifiedAt)
-        return FileManager.default.fileExists(atPath: expected.path) ? expected : nil
+        if FileManager.default.fileExists(atPath: expected.path) { return expected }
+
+        // Move support: search by modifiedAt key (the _<hash> suffix) for a
+        // thumbnail that belongs to this file under its *previous* path.
+        let mKey = modifiedKey(for: modifiedAt)
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL, includingPropertiesForKeys: nil
+        ) else { return nil }
+
+        for url in contents where url.lastPathComponent.hasSuffix("_\(mKey).jpg") {
+            try? FileManager.default.copyItem(at: url, to: expected)
+            try? FileManager.default.removeItem(at: url)
+            if let data = try? Data(contentsOf: expected) {
+                ThumbnailDataCache.shared.insert(data, for: expected)
+            }
+            return expected
+        }
+        return nil
     }
 
     /// Stable hash of the canonical source path — used as a prefix so we can
@@ -50,10 +72,13 @@ struct ThumbnailStore: Sendable {
     /// the file's content-modification date changes, so a new thumbnail gets
     /// a different name and `persist` cleans up the previous one.
     private func destinationURL(pathKey: String, modifiedAt: Date?) -> URL {
-        let modifiedKey = SHA256.hash(data: Data("\(modifiedAt?.timeIntervalSince1970 ?? 0)".utf8))
+        directoryURL.appendingPathComponent("\(pathKey)_\(modifiedKey(for: modifiedAt)).jpg")
+    }
+
+    private func modifiedKey(for modifiedAt: Date?) -> String {
+        SHA256.hash(data: Data("\(modifiedAt?.timeIntervalSince1970 ?? 0)".utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return directoryURL.appendingPathComponent("\(pathKey)_\(modifiedKey).jpg")
     }
 
     /// Total size of cached thumbnail files, in bytes.

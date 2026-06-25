@@ -340,7 +340,7 @@ struct SimilarityPipeline: SimilarityProcessing {
 
     private func fileSHA256(for video: MediaItem, cache: inout [UUID: String]) async throws -> String {
         if let cached = cache[video.id] { return cached }
-        let value = try await FileHasher.sha256(of: video.url)
+        let value = try await FileHasher.sha256(of: video.url, cache: self.cache)
         cache[video.id] = value
         return value
     }
