@@ -25,6 +25,15 @@ Targie trouve des vidéos et des images similaires dans les dossiers sélectionn
 
 ![Mode parcourir — liste de fichiers avec aperçu](asset/Screenshot3.png)
 
+## Installation
+
+1. Téléchargez le dernier `Targie-v*.zip` depuis [Releases](https://github.com/LiruiYu33/Targie-The-Similar-Videos-Images-Finder/releases).
+2. Décompressez le zip et glissez **Targie.app** dans votre dossier Applications (ou ailleurs).
+3. L'app est signée ad-hoc. Au premier lancement, Gatekeeper la bloquera :
+   - **Clic droit** (ou Ctrl+clic) sur l'app → **Ouvrir** → cliquez sur **Ouvrir** dans la boîte de dialogue.
+   - Ou allez dans **Réglages Système → Confidentialité et Sécurité**, faites défiler vers le bas, et cliquez sur **Autoriser quand même** à côté de Targie, puis ouvrez l'app normalement.
+   - Une seule fois suffit.
+
 ## Compilation (macOS uniquement)
 
 ```bash
