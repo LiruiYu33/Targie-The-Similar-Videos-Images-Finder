@@ -31,32 +31,43 @@ struct BrowsePreviewPanel: View {
             if browseModel.hasMultipleSelection {
                 BrowseStackedPreview(browseModel: browseModel, language: language)
             } else if let media = browseModel.selectedMedia {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        BrowseMediaPreview(media: media)
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(media.filename)
-                                .font(.title3.bold())
-                                .textSelection(.enabled)
-                            metadata(L10n.fileSize(language), DisplayFormatters.fileSize(media.fileSize))
-                            if let duration = media.duration {
-                                metadata(L10n.duration(language), DisplayFormatters.duration(duration, language: language))
+                VStack(spacing: 0) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            BrowseMediaPreview(media: media)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(media.filename)
+                                    .font(.title3.bold())
+                                    .textSelection(.enabled)
+                                metadata(L10n.fileSize(language), DisplayFormatters.fileSize(media.fileSize))
+                                if let duration = media.duration {
+                                    metadata(L10n.duration(language), DisplayFormatters.duration(duration, language: language))
+                                }
+                                metadata(L10n.resolution(language), media.resolution(language: language))
+                                metadata(L10n.path(language), media.url.path)
                             }
-                            metadata(L10n.resolution(language), media.resolution(language: language))
-                            metadata(L10n.path(language), media.url.path)
                         }
+                        .padding(18)
+                    }
 
-                        HStack {
-                            ForEach(
-                                PreviewActionArrangement.singleFileActions(includesOpenDefaultPlayer: media.kind == .video),
-                                id: \.self
-                            ) { action in
+                    Divider()
+
+                    let actions = PreviewActionArrangement.singleFileActions(includesOpenDefaultPlayer: media.kind == .video)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            ForEach(actions, id: \.self) { action in
                                 actionButton(action, media: media)
                             }
                         }
-                        .controlSize(.small)
+                        .padding(18)
+                        VStack(spacing: 8) {
+                            ForEach(actions, id: \.self) { action in
+                                actionButton(action, media: media)
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .padding(18)
                     }
-                    .padding(18)
                 }
             } else {
                 ContentUnavailableView(
@@ -80,15 +91,25 @@ struct BrowsePreviewPanel: View {
     private func actionButton(_ action: PreviewActionKind, media: MediaItem) -> some View {
         switch action {
         case .openDefaultPlayer:
-            Button(L10n.openDefaultPlayer(language)) { browseModel.scanModel.openMedia(media) }
+            Button { browseModel.scanModel.openMedia(media) } label: {
+                Label(L10n.openDefaultPlayer(language), systemImage: "play.rectangle")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
         case .showInFinder:
-            Button(L10n.showInFinder(language)) { browseModel.scanModel.revealMedia(media) }
+            Button { browseModel.scanModel.revealMedia(media) } label: {
+                Label(L10n.showInFinder(language), systemImage: "folder")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
         case .deleteFile:
             Button(role: .destructive) {
                 browseModel.scanModel.requestDeletion(of: media)
             } label: {
                 Label(L10n.deleteMedia(language), systemImage: "trash")
             }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
         case .deleteSelection:
             EmptyView()
         }
@@ -135,12 +156,20 @@ struct BrowseStackedPreview: View {
                     metadata(L10n.videos(language), "\(videoCount)")
                 }
 
-                HStack {
-                    ForEach(PreviewActionArrangement.multipleSelectionActions(), id: \.self) { action in
-                        actionButton(action)
+                let multiActions = PreviewActionArrangement.multipleSelectionActions()
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        ForEach(multiActions, id: \.self) { action in
+                            actionButton(action)
+                        }
+                    }
+                    VStack(spacing: 8) {
+                        ForEach(multiActions, id: \.self) { action in
+                            actionButton(action)
+                                .frame(maxWidth: .infinity)
+                        }
                     }
                 }
-                .controlSize(.small)
 
                 Divider()
 
@@ -189,7 +218,11 @@ struct BrowseStackedPreview: View {
         switch action {
         case .showInFinder:
             if let first = selectedItems.first {
-                Button(L10n.showInFinder(language)) { browseModel.scanModel.revealMedia(first) }
+                Button { browseModel.scanModel.revealMedia(first) } label: {
+                    Label(L10n.showInFinder(language), systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             }
         case .deleteSelection:
             Button(role: .destructive) {
@@ -197,6 +230,8 @@ struct BrowseStackedPreview: View {
             } label: {
                 Label(L10n.deleteSelected(selectedItems.count, language), systemImage: "trash")
             }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
         case .openDefaultPlayer, .deleteFile:
             EmptyView()
         }
