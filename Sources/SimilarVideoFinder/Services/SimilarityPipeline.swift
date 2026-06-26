@@ -134,7 +134,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         var relations: [SimilarityRelation] = []
         var fileHashes: [UUID: String] = [:]
         var processedPairs = Set<PairKey>()
-        let frameFeatureCache = FrameFeatureCache(extractor: extractor)
+        let frameFeatureCache = FrameFeatureCache(extractor: extractor, persistentCache: cache)
 
         // Exact duplicates must not depend on video frame extraction succeeding.
         // This also keeps corrupt or partially supported files from aborting the scan.
@@ -142,8 +142,8 @@ struct SimilarityPipeline: SimilarityProcessing {
             try Task.checkCancellation()
             let key = PairKey(first.id, second.id)
             guard !processedPairs.contains(key) else { continue }
-            let firstHash = try? await fileSHA256(for: first, cache: &fileHashes)
-            let secondHash = try? await fileSHA256(for: second, cache: &fileHashes)
+            let firstHash = try? await fileSHA256(for: first, memoizedHashes: &fileHashes)
+            let secondHash = try? await fileSHA256(for: second, memoizedHashes: &fileHashes)
             guard let firstHash, firstHash == secondHash else { continue }
             processedPairs.insert(key)
             relations.append(SimilarityRelation(
@@ -184,8 +184,8 @@ struct SimilarityPipeline: SimilarityProcessing {
                 let perceptualHashesMatch = queryHash.hammingDistance(to: neighbor.item) == 0
                 var hashMatch = false
                 if sameSize && perceptualHashesMatch {
-                    let firstHash = try? await fileSHA256(for: video, cache: &fileHashes)
-                    let secondHash = try? await fileSHA256(for: other, cache: &fileHashes)
+                    let firstHash = try? await fileSHA256(for: video, memoizedHashes: &fileHashes)
+                    let secondHash = try? await fileSHA256(for: other, memoizedHashes: &fileHashes)
                     hashMatch = firstHash != nil && firstHash == secondHash
                 }
 
@@ -346,10 +346,10 @@ struct SimilarityPipeline: SimilarityProcessing {
 
     // MARK: - Phase C helpers
 
-    private func fileSHA256(for video: MediaItem, cache: inout [UUID: String]) async throws -> String {
-        if let cached = cache[video.id] { return cached }
+    private func fileSHA256(for video: MediaItem, memoizedHashes: inout [UUID: String]) async throws -> String {
+        if let cached = memoizedHashes[video.id] { return cached }
         let value = try await FileHasher.sha256(of: video.url, mediaKind: .video, cache: self.cache)
-        cache[video.id] = value
+        memoizedHashes[video.id] = value
         return value
     }
 }

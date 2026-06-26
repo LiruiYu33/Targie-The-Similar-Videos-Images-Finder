@@ -84,6 +84,21 @@ struct ImageFeatureRecord: Codable, Sendable, FetchableRecord, PersistableRecord
 
 extension ImageFeatureRecord: FilePathCacheRecord {}
 
+// MARK: - FrameFeatureRecord (avoids re-running Vision on video frames)
+
+/// Persisted serialized `FrameFeatures` blob so optional video frame
+/// verification can skip repeated frame decode + Vision inference.
+struct FrameFeatureRecord: Codable, Sendable, FetchableRecord, PersistableRecord {
+    var filePath: String    // PRIMARY KEY
+    var fileSize: Int64
+    var modifiedAt: Date?
+    var featureData: Data
+
+    static var databaseTableName: String { "frame_features" }
+}
+
+extension FrameFeatureRecord: FilePathCacheRecord {}
+
 // MARK: - HashCache Protocol
 
 /// 缓存接口 — 通过协议化便于测试时注入 InMemory 替身。
@@ -110,6 +125,11 @@ protocol HashCaching: Sendable {
     // phase skips Vision neural-network inference on re-scan.
     func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async
     func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data?
+
+    // Video frame feature cache — persists sampled frame feature prints so
+    // optional frame verification can survive process restarts.
+    func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async
+    func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data?
 
     /// Returns the previous path of a file that was moved, if one can be found
     /// in the cache. Read-only — does NOT update the path; the caller is
@@ -139,6 +159,8 @@ extension HashCaching {
 
     func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {}
     func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? { nil }
+    func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {}
+    func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? { nil }
     func detectMove(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) async -> String? { nil }
 }
 
@@ -147,7 +169,7 @@ extension HashCaching {
 /// SQLite 持久化哈希缓存, 使用 GRDB.swift 实现。
 /// 数据库位置: ~/Library/Caches/Targie/hash_cache.sqlite
 actor HashCache: HashCaching {
-    private static let stalePruneTables = ["hash_cache", "media_metadata", "image_features"]
+    private static let stalePruneTables = ["hash_cache", "media_metadata", "image_features", "frame_features"]
     private static let pruneInsertBatchSize = 500
 
     private let dbQueue: DatabaseQueue
@@ -318,6 +340,7 @@ actor HashCache: HashCaching {
             try db.execute(sql: "DELETE FROM hash_cache")
             try db.execute(sql: "DELETE FROM media_metadata")
             try db.execute(sql: "DELETE FROM image_features")
+            try db.execute(sql: "DELETE FROM frame_features")
         }
     }
 
@@ -506,6 +529,62 @@ actor HashCache: HashCaching {
         return candidate.featureData
     }
 
+    // MARK: - Frame Feature Cache
+
+    func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) {
+        try? dbQueue.write { db in
+            let record = FrameFeatureRecord(
+                filePath: filePath,
+                fileSize: fileSize,
+                modifiedAt: modifiedAt,
+                featureData: featureData
+            )
+            try record.save(db)
+        }
+    }
+
+    func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
+        if let data = primaryFrameFeatureLookup(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt) {
+            return data
+        }
+        return await moveFrameFeatureLookup(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt)
+    }
+
+    private func primaryFrameFeatureLookup(filePath: String, fileSize: Int64, modifiedAt: Date?) -> Data? {
+        try? dbQueue.read { db in
+            guard let record = try FrameFeatureRecord
+                .filter(Column("filePath") == filePath)
+                .filter(Column("fileSize") == fileSize)
+                .fetchOne(db),
+                modifiedAtMatches(record.modifiedAt, modifiedAt)
+            else { return nil }
+            return record.featureData
+        }
+    }
+
+    private func moveFrameFeatureLookup(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
+        let candidates = (try? await dbQueue.read { db in
+            try FrameFeatureRecord
+                .filter(Column("fileSize") == fileSize)
+                .filter(Column("filePath") != filePath)
+                .order(Column("filePath"))
+                .fetchAll(db)
+        }) ?? []
+        guard let candidate = await verifiedMovedRecord(
+            candidates,
+            to: filePath,
+            fileSize: fileSize,
+            modifiedAt: modifiedAt,
+            mediaKind: .video
+        ) else { return nil }
+
+        try? await dbQueue.write { db in
+            try db.execute(sql: "UPDATE frame_features SET filePath = ? WHERE filePath = ?",
+                           arguments: [filePath, candidate.filePath])
+        }
+        return candidate.featureData
+    }
+
     // MARK: - Helpers
 
     private func modifiedAtMatches(_ cached: Date?, _ current: Date?) -> Bool {
@@ -513,6 +592,10 @@ actor HashCache: HashCaching {
             return abs(a.timeIntervalSince(b)) < 1.0
         }
         return cached == nil && current == nil
+    }
+
+    private func modifiedAtExactlyMatches(_ cached: Date?, _ current: Date?) -> Bool {
+        cached == current
     }
 
     private func verifiedMovedRecord<T: FilePathCacheRecord>(
@@ -523,7 +606,7 @@ actor HashCache: HashCaching {
         mediaKind: MediaKind
     ) async -> T? {
         let viable = candidates.filter {
-            modifiedAtMatches($0.modifiedAt, modifiedAt) &&
+            modifiedAtExactlyMatches($0.modifiedAt, modifiedAt) &&
             !FileManager.default.fileExists(atPath: $0.filePath)
         }
         guard !viable.isEmpty,
@@ -549,7 +632,7 @@ actor HashCache: HashCaching {
                 .filter(Column("fileSize") == fileSize)
                 .filter(Column("mediaKind") == mediaKind.rawValue)
                 .fetchOne(db),
-                modifiedAtMatches(record.modifiedAt, modifiedAt),
+                modifiedAtExactlyMatches(record.modifiedAt, modifiedAt),
                 let sha = record.sha256,
                 !sha.isEmpty
             else { return nil }
@@ -602,6 +685,14 @@ actor HashCache: HashCaching {
         }
         migrator.registerMigration("v5_image_features") { db in
             try db.create(table: "image_features") { t in
+                t.primaryKey("filePath", .text)
+                t.column("fileSize", .integer).notNull()
+                t.column("modifiedAt", .datetime)
+                t.column("featureData", .blob).notNull()
+            }
+        }
+        migrator.registerMigration("v6_frame_features") { db in
+            try db.create(table: "frame_features") { t in
                 t.primaryKey("filePath", .text)
                 t.column("fileSize", .integer).notNull()
                 t.column("modifiedAt", .datetime)
@@ -674,6 +765,7 @@ actor InMemoryHashCache: HashCaching {
     private var metadata: [String: (duration: Double?, width: Int?, height: Int?)] = [:]
     private var sha256Store: [String: String] = [:]
     private var imageFeatures: [String: Data] = [:]
+    private var frameFeatures: [String: Data] = [:]
 
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
         guard let record = storage[filePath] else { return nil }
@@ -694,11 +786,12 @@ actor InMemoryHashCache: HashCaching {
         metadata = metadata.filter { validPaths.contains($0.key) }
         sha256Store = sha256Store.filter { validPaths.contains($0.key) }
         imageFeatures = imageFeatures.filter { validPaths.contains($0.key) }
+        frameFeatures = frameFeatures.filter { validPaths.contains($0.key) }
     }
 
     func count() -> Int { storage.count }
 
-    func clearAll() { storage.removeAll(); metadata.removeAll(); sha256Store.removeAll(); imageFeatures.removeAll() }
+    func clearAll() { storage.removeAll(); metadata.removeAll(); sha256Store.removeAll(); imageFeatures.removeAll(); frameFeatures.removeAll() }
 
     func sizeInBytes() -> Int64 { 0 }
 
@@ -724,6 +817,14 @@ actor InMemoryHashCache: HashCaching {
 
     func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
         imageFeatures[filePath]
+    }
+
+    func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {
+        frameFeatures[filePath] = featureData
+    }
+
+    func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
+        frameFeatures[filePath]
     }
 
     func detectMove(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> String? { nil }

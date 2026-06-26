@@ -45,6 +45,29 @@ struct FrameFeatures: @unchecked Sendable {
     let observations: [VNFeaturePrintObservation?]
 }
 
+enum FrameFeatureSerializer {
+    private struct Payload: Codable {
+        let observations: [Data?]
+    }
+
+    static func serialize(_ features: FrameFeatures) throws -> Data {
+        let observations = try features.observations.map { observation -> Data? in
+            guard let observation else { return nil }
+            return try ImageFeatureSerializer.serialize(observation)
+        }
+        return try JSONEncoder().encode(Payload(observations: observations))
+    }
+
+    static func deserialize(_ data: Data) throws -> FrameFeatures {
+        let payload = try JSONDecoder().decode(Payload.self, from: data)
+        let observations = try payload.observations.map { data -> VNFeaturePrintObservation? in
+            guard let data else { return nil }
+            return try ImageFeatureSerializer.deserialize(data)
+        }
+        return FrameFeatures(observations: observations)
+    }
+}
+
 protocol FrameFeatureExtracting: Sendable {
     func features(for url: URL) async throws -> FrameFeatures
     func similarity(between first: FrameFeatures, and second: FrameFeatures) async throws -> Double?
@@ -91,17 +114,45 @@ extension FrameFeatureExtractor: FrameFeatureExtracting {
 actor FrameFeatureCache {
     private let extractor: any FrameFeatureExtracting
     private var storage: [URL: FrameFeatures] = [:]
+    private let persistentCache: (any HashCaching)?
 
-    init(extractor: any FrameFeatureExtracting = FrameFeatureExtractor()) {
+    init(
+        extractor: any FrameFeatureExtracting = FrameFeatureExtractor(),
+        persistentCache: (any HashCaching)? = nil
+    ) {
         self.extractor = extractor
+        self.persistentCache = persistentCache
     }
 
     func features(for url: URL) async throws -> FrameFeatures {
         if let cached = storage[url] {
             return cached
         }
+
+        if let persistentCache,
+           let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+           let data = await persistentCache.lookupFrameFeature(
+               filePath: url.path,
+               fileSize: Int64(values.fileSize ?? 0),
+               modifiedAt: values.contentModificationDate
+           ),
+           let cached = try? FrameFeatureSerializer.deserialize(data) {
+            storage[url] = cached
+            return cached
+        }
+
         let value = try await extractor.features(for: url)
         storage[url] = value
+        if let persistentCache,
+           let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+           let data = try? FrameFeatureSerializer.serialize(value) {
+            await persistentCache.upsertFrameFeature(
+                filePath: url.path,
+                fileSize: Int64(values.fileSize ?? 0),
+                modifiedAt: values.contentModificationDate,
+                featureData: data
+            )
+        }
         return value
     }
 

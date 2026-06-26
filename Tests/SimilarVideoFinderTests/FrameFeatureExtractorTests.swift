@@ -46,6 +46,29 @@ final class FrameFeatureExtractorTests: XCTestCase {
         XCTAssertEqual(firstCount, 1)
         XCTAssertEqual(secondCount, 1)
     }
+
+    func testFeatureCachePersistsFeaturesAcrossCacheInstances() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FrameFeatureCachePersistence-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("video.mp4")
+        try Data([1, 2, 3, 4]).write(to: url)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 6_000)],
+            ofItemAtPath: url.path
+        )
+        let extractor = CountingFrameFeatureExtractor()
+        let persistentCache = InMemoryHashCache()
+        let firstCache = FrameFeatureCache(extractor: extractor, persistentCache: persistentCache)
+        let secondCache = FrameFeatureCache(extractor: extractor, persistentCache: persistentCache)
+
+        _ = try await firstCache.features(for: url)
+        _ = try await secondCache.features(for: url)
+
+        let count = await extractor.count(for: url)
+        XCTAssertEqual(count, 1)
+    }
 }
 
 private actor CountingFrameFeatureExtractor: FrameFeatureExtracting {

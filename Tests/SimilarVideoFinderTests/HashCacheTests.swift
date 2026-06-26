@@ -182,6 +182,30 @@ final class HashCacheTests: XCTestCase {
         XCTAssertEqual(result?.filePath, current.path)
     }
 
+    func testMoveLookupRequiresExactModificationDateEvenWhenSHA256Matches() async throws {
+        let cachedDate = Date(timeIntervalSince1970: 5_075)
+        let currentDate = cachedDate.addingTimeInterval(0.5)
+        let data = Data("SAME".utf8)
+        let current = try writeFixture(named: "moved-current-near-date.mp4", data: data, modifiedAt: currentDate)
+        let oldPath = tempDir.appendingPathComponent("moved-old-near-date.mp4").path
+        let oldSHA = try await FileHasher.sha256(of: current)
+        await cache.upsert(makeRecord(path: oldPath, size: Int64(data.count), date: cachedDate))
+        await cache.upsertMetadata(
+            filePath: oldPath,
+            fileSize: Int64(data.count),
+            modifiedAt: cachedDate,
+            mediaKind: .video,
+            duration: nil,
+            width: nil,
+            height: nil
+        )
+        await cache.upsertSHA256(filePath: oldPath, fileSize: Int64(data.count), modifiedAt: cachedDate, sha256: oldSHA)
+
+        let result = await cache.lookup(filePath: current.path, fileSize: Int64(data.count), modifiedAt: currentDate)
+
+        XCTAssertNil(result)
+    }
+
     func testMoveMetadataLookupDoesNotReuseMetadataWhenSHA256DoesNotMatch() async throws {
         let date = Date(timeIntervalSince1970: 5_100)
         let current = try writeFixture(named: "current-metadata.mp4", data: Data("BBBB".utf8), modifiedAt: date)
