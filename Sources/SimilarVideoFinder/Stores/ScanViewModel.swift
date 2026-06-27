@@ -57,6 +57,159 @@ enum PresentedError {
     }
 }
 
+private struct ScanSideResult: Sendable {
+    let items: [MediaItem]
+    let relations: [SimilarityRelation]
+    let issues: [ScanIssue]
+}
+
+private enum ScanProgressLane: CaseIterable, Hashable, Sendable {
+    case video
+    case image
+}
+
+private enum ScanProgressWorkflow: Sendable {
+    case fullScan
+    case discovery
+}
+
+private actor ScanProgressAggregator {
+    private let workflow: ScanProgressWorkflow
+    private var updates: [ScanProgressLane: ScanProgress] = [:]
+    private var completedLanes = Set<ScanProgressLane>()
+    private var emittedFraction = 0.0
+    private var emittedStage: ScanStage = .discovering
+
+    init(workflow: ScanProgressWorkflow) {
+        self.workflow = workflow
+    }
+
+    func update(_ lane: ScanProgressLane, with progress: ScanProgress) -> ScanProgress {
+        updates[lane] = progress
+        return aggregate(preferredLane: lane)
+    }
+
+    func complete(_ lane: ScanProgressLane, discoveredCount: Int) -> ScanProgress {
+        var progress = updates[lane] ?? ScanProgress(stage: .completed, fraction: 1)
+        progress.stage = .completed
+        progress.fraction = 1
+        progress.discoveredCount = max(progress.discoveredCount, discoveredCount)
+        updates[lane] = progress
+        completedLanes.insert(lane)
+        return aggregate(preferredLane: lane)
+    }
+
+    private func aggregate(preferredLane: ScanProgressLane) -> ScanProgress {
+        let allLanes = ScanProgressLane.allCases
+        let allCompleted = completedLanes.count == allLanes.count
+        let rawFraction = allLanes.reduce(into: (weighted: 0.0, total: 0.0)) { partial, lane in
+            let progress = updates[lane] ?? ScanProgress(stage: .discovering, fraction: 0)
+            let weight = Double(max(1, progress.discoveredCount))
+            partial.weighted += normalizedFraction(for: progress) * weight
+            partial.total += weight
+        }
+        if allCompleted {
+            emittedFraction = 1
+            emittedStage = .completed
+        } else {
+            let nextFraction = rawFraction.total > 0 ? rawFraction.weighted / rawFraction.total : 0
+            emittedFraction = max(emittedFraction, min(1, max(0, nextFraction)))
+            let nextStage = aggregateStage()
+            if stageRank(nextStage) >= stageRank(emittedStage) {
+                emittedStage = nextStage
+            }
+        }
+
+        let cacheKind = cacheKind(for: emittedStage)
+        let cacheStats = updates.values.reduce(into: (hits: 0, total: 0)) { partial, progress in
+            guard progress.cacheKind == cacheKind else { return }
+            partial.hits += progress.cacheHits
+            partial.total += progress.cacheTotal
+        }
+
+        return ScanProgress(
+            stage: emittedStage,
+            fraction: emittedFraction,
+            currentFile: currentFile(preferredLane: preferredLane, stage: emittedStage),
+            discoveredCount: updates.values.reduce(0) { $0 + $1.discoveredCount },
+            cacheHits: cacheStats.hits,
+            cacheTotal: cacheStats.total,
+            cacheKind: cacheStats.total > 0 ? cacheKind : nil
+        )
+    }
+
+    private func aggregateStage() -> ScanStage {
+        updates.values
+            .map(\.stage)
+            .filter { $0 != .completed && $0 != .cancelled && $0 != .idle }
+            .max { stageRank($0) < stageRank($1) } ?? .discovering
+    }
+
+    private func normalizedFraction(for progress: ScanProgress) -> Double {
+        let fraction = min(1, max(0, progress.fraction))
+        switch workflow {
+        case .discovery:
+            switch progress.stage {
+            case .completed:
+                return 1
+            case .readingMetadata:
+                return fraction
+            default:
+                return 0
+            }
+        case .fullScan:
+            switch progress.stage {
+            case .completed:
+                return 1
+            case .comparing:
+                return 0.65 + (0.35 * fraction)
+            case .hashing:
+                return 0.35 + (0.30 * fraction)
+            case .prehashing:
+                return 0.25 + (0.10 * fraction)
+            case .readingMetadata:
+                return 0.25 * fraction
+            default:
+                return 0
+            }
+        }
+    }
+
+    private func cacheKind(for stage: ScanStage) -> ScanProgressCacheKind? {
+        switch stage {
+        case .readingMetadata: .metadata
+        case .hashing: .fingerprint
+        case .comparing: .relation
+        default: nil
+        }
+    }
+
+    private func currentFile(preferredLane: ScanProgressLane, stage: ScanStage) -> String {
+        if let preferred = updates[preferredLane],
+           preferred.stage == stage,
+           !preferred.currentFile.isEmpty {
+            return preferred.currentFile
+        }
+        if let matching = updates.values.first(where: { $0.stage == stage && !$0.currentFile.isEmpty }) {
+            return matching.currentFile
+        }
+        return updates[preferredLane]?.currentFile ?? ""
+    }
+
+    private func stageRank(_ stage: ScanStage) -> Int {
+        switch stage {
+        case .idle: 0
+        case .discovering: 0
+        case .readingMetadata: 1
+        case .prehashing: 2
+        case .hashing: 3
+        case .comparing: 4
+        case .completed: 5
+        case .cancelled: 5
+        }
+    }
+}
+
 @MainActor
 final class ScanViewModel: ObservableObject {
     static let displayThresholdRange = DisplayThresholdEditing.allowedRange
@@ -227,24 +380,47 @@ final class ScanViewModel: ObservableObject {
         scanTask = Task { [weak self] in
             guard let self else { return }
             do {
-                var items: [MediaItem] = []
-                var relations: [SimilarityRelation] = []
-                var scanIssues: [ScanIssue] = []
                 // Always scan both kinds so the user can switch All / Images /
                 // Videos after scanning without re-scanning; `scanMode` only
                 // filters the sidebar display.
-                let (videos, videoIssues) = try await scanFolders(folders, load: loadVideos(folder:))
-                scanIssues.append(contentsOf: videoIssues)
-                try Task.checkCancellation()
-                let result = try await pipeline.process(videos: videos, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
-                items.append(contentsOf: result.videos)
-                relations.append(contentsOf: result.relations)
-                let (images, imageIssues) = try await scanFolders(folders, load: loadImages(folder:))
-                scanIssues.append(contentsOf: imageIssues)
-                try Task.checkCancellation()
-                let imageResult = try await imagePipeline.process(images: images, threshold: threshold) { [weak self] update in await MainActor.run { self?.progress = update } }
-                items.append(contentsOf: imageResult.images)
-                relations.append(contentsOf: imageResult.relations)
+                let scanner = self.scanner
+                let imageScanner = self.imageScanner
+                let pipeline = self.pipeline
+                let imagePipeline = self.imagePipeline
+                let threshold = self.threshold
+                let progressAggregator = ScanProgressAggregator(workflow: .fullScan)
+                async let videoSide: ScanSideResult = {
+                    let result = try await Self.scanAndCompareVideos(
+                        folders: folders,
+                        scanner: scanner,
+                        pipeline: pipeline,
+                        threshold: threshold
+                    ) { [weak self] update in
+                        let aggregate = await progressAggregator.update(.video, with: update)
+                        await MainActor.run { self?.progress = aggregate }
+                    }
+                    let aggregate = await progressAggregator.complete(.video, discoveredCount: result.items.count)
+                    await MainActor.run { [weak self] in self?.progress = aggregate }
+                    return result
+                }()
+                async let imageSide: ScanSideResult = {
+                    let result = try await Self.scanAndCompareImages(
+                        folders: folders,
+                        imageScanner: imageScanner,
+                        imagePipeline: imagePipeline,
+                        threshold: threshold
+                    ) { [weak self] update in
+                        let aggregate = await progressAggregator.update(.image, with: update)
+                        await MainActor.run { self?.progress = aggregate }
+                    }
+                    let aggregate = await progressAggregator.complete(.image, discoveredCount: result.items.count)
+                    await MainActor.run { [weak self] in self?.progress = aggregate }
+                    return result
+                }()
+                let (videoResult, imageResult) = try await (videoSide, imageSide)
+                let items = videoResult.items + imageResult.items
+                let relations = videoResult.relations + imageResult.relations
+                let scanIssues = videoResult.issues + imageResult.issues
                 // Publish the combined results once, after both kinds are done —
                 // the sidebar shows groups only when scanning is complete.
                 publish(items: items, relations: relations)
@@ -267,6 +443,53 @@ final class ScanViewModel: ObservableObject {
     /// Scans every folder with the given loader, deduping items by URL and
     /// collecting issues. Shared by `startScan` and `discoverFiles` so the
     /// folder-iteration/cancellation/progress logic lives in one place.
+    private nonisolated static func scanFolders(
+        _ folders: [URL],
+        load: @escaping @Sendable (URL) async throws -> (items: [MediaItem], issues: [ScanIssue])
+    ) async throws -> (items: [MediaItem], issues: [ScanIssue]) {
+        var items: [MediaItem] = []
+        var issues: [ScanIssue] = []
+        for folder in folders {
+            try Task.checkCancellation()
+            let result = try await load(folder)
+            items.append(contentsOf: result.items)
+            issues.append(contentsOf: result.issues)
+        }
+        return (Self.uniqueItemsByURL(items), issues)
+    }
+
+    private nonisolated static func scanAndCompareVideos(
+        folders: [URL],
+        scanner: VideoScanner,
+        pipeline: any SimilarityProcessing,
+        threshold: Double,
+        progress: @escaping @Sendable (ScanProgress) async -> Void
+    ) async throws -> ScanSideResult {
+        let scanned = try await scanFolders(folders) { folder in
+            let result = try await scanner.scan(folder: folder, progress: progress)
+            return (result.videos, result.issues)
+        }
+        try Task.checkCancellation()
+        let result = try await pipeline.process(videos: scanned.items, threshold: threshold, progress: progress)
+        return ScanSideResult(items: result.videos, relations: result.relations, issues: scanned.issues)
+    }
+
+    private nonisolated static func scanAndCompareImages(
+        folders: [URL],
+        imageScanner: ImageScanner,
+        imagePipeline: ImageSimilarityPipeline,
+        threshold: Double,
+        progress: @escaping @Sendable (ScanProgress) async -> Void
+    ) async throws -> ScanSideResult {
+        let scanned = try await scanFolders(folders) { folder in
+            let result = try await imageScanner.scan(folder: folder, progress: progress)
+            return (result.images, result.issues)
+        }
+        try Task.checkCancellation()
+        let result = try await imagePipeline.process(images: scanned.items, threshold: threshold, progress: progress)
+        return ScanSideResult(items: result.images, relations: result.relations, issues: scanned.issues)
+    }
+
     private func scanFolders(
         _ folders: [URL],
         load: (URL) async throws -> (items: [MediaItem], issues: [ScanIssue])
@@ -279,7 +502,7 @@ final class ScanViewModel: ObservableObject {
             items.append(contentsOf: result.items)
             issues.append(contentsOf: result.issues)
         }
-        return (uniqueItemsByURL(items), issues)
+        return (Self.uniqueItemsByURL(items), issues)
     }
 
     private func loadVideos(folder: URL) async throws -> (items: [MediaItem], issues: [ScanIssue]) {
@@ -313,15 +536,37 @@ final class ScanViewModel: ObservableObject {
         scanTask = Task { [weak self] in
             guard let self else { return }
             do {
-                var items: [MediaItem] = []
-                var scanIssues: [ScanIssue] = []
                 // Always scan both kinds (see startScan); scanMode only filters.
-                let (videos, videoIssues) = try await scanFolders(folders, load: loadVideos(folder:))
-                items.append(contentsOf: videos)
-                scanIssues.append(contentsOf: videoIssues)
-                let (images, imageIssues) = try await scanFolders(folders, load: loadImages(folder:))
-                items.append(contentsOf: images)
-                scanIssues.append(contentsOf: imageIssues)
+                let scanner = self.scanner
+                let imageScanner = self.imageScanner
+                let progressAggregator = ScanProgressAggregator(workflow: .discovery)
+                async let videoScan: (items: [MediaItem], issues: [ScanIssue]) = {
+                    let result = try await Self.scanFolders(folders) { folder in
+                        let scanned = try await scanner.scan(folder: folder) { [weak self] update in
+                            let aggregate = await progressAggregator.update(.video, with: update)
+                            await MainActor.run { self?.progress = aggregate }
+                        }
+                        return (scanned.videos, scanned.issues)
+                    }
+                    let aggregate = await progressAggregator.complete(.video, discoveredCount: result.items.count)
+                    await MainActor.run { [weak self] in self?.progress = aggregate }
+                    return result
+                }()
+                async let imageScan: (items: [MediaItem], issues: [ScanIssue]) = {
+                    let result = try await Self.scanFolders(folders) { folder in
+                        let scanned = try await imageScanner.scan(folder: folder) { [weak self] update in
+                            let aggregate = await progressAggregator.update(.image, with: update)
+                            await MainActor.run { self?.progress = aggregate }
+                        }
+                        return (scanned.images, scanned.issues)
+                    }
+                    let aggregate = await progressAggregator.complete(.image, discoveredCount: result.items.count)
+                    await MainActor.run { [weak self] in self?.progress = aggregate }
+                    return result
+                }()
+                let (videoResult, imageResult) = try await (videoScan, imageScan)
+                let items = videoResult.items + imageResult.items
+                let scanIssues = videoResult.issues + imageResult.issues
                 try Task.checkCancellation()
                 allItems = items
                 issues = scanIssues
@@ -729,7 +974,7 @@ final class ScanViewModel: ObservableObject {
         issues = []
     }
 
-    private func uniqueItemsByURL(_ items: [MediaItem]) -> [MediaItem] {
+    private nonisolated static func uniqueItemsByURL(_ items: [MediaItem]) -> [MediaItem] {
         var seen = Set<String>()
         return items.filter { seen.insert($0.url.standardizedFileURL.path).inserted }
     }

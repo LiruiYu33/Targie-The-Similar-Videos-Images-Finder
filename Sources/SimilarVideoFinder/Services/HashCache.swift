@@ -111,6 +111,65 @@ struct PairRelationCacheEntry: Equatable, Sendable {
     }
 }
 
+struct MediaMetadataCacheKey: Hashable, Sendable {
+    let filePath: String
+    let fileSize: Int64
+    let modifiedAt: Date?
+    let mediaKind: MediaKind
+}
+
+struct MediaMetadataCacheEntry: Equatable, Sendable {
+    let duration: Double?
+    let width: Int?
+    let height: Int?
+}
+
+struct MediaHashCacheKey: Hashable, Sendable {
+    let filePath: String
+    let fileSize: Int64
+    let modifiedAt: Date?
+    let mediaKind: MediaKind
+    let algorithmVersion: String
+}
+
+struct PairRelationCacheKey: Hashable, Sendable {
+    let firstPath: String
+    let secondPath: String
+    let firstFileSize: Int64
+    let secondFileSize: Int64
+    let firstModifiedAt: Date?
+    let secondModifiedAt: Date?
+    let mediaKind: MediaKind
+    let algorithmVersion: String
+
+    init?(first lhs: MediaItem, second rhs: MediaItem, algorithmVersion: String) {
+        guard lhs.kind == rhs.kind, lhs.url.path != rhs.url.path else { return nil }
+        let first: MediaItem
+        let second: MediaItem
+        if lhs.url.path < rhs.url.path {
+            first = lhs
+            second = rhs
+        } else {
+            first = rhs
+            second = lhs
+        }
+        self.firstPath = first.url.path
+        self.secondPath = second.url.path
+        self.firstFileSize = first.fileSize
+        self.secondFileSize = second.fileSize
+        self.firstModifiedAt = Self.normalizedModifiedAt(first.modifiedAt)
+        self.secondModifiedAt = Self.normalizedModifiedAt(second.modifiedAt)
+        self.mediaKind = first.kind
+        self.algorithmVersion = algorithmVersion
+    }
+
+    private static func normalizedModifiedAt(_ date: Date?) -> Date? {
+        guard let date else { return nil }
+        let milliseconds = (date.timeIntervalSince1970 * 1_000).rounded()
+        return Date(timeIntervalSince1970: milliseconds / 1_000)
+    }
+}
+
 private struct PairRelationRecord: Codable, Sendable, FetchableRecord, TableRecord {
     var firstPath: String
     var secondPath: String
@@ -126,42 +185,12 @@ private struct PairRelationRecord: Codable, Sendable, FetchableRecord, TableReco
     static var databaseTableName: String { "pair_relations" }
 }
 
-private struct PairRelationIdentity: Hashable, Sendable {
-    let firstPath: String
-    let secondPath: String
-    let firstFileSize: Int64
-    let secondFileSize: Int64
-    let firstModifiedAt: Date?
-    let secondModifiedAt: Date?
-    let mediaKind: MediaKind
-    let algorithmVersion: String
-}
-
 private enum PairRelationCacheCodec {
-    static func identity(first lhs: MediaItem, second rhs: MediaItem, algorithmVersion: String) -> PairRelationIdentity? {
-        guard lhs.kind == rhs.kind, lhs.url.path != rhs.url.path else { return nil }
-        let first: MediaItem
-        let second: MediaItem
-        if lhs.url.path < rhs.url.path {
-            first = lhs
-            second = rhs
-        } else {
-            first = rhs
-            second = lhs
-        }
-        return PairRelationIdentity(
-            firstPath: first.url.path,
-            secondPath: second.url.path,
-            firstFileSize: first.fileSize,
-            secondFileSize: second.fileSize,
-            firstModifiedAt: first.modifiedAt,
-            secondModifiedAt: second.modifiedAt,
-            mediaKind: first.kind,
-            algorithmVersion: algorithmVersion
-        )
+    static func identity(first lhs: MediaItem, second rhs: MediaItem, algorithmVersion: String) -> PairRelationCacheKey? {
+        PairRelationCacheKey(first: lhs, second: rhs, algorithmVersion: algorithmVersion)
     }
 
-    static func record(identity: PairRelationIdentity, relation: SimilarityRelation?) -> PairRelationRecord {
+    static func record(identity: PairRelationCacheKey, relation: SimilarityRelation?) -> PairRelationRecord {
         PairRelationRecord(
             firstPath: identity.firstPath,
             secondPath: identity.secondPath,
@@ -176,11 +205,11 @@ private enum PairRelationCacheCodec {
         )
     }
 
-    static func entry(record: PairRelationRecord, identity: PairRelationIdentity) -> PairRelationCacheEntry? {
+    static func entry(record: PairRelationRecord, identity: PairRelationCacheKey) -> PairRelationCacheEntry? {
         guard record.firstFileSize == identity.firstFileSize,
               record.secondFileSize == identity.secondFileSize,
-              exactDateMatch(record.firstModifiedAt, identity.firstModifiedAt),
-              exactDateMatch(record.secondModifiedAt, identity.secondModifiedAt)
+              identityDateMatch(record.firstModifiedAt, identity.firstModifiedAt),
+              identityDateMatch(record.secondModifiedAt, identity.secondModifiedAt)
         else { return nil }
         return PairRelationCacheEntry(score: record.score, evidence: decode(record.evidence))
     }
@@ -193,8 +222,9 @@ private enum PairRelationCacheCodec {
         Set(value.split(separator: ",").compactMap { SimilarityEvidence(rawValue: String($0)) })
     }
 
-    private static func exactDateMatch(_ lhs: Date?, _ rhs: Date?) -> Bool {
-        lhs == rhs
+    private static func identityDateMatch(_ lhs: Date?, _ rhs: Date?) -> Bool {
+        guard let lhs, let rhs else { return lhs == nil && rhs == nil }
+        return abs(lhs.timeIntervalSince(rhs)) < 0.001
     }
 }
 
@@ -209,11 +239,13 @@ protocol HashCaching: Sendable {
     func clearAll() async
     func sizeInBytes() async -> Int64
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) async -> CacheRecord?
+    func lookupHashes(keys: [MediaHashCacheKey]) async -> [MediaHashCacheKey: CacheRecord]
 
     // Metadata cache — lets loadVideo / loadImage skip AVFoundation re-read on
     // re-scan when the file hasn't changed.
     func upsertMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, duration: Double?, width: Int?, height: Int?) async
     func lookupMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind) async -> (duration: Double?, width: Int?, height: Int?)?
+    func lookupMetadata(keys: [MediaMetadataCacheKey]) async -> [MediaMetadataCacheKey: MediaMetadataCacheEntry]
 
     // SHA-256 file hash cache — avoids re-reading every byte of same-size files
     // on every re-scan.
@@ -234,6 +266,7 @@ protocol HashCaching: Sendable {
     // pair so re-scans can skip pair-level SHA / Vision / scoring work.
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async
     func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry?
+    func lookupPairRelations(keys: [PairRelationCacheKey]) async -> [PairRelationCacheKey: PairRelationCacheEntry]
 
     /// Returns the previous path of a file that was moved, if one can be found
     /// in the cache. Read-only — does NOT update the path; the caller is
@@ -247,8 +280,36 @@ extension HashCaching {
         await lookup(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: .video, algorithmVersion: "video-dct3d-v1")
     }
 
+    func lookupHashes(keys: [MediaHashCacheKey]) async -> [MediaHashCacheKey: CacheRecord] {
+        var results: [MediaHashCacheKey: CacheRecord] = [:]
+        for key in keys {
+            guard let record = await lookup(
+                filePath: key.filePath,
+                fileSize: key.fileSize,
+                modifiedAt: key.modifiedAt,
+                mediaKind: key.mediaKind,
+                algorithmVersion: key.algorithmVersion
+            ) else { continue }
+            results[key] = record
+        }
+        return results
+    }
+
     func upsertMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, duration: Double?, width: Int?, height: Int?) async {}
     func lookupMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind) async -> (duration: Double?, width: Int?, height: Int?)? { nil }
+    func lookupMetadata(keys: [MediaMetadataCacheKey]) async -> [MediaMetadataCacheKey: MediaMetadataCacheEntry] {
+        var results: [MediaMetadataCacheKey: MediaMetadataCacheEntry] = [:]
+        for key in keys {
+            guard let entry = await lookupMetadata(
+                filePath: key.filePath,
+                fileSize: key.fileSize,
+                modifiedAt: key.modifiedAt,
+                mediaKind: key.mediaKind
+            ) else { continue }
+            results[key] = MediaMetadataCacheEntry(duration: entry.duration, width: entry.width, height: entry.height)
+        }
+        return results
+    }
 
     func upsertSHA256(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, sha256: String) async {}
     func lookupSHA256(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind) async -> String? { nil }
@@ -267,6 +328,7 @@ extension HashCaching {
     func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? { nil }
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {}
     func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? { nil }
+    func lookupPairRelations(keys: [PairRelationCacheKey]) async -> [PairRelationCacheKey: PairRelationCacheEntry] { [:] }
     func detectMove(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) async -> String? { nil }
 }
 
@@ -277,6 +339,7 @@ extension HashCaching {
 actor HashCache: HashCaching {
     private static let stalePruneTables = ["hash_cache", "media_metadata", "image_features", "frame_features"]
     private static let pruneInsertBatchSize = 500
+    private static let cacheLookupBatchSize = 500
 
     private let dbQueue: DatabaseQueue
     private let databaseURL: URL
@@ -302,6 +365,35 @@ actor HashCache: HashCaching {
         }
         // Secondary lookup only after content identity proves the file moved.
         return await moveLookup(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: mediaKind, algorithmVersion: algorithmVersion)
+    }
+
+    func lookupHashes(keys: [MediaHashCacheKey]) async -> [MediaHashCacheKey: CacheRecord] {
+        guard !keys.isEmpty else { return [:] }
+        return (try? await dbQueue.read { db in
+            var results: [MediaHashCacheKey: CacheRecord] = [:]
+            let keysByGroup = Dictionary(grouping: keys) { "\($0.mediaKind.rawValue)\u{0}\($0.algorithmVersion)" }
+            for group in keysByGroup.values {
+                guard let first = group.first else { continue }
+                let keysByPath = Dictionary(grouping: group, by: \.filePath)
+                let paths = Array(keysByPath.keys)
+                for chunk in paths.chunked(size: Self.cacheLookupBatchSize) {
+                    let records = try CacheRecord
+                        .filter(chunk.contains(Column("filePath")))
+                        .filter(Column("mediaKind") == first.mediaKind.rawValue)
+                        .filter(Column("algorithmVersion") == first.algorithmVersion)
+                        .fetchAll(db)
+                    for record in records {
+                        for key in keysByPath[record.filePath] ?? [] {
+                            guard record.fileSize == key.fileSize,
+                                  modifiedAtMatches(record.modifiedAt, key.modifiedAt)
+                            else { continue }
+                            results[key] = record
+                        }
+                    }
+                }
+            }
+            return results
+        }) ?? [:]
     }
 
     private func primaryCacheLookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
@@ -466,19 +558,23 @@ actor HashCache: HashCaching {
         }
     }
 
-    func upsertMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, duration: Double?, width: Int?, height: Int?) {
-        try? dbQueue.write { db in
-            try db.execute(sql: """
-                INSERT INTO media_metadata (filePath, fileSize, modifiedAt, duration, width, height, mediaKind)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(filePath) DO UPDATE SET
-                    fileSize = excluded.fileSize,
-                    modifiedAt = excluded.modifiedAt,
-                    duration = excluded.duration,
-                    width = excluded.width,
-                    height = excluded.height,
-                    mediaKind = excluded.mediaKind
-                """, arguments: [filePath, fileSize, modifiedAt, duration, width, height, mediaKind.rawValue])
+    func upsertMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, duration: Double?, width: Int?, height: Int?) async {
+        try? await dbQueue.write { db in
+            let sha256 = try String.fetchOne(
+                db,
+                sql: "SELECT sha256 FROM media_metadata WHERE filePath = ?",
+                arguments: [filePath]
+            )
+            try MediaMetadata(
+                filePath: filePath,
+                fileSize: fileSize,
+                modifiedAt: modifiedAt,
+                duration: duration,
+                width: width,
+                height: height,
+                mediaKind: mediaKind.rawValue,
+                sha256: sha256
+            ).save(db)
         }
     }
 
@@ -489,6 +585,33 @@ actor HashCache: HashCaching {
         }
         // Move support — only reuse after SHA-256 confirms content identity.
         return await moveMetadataLookup(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: mediaKind)
+    }
+
+    func lookupMetadata(keys: [MediaMetadataCacheKey]) async -> [MediaMetadataCacheKey: MediaMetadataCacheEntry] {
+        guard !keys.isEmpty else { return [:] }
+        return (try? await dbQueue.read { db in
+            var results: [MediaMetadataCacheKey: MediaMetadataCacheEntry] = [:]
+            let keysByKind = Dictionary(grouping: keys, by: \.mediaKind)
+            for (mediaKind, group) in keysByKind {
+                let keysByPath = Dictionary(grouping: group, by: \.filePath)
+                let paths = Array(keysByPath.keys)
+                for chunk in paths.chunked(size: Self.cacheLookupBatchSize) {
+                    let records = try MediaMetadata
+                        .filter(chunk.contains(Column("filePath")))
+                        .filter(Column("mediaKind") == mediaKind.rawValue)
+                        .fetchAll(db)
+                    for record in records {
+                        for key in keysByPath[record.filePath] ?? [] {
+                            guard record.fileSize == key.fileSize,
+                                  modifiedAtMatches(record.modifiedAt, key.modifiedAt)
+                            else { continue }
+                            results[key] = MediaMetadataCacheEntry(duration: record.duration, width: record.width, height: record.height)
+                        }
+                    }
+                }
+            }
+            return results
+        }) ?? [:]
     }
 
     private func primaryMetadataLookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind) -> (duration: Double?, width: Int?, height: Int?)? {
@@ -530,8 +653,8 @@ actor HashCache: HashCaching {
 
     // MARK: - SHA-256 Cache
 
-    func upsertSHA256(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, sha256: String) {
-        try? dbQueue.write { db in
+    func upsertSHA256(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, sha256: String) async {
+        try? await dbQueue.write { db in
             try db.execute(sql: """
                 INSERT INTO media_metadata (filePath, fileSize, modifiedAt, mediaKind, sha256)
                 VALUES (?, ?, ?, ?, ?)
@@ -595,8 +718,8 @@ actor HashCache: HashCaching {
 
     // MARK: - Image Feature Cache
 
-    func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) {
-        try? dbQueue.write { db in
+    func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {
+        try? await dbQueue.write { db in
             let record = ImageFeatureRecord(
                 filePath: filePath,
                 fileSize: fileSize,
@@ -653,8 +776,8 @@ actor HashCache: HashCaching {
 
     // MARK: - Frame Feature Cache
 
-    func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) {
-        try? dbQueue.write { db in
+    func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {
+        try? await dbQueue.write { db in
             let record = FrameFeatureRecord(
                 filePath: filePath,
                 fileSize: fileSize,
@@ -756,16 +879,44 @@ actor HashCache: HashCaching {
         }
     }
 
+    func lookupPairRelations(keys: [PairRelationCacheKey]) async -> [PairRelationCacheKey: PairRelationCacheEntry] {
+        guard !keys.isEmpty else { return [:] }
+        return (try? await dbQueue.read { db in
+            var results: [PairRelationCacheKey: PairRelationCacheEntry] = [:]
+            let keysByGroup = Dictionary(grouping: keys) { "\($0.mediaKind.rawValue)\u{0}\($0.algorithmVersion)" }
+            for group in keysByGroup.values {
+                guard let first = group.first else { continue }
+                let keysByPair = Dictionary(grouping: group) { "\($0.firstPath)\u{0}\($0.secondPath)" }
+                let firstPaths = Array(Set(group.map(\.firstPath)))
+                for chunk in firstPaths.chunked(size: Self.cacheLookupBatchSize) {
+                    let records = try PairRelationRecord
+                        .filter(chunk.contains(Column("firstPath")))
+                        .filter(Column("mediaKind") == first.mediaKind.rawValue)
+                        .filter(Column("algorithmVersion") == first.algorithmVersion)
+                        .fetchAll(db)
+                    for record in records {
+                        let pairKey = "\(record.firstPath)\u{0}\(record.secondPath)"
+                        for identity in keysByPair[pairKey] ?? [] {
+                            guard let entry = PairRelationCacheCodec.entry(record: record, identity: identity) else { continue }
+                            results[identity] = entry
+                        }
+                    }
+                }
+            }
+            return results
+        }) ?? [:]
+    }
+
     // MARK: - Helpers
 
-    private func modifiedAtMatches(_ cached: Date?, _ current: Date?) -> Bool {
+    private nonisolated func modifiedAtMatches(_ cached: Date?, _ current: Date?) -> Bool {
         if let a = cached, let b = current {
             return abs(a.timeIntervalSince(b)) < 1.0
         }
         return cached == nil && current == nil
     }
 
-    private func modifiedAtExactlyMatches(_ cached: Date?, _ current: Date?) -> Bool {
+    private nonisolated func modifiedAtExactlyMatches(_ cached: Date?, _ current: Date?) -> Bool {
         cached == current
     }
 
@@ -907,6 +1058,15 @@ actor HashCache: HashCaching {
     }
 }
 
+private extension Array {
+    func chunked(size: Int) -> [ArraySlice<Element>] {
+        guard size > 0, !isEmpty else { return [] }
+        return stride(from: 0, to: count, by: size).map { start in
+            self[start..<Swift.min(start + size, count)]
+        }
+    }
+}
+
 // MARK: - Conversion Helpers
 
 extension CacheRecord {
@@ -952,11 +1112,11 @@ extension CacheRecord {
 /// 测试用纯内存缓存替身, 与 SQLite 缓存接口一致。
 actor InMemoryHashCache: HashCaching {
     private var storage: [String: CacheRecord] = [:]
-    private var metadata: [String: (duration: Double?, width: Int?, height: Int?)] = [:]
+    private var metadata: [String: (key: MediaMetadataCacheKey, entry: MediaMetadataCacheEntry)] = [:]
     private var sha256Store: [String: String] = [:]
     private var imageFeatures: [String: Data] = [:]
     private var frameFeatures: [String: Data] = [:]
-    private var pairRelations: [PairRelationIdentity: PairRelationRecord] = [:]
+    private var pairRelations: [PairRelationCacheKey: PairRelationRecord] = [:]
 
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
         guard let record = storage[filePath] else { return nil }
@@ -966,6 +1126,21 @@ actor InMemoryHashCache: HashCaching {
             return abs(a.timeIntervalSince(b)) < 1.0 ? record : nil
         }
         return record.modifiedAt == nil && modifiedAt == nil ? record : nil
+    }
+
+    func lookupHashes(keys: [MediaHashCacheKey]) -> [MediaHashCacheKey: CacheRecord] {
+        var results: [MediaHashCacheKey: CacheRecord] = [:]
+        for key in keys {
+            guard let record = lookup(
+                filePath: key.filePath,
+                fileSize: key.fileSize,
+                modifiedAt: key.modifiedAt,
+                mediaKind: key.mediaKind,
+                algorithmVersion: key.algorithmVersion
+            ) else { continue }
+            results[key] = record
+        }
+        return results
     }
 
     func upsert(_ record: CacheRecord) {
@@ -990,11 +1165,30 @@ actor InMemoryHashCache: HashCaching {
     func sizeInBytes() -> Int64 { 0 }
 
     func upsertMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, duration: Double?, width: Int?, height: Int?) async {
-        metadata[filePath] = (duration, width, height)
+        let key = MediaMetadataCacheKey(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: mediaKind)
+        metadata[filePath] = (key, MediaMetadataCacheEntry(duration: duration, width: width, height: height))
     }
 
     func lookupMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind) async -> (duration: Double?, width: Int?, height: Int?)? {
-        metadata[filePath]
+        guard let cached = metadata[filePath],
+              cached.key.fileSize == fileSize,
+              cached.key.mediaKind == mediaKind,
+              datesMatch(cached.key.modifiedAt, modifiedAt)
+        else { return nil }
+        return (cached.entry.duration, cached.entry.width, cached.entry.height)
+    }
+
+    func lookupMetadata(keys: [MediaMetadataCacheKey]) -> [MediaMetadataCacheKey: MediaMetadataCacheEntry] {
+        var results: [MediaMetadataCacheKey: MediaMetadataCacheEntry] = [:]
+        for key in keys {
+            guard let cached = metadata[key.filePath],
+                  cached.key.fileSize == key.fileSize,
+                  cached.key.mediaKind == key.mediaKind,
+                  datesMatch(cached.key.modifiedAt, key.modifiedAt)
+            else { continue }
+            results[key] = cached.entry
+        }
+        return results
     }
 
     func upsertSHA256(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, sha256: String) async {
@@ -1033,5 +1227,23 @@ actor InMemoryHashCache: HashCaching {
         return PairRelationCacheCodec.entry(record: record, identity: identity)
     }
 
+    func lookupPairRelations(keys: [PairRelationCacheKey]) -> [PairRelationCacheKey: PairRelationCacheEntry] {
+        var results: [PairRelationCacheKey: PairRelationCacheEntry] = [:]
+        for key in keys {
+            guard let record = pairRelations[key],
+                  let entry = PairRelationCacheCodec.entry(record: record, identity: key)
+            else { continue }
+            results[key] = entry
+        }
+        return results
+    }
+
     func detectMove(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> String? { nil }
+
+    private func datesMatch(_ cached: Date?, _ current: Date?) -> Bool {
+        if let a = cached, let b = current {
+            return abs(a.timeIntervalSince(b)) < 1.0
+        }
+        return cached == nil && current == nil
+    }
 }

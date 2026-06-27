@@ -106,6 +106,29 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         )
     }
 
+    func testCachedPairRelationUsesBatchLookupDuringComparison() async throws {
+        let first = image(path: "/missing/batch-pair-cache-first.jpg", size: 1_000)
+        let second = image(path: "/missing/batch-pair-cache-second.jpg", size: 1_100)
+        let cache = ImagePairRelationBatchRecordingCache()
+        await cache.seed(image: first, hash: [UInt8](repeating: 0, count: 8))
+        await cache.seed(image: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        await cache.seedRelation(
+            first: first,
+            second: second,
+            algorithmVersion: ImageSimilarityPipeline.pairRelationAlgorithmVersion,
+            entry: PairRelationCacheEntry(score: 0.92, evidence: [.similarPerceptualHash])
+        )
+        let pipeline = ImageSimilarityPipeline(cache: cache)
+
+        let result = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+
+        XCTAssertEqual(result.groups.count, 1)
+        let pairBatchLookupCount = await cache.pairBatchLookupCount
+        let pairSingleLookupCount = await cache.pairSingleLookupCount
+        XCTAssertEqual(pairBatchLookupCount, 1)
+        XCTAssertEqual(pairSingleLookupCount, 0)
+    }
+
     private func writePattern(to url: URL) throws {
         guard let context = CGContext(data: nil, width: 80, height: 60, bitsPerComponent: 8, bytesPerRow: 320, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw CocoaError(.fileWriteUnknown) }
         context.setFillColor(CGColor(red: 0.1, green: 0.3, blue: 0.8, alpha: 1))
@@ -179,5 +202,57 @@ private final class CountingThrowingImageFeatureExtractor: @unchecked Sendable, 
 
     func similarity(between first: ImageFeature, and second: ImageFeature) throws -> Double {
         throw CocoaError(.featureUnsupported)
+    }
+}
+
+private actor ImagePairRelationBatchRecordingCache: HashCaching {
+    private var hashes: [String: CacheRecord] = [:]
+    private var relations: [PairRelationCacheKey: PairRelationCacheEntry] = [:]
+    private(set) var pairBatchLookupCount = 0
+    private(set) var pairSingleLookupCount = 0
+
+    func seed(image: MediaItem, hash: [UInt8]) {
+        var record = CacheRecord(
+            filePath: image.url.path,
+            fileSize: image.fileSize,
+            modifiedAt: image.modifiedAt,
+            perceptualHash: Data(hash),
+            prehashDurationBucket: 0,
+            prehashSizeBucket: 0,
+            prehashAspectBucket: 0,
+            prehashThumbnailMean: 0,
+            prehashThumbnailVariance: 0
+        )
+        record.mediaKind = MediaKind.image.rawValue
+        record.algorithmVersion = ImageSimilarityPipeline.algorithmVersion
+        hashes[image.url.path] = record
+    }
+
+    func seedRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, entry: PairRelationCacheEntry) {
+        guard let key = PairRelationCacheKey(first: first, second: second, algorithmVersion: algorithmVersion) else { return }
+        relations[key] = entry
+    }
+
+    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
+        hashes[filePath]
+    }
+
+    func upsert(_ record: CacheRecord) {}
+    func pruneStale(validPaths: Set<String>) {}
+    func count() -> Int { hashes.count }
+    func clearAll() {}
+    func sizeInBytes() -> Int64 { 0 }
+
+    func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? {
+        pairSingleLookupCount += 1
+        guard let key = PairRelationCacheKey(first: first, second: second, algorithmVersion: algorithmVersion) else { return nil }
+        return relations[key]
+    }
+
+    func lookupPairRelations(keys: [PairRelationCacheKey]) -> [PairRelationCacheKey: PairRelationCacheEntry] {
+        pairBatchLookupCount += 1
+        return keys.reduce(into: [:]) { result, key in
+            if let entry = relations[key] { result[key] = entry }
+        }
     }
 }

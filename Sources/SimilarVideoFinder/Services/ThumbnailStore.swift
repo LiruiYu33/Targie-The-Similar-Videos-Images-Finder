@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Lirui Yu
 
 import CryptoKit
+import AppKit
 import Foundation
+import ImageIO
 
 struct ThumbnailStore: Sendable {
     static let shared = ThumbnailStore(directoryURL: defaultDirectoryURL())
@@ -130,6 +132,61 @@ struct ThumbnailStore: Sendable {
 
     static func data(at url: URL) -> Data? {
         ThumbnailDataCache.shared.data(at: url)
+    }
+
+    static func persistedData(at url: URL) -> Data? {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            ThumbnailDataCache.shared.remove(url)
+            return nil
+        }
+        return data(at: url)
+    }
+
+    func imageThumbnailData(for sourceURL: URL, modifiedAt: Date?) -> Data? {
+        if let existingURL = existingThumbnailURL(for: sourceURL, modifiedAt: modifiedAt),
+           let data = Self.data(at: existingURL) {
+            return data
+        }
+        guard let data = Self.makeImageThumbnailData(for: sourceURL) else { return nil }
+        return (try? persist(data, sourceURL: sourceURL, modifiedAt: modifiedAt)).flatMap(Self.data(at:)) ?? data
+    }
+
+    static func imageThumbnailData(sourceURL: URL, modifiedAt: Date?, thumbnailURL: URL?) -> Data? {
+        guard let thumbnailURL else {
+            return shared.imageThumbnailData(for: sourceURL, modifiedAt: modifiedAt)
+        }
+        if let data = persistedData(at: thumbnailURL) { return data }
+        guard let data = makeImageThumbnailData(for: sourceURL) else { return nil }
+        do {
+            try FileManager.default.createDirectory(
+                at: thumbnailURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: thumbnailURL, options: .atomic)
+            ThumbnailDataCache.shared.insert(data, for: thumbnailURL)
+        } catch {
+            return data
+        }
+        return data
+    }
+
+    private static func makeImageThumbnailData(for sourceURL: URL) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, [
+            kCGImageSourceShouldCache: false
+        ] as CFDictionary) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 720,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return NSBitmapImageRep(cgImage: thumbnail).representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 0.78]
+        )
     }
 
     private static func defaultDirectoryURL() -> URL {

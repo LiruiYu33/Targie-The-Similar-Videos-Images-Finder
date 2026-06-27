@@ -40,6 +40,7 @@ struct VideoScanner {
     let loader: VideoLoader
     let metadataCache: (any HashCaching)?
     let usesDefaultLoader: Bool
+    private let thumbnailStore: ThumbnailStore
     private let progressLoader: VideoProgressLoader
 
     init(
@@ -51,6 +52,7 @@ struct VideoScanner {
         self.maxConcurrentLoads = max(1, maxConcurrentLoads)
         self.metadataCache = metadataCache
         self.usesDefaultLoader = loader == nil
+        self.thumbnailStore = thumbnailStore
         if let loader {
             self.loader = loader
             self.progressLoader = { url in
@@ -89,6 +91,10 @@ struct VideoScanner {
     ) async throws -> VideoScanResult {
         let urls = try Self.discoverVideoURLs(in: folder)
         let reportsMetadataCache = metadataCache != nil && usesDefaultLoader
+        let metadataKeysByPath = reportsMetadataCache ? Self.metadataKeysByPath(urls: urls, mediaKind: .video) : [:]
+        let prefetchedMetadata = reportsMetadataCache
+            ? await metadataCache?.lookupMetadata(keys: Array(metadataKeysByPath.values)) ?? [:]
+            : [:]
         await progress(ScanProgress(
             stage: .readingMetadata,
             fraction: 0,
@@ -106,7 +112,20 @@ struct VideoScanner {
 
             for _ in 0..<min(limit, urls.count) {
                 guard let next = iterator.next() else { break }
-                group.addTask { try await Self.load(index: next.offset, url: next.element, using: loader) }
+                group.addTask {
+                    try await Self.load(
+                        index: next.offset,
+                        url: next.element,
+                        using: loader,
+                        cachedMetadata: Self.cachedMetadata(
+                            for: next.element,
+                            keysByPath: metadataKeysByPath,
+                            prefetchedMetadata: prefetchedMetadata
+                        ),
+                        thumbnailStore: thumbnailStore,
+                        metadataCache: metadataCache
+                    )
+                }
             }
 
             while let result = try await group.next() {
@@ -124,7 +143,20 @@ struct VideoScanner {
                     cacheKind: reportsMetadataCache ? .metadata : nil
                 ))
                 if let next = iterator.next() {
-                    group.addTask { try await Self.load(index: next.offset, url: next.element, using: loader) }
+                    group.addTask {
+                        try await Self.load(
+                            index: next.offset,
+                            url: next.element,
+                            using: loader,
+                            cachedMetadata: Self.cachedMetadata(
+                                for: next.element,
+                                keysByPath: metadataKeysByPath,
+                                prefetchedMetadata: prefetchedMetadata
+                            ),
+                            thumbnailStore: thumbnailStore,
+                            metadataCache: metadataCache
+                        )
+                    }
                 }
             }
             return collected.sorted { $0.index < $1.index }
@@ -137,7 +169,36 @@ struct VideoScanner {
     }
 
     private static func load(index: Int, url: URL, using loader: VideoProgressLoader) async throws -> LoadedVideo {
+        try await load(index: index, url: url, using: loader, cachedMetadata: nil, thumbnailStore: nil, metadataCache: nil)
+    }
+
+    private static func load(
+        index: Int,
+        url: URL,
+        using loader: VideoProgressLoader,
+        cachedMetadata: (key: MediaMetadataCacheKey, entry: MediaMetadataCacheEntry)?,
+        thumbnailStore: ThumbnailStore?,
+        metadataCache: (any HashCaching)?
+    ) async throws -> LoadedVideo {
         do {
+            if let cachedMetadata,
+               let thumbnailStore,
+               let metadataCache,
+               let duration = cachedMetadata.entry.duration,
+               let width = cachedMetadata.entry.width,
+               let height = cachedMetadata.entry.height {
+                let video = try await finishLoadVideo(
+                    url: url,
+                    fileSize: cachedMetadata.key.fileSize,
+                    modifiedAt: cachedMetadata.key.modifiedAt,
+                    duration: duration,
+                    width: width,
+                    height: height,
+                    thumbnailStore: thumbnailStore,
+                    metadataCache: metadataCache
+                )
+                return LoadedVideo(index: index, url: url, video: video, metadataCacheHit: true, issue: nil)
+            }
             let loaded = try await loader(url)
             return LoadedVideo(index: index, url: url, video: loaded.video, metadataCacheHit: loaded.metadataCacheHit, issue: nil)
         } catch is CancellationError {
@@ -147,6 +208,27 @@ struct VideoScanner {
         } catch {
             return LoadedVideo(index: index, url: url, video: nil, metadataCacheHit: false, issue: ScanIssue(url: url, reason: .message(error.localizedDescription)))
         }
+    }
+
+    private static func metadataKeysByPath(urls: [URL], mediaKind: MediaKind) -> [String: MediaMetadataCacheKey] {
+        urls.reduce(into: [:]) { result, url in
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
+            result[url.path] = MediaMetadataCacheKey(
+                filePath: url.path,
+                fileSize: Int64(values.fileSize ?? 0),
+                modifiedAt: values.contentModificationDate,
+                mediaKind: mediaKind
+            )
+        }
+    }
+
+    private static func cachedMetadata(
+        for url: URL,
+        keysByPath: [String: MediaMetadataCacheKey],
+        prefetchedMetadata: [MediaMetadataCacheKey: MediaMetadataCacheEntry]
+    ) -> (key: MediaMetadataCacheKey, entry: MediaMetadataCacheEntry)? {
+        guard let key = keysByPath[url.path], let entry = prefetchedMetadata[key] else { return nil }
+        return (key, entry)
     }
 
     private static func loadVideo(

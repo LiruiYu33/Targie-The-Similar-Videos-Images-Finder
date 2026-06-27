@@ -19,6 +19,7 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
+import Combine
 import XCTest
 @testable import SimilarVideoFinder
 
@@ -123,6 +124,117 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(model.items.map { $0.url.standardizedFileURL.path }, [cachedVideo.standardizedFileURL.path])
         let metadataLookups = await cache.metadataLookupCount()
         XCTAssertEqual(metadataLookups, 1)
+    }
+
+    func testVideoAndImageScansStartConcurrently() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ParallelKindScan-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data([1]).write(to: root.appendingPathComponent("clip.mp4"))
+        try Data([2]).write(to: root.appendingPathComponent("photo.jpg"))
+        let tracker = CrossKindScanTracker()
+        let scanner = VideoScanner(maxConcurrentLoads: 1) { url in
+            await tracker.videoStarted()
+            await tracker.waitForImageStarted()
+            return MediaItem(
+                kind: .video,
+                url: url,
+                fileSize: 1,
+                duration: 1,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: nil
+            )
+        }
+        let imageScanner = ImageScanner(maxConcurrentLoads: 1) { url in
+            await tracker.imageStarted()
+            return MediaItem(
+                kind: .image,
+                url: url,
+                fileSize: 1,
+                duration: nil,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: Data([1])
+            )
+        }
+        let model = ScanViewModel(
+            scanner: scanner,
+            imageScanner: imageScanner,
+            pipeline: ExactDuplicatePipeline(),
+            hashCache: nil
+        )
+        model.selectedFolders = [root]
+        defer { model.cancelScan() }
+
+        model.startScan()
+        try await waitUntilAsync(timeoutIterations: 100) { await tracker.bothStarted() }
+
+        let bothStarted = await tracker.bothStarted()
+        XCTAssertTrue(bothStarted)
+    }
+
+    func testConcurrentKindProgressDoesNotMoveBackward() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ParallelProgress-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data([1]).write(to: root.appendingPathComponent("clip.mp4"))
+        try Data([2]).write(to: root.appendingPathComponent("a.jpg"))
+        try Data([3]).write(to: root.appendingPathComponent("b.jpg"))
+
+        let tracker = CrossKindProgressTracker()
+        let scanner = VideoScanner(maxConcurrentLoads: 1) { url in
+            MediaItem(
+                kind: .video,
+                url: url,
+                fileSize: 1,
+                duration: 1,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: nil
+            )
+        }
+        let imageScanner = ImageScanner(maxConcurrentLoads: 1) { url in
+            await tracker.waitForVideoComparingProgress()
+            return MediaItem(
+                kind: .image,
+                url: url,
+                fileSize: 1,
+                duration: nil,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: Data([1])
+            )
+        }
+        let model = ScanViewModel(
+            scanner: scanner,
+            imageScanner: imageScanner,
+            pipeline: ProgressReportingPipeline(tracker: tracker),
+            hashCache: nil
+        )
+        var fractions: [Double] = []
+        let cancellable = model.$progress.sink { progress in
+            fractions.append(progress.fraction)
+        }
+        defer {
+            cancellable.cancel()
+            model.cancelScan()
+        }
+
+        model.selectedFolders = [root]
+        model.startScan()
+        try await waitUntil { model.progress.stage == .completed }
+
+        let regressions = zip(fractions, fractions.dropFirst()).filter { previous, next in
+            next < previous
+        }
+        XCTAssertTrue(regressions.isEmpty, "Progress moved backward: \(fractions)")
     }
 
     func testDeletePromptStartsByChoosingMethod() {
@@ -870,6 +982,59 @@ private struct ExactDuplicatePipeline: SimilarityProcessing {
             relations: [relation],
             groups: SimilarityGrouper.groups(items: videos, relations: [relation], threshold: threshold)
         )
+    }
+}
+
+private struct ProgressReportingPipeline: SimilarityProcessing {
+    let tracker: CrossKindProgressTracker
+
+    func process(
+        videos: [MediaItem],
+        threshold: Double,
+        progress: @escaping @Sendable (ScanProgress) async -> Void
+    ) async throws -> PipelineResult {
+        await progress(ScanProgress(stage: .comparing, fraction: 0.8, discoveredCount: videos.count))
+        await tracker.videoComparingProgressReported()
+        return PipelineResult(videos: videos, relations: [], groups: [])
+    }
+}
+
+private actor CrossKindScanTracker {
+    private var didStartVideo = false
+    private var didStartImage = false
+
+    func videoStarted() {
+        didStartVideo = true
+    }
+
+    func imageStarted() {
+        didStartImage = true
+    }
+
+    func bothStarted() -> Bool {
+        didStartVideo && didStartImage
+    }
+
+    func waitForImageStarted() async {
+        for _ in 0..<300 {
+            if didStartImage { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
+private actor CrossKindProgressTracker {
+    private var didReportVideoComparingProgress = false
+
+    func videoComparingProgressReported() {
+        didReportVideoComparingProgress = true
+    }
+
+    func waitForVideoComparingProgress() async {
+        for _ in 0..<300 {
+            if didReportVideoComparingProgress { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 }
 

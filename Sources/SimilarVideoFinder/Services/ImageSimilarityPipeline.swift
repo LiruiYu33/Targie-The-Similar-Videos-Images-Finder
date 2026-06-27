@@ -13,13 +13,17 @@ struct ImageSimilarityPipeline: Sendable {
     static let algorithmVersion = "image-phash-v1"
     static let pairRelationAlgorithmVersion = "image-pair-relation-v1"
     static let maxDistance = 20
-    private static let relationStorageFloor = 0.60
+    fileprivate static let relationStorageFloor = 0.60
     private let cache: (any HashCaching)?
     private let featureExtractor: any ImageFeatureExtracting
 
     init(cache: (any HashCaching)? = nil, featureExtractor: any ImageFeatureExtracting = ImageFeatureExtractor()) {
         self.cache = cache
         self.featureExtractor = featureExtractor
+    }
+
+    static func comparisonConcurrencyLimit(processorCount: Int) -> Int {
+        min(6, max(2, processorCount / 2))
     }
 
     func process(
@@ -44,39 +48,62 @@ struct ImageSimilarityPipeline: Sendable {
         for (index, image) in images.enumerated() {
             try Task.checkCancellation()
             guard let hash = hashes[image.id] else { continue }
+            var pendingNeighbors: [(other: MediaItem, neighbor: (item: ImagePerceptualHash, dist: Int), relationKey: PairRelationCacheKey?)] = []
             for neighbor in tree.search(hash, maxDistance: Self.maxDistance, distance: { $0.hammingDistance(to: $1) }) where neighbor.item.mediaID != image.id {
                 let key = ImagePairKey(image.id, neighbor.item.mediaID)
                 guard seen.insert(key).inserted, let other = byID[neighbor.item.mediaID] else { continue }
-                if let cache {
+                pendingNeighbors.append((
+                    other: other,
+                    neighbor: neighbor,
+                    relationKey: PairRelationCacheKey(first: image, second: other, algorithmVersion: Self.pairRelationAlgorithmVersion)
+                ))
+            }
+
+            let relationKeys = pendingNeighbors.compactMap(\.relationKey)
+            let relationCache: [PairRelationCacheKey: PairRelationCacheEntry] = cache == nil || relationKeys.isEmpty
+                ? [:]
+                : await cache?.lookupPairRelations(keys: relationKeys) ?? [:]
+            var misses: [ImageComparisonCandidate] = []
+            for pending in pendingNeighbors {
+                if let relationKey = pending.relationKey {
                     pairCacheTotal += 1
-                    if let cached = await cache.lookupPairRelation(first: image, second: other, algorithmVersion: Self.pairRelationAlgorithmVersion) {
+                    if let cached = relationCache[relationKey] {
                         pairCacheHits += 1
-                        if let relation = cached.relation(firstID: image.id, secondID: other.id) {
+                        if let relation = cached.relation(firstID: image.id, secondID: pending.other.id) {
                             relations.append(relation)
                         }
                         continue
                     }
                 }
-                let perceptual = hash.similarity(to: neighbor.item)
-                var exact = false
-                if image.fileSize > 0 && image.fileSize == other.fileSize && neighbor.dist == 0,
-                   let firstHash = try? await FileHasher.sha256(of: image.url, mediaKind: .image, cache: cache),
-                   let secondHash = try? await FileHasher.sha256(of: other.url, mediaKind: .image, cache: cache) {
-                    exact = firstHash == secondHash
+                misses.append(ImageComparisonCandidate(
+                    first: image,
+                    second: pending.other,
+                    firstHash: hash,
+                    secondHash: pending.neighbor.item,
+                    neighborDistance: pending.neighbor.dist
+                ))
+            }
+
+            let comparisonLimit = Self.comparisonConcurrencyLimit(
+                processorCount: ProcessInfo.processInfo.activeProcessorCount
+            )
+            try await withThrowingTaskGroup(of: SimilarityRelation?.self) { group in
+                var iterator = misses.makeIterator()
+                for _ in 0..<min(comparisonLimit, misses.count) {
+                    guard let next = iterator.next() else { break }
+                    group.addTask {
+                        try await compareImageCandidate(next, cache: cache, featureCache: featureCache)
+                    }
                 }
-                try Task.checkCancellation()
-                let feature = !exact && perceptual >= 0.72
-                    ? await featureCache.similarity(between: image.url, and: other.url)
-                    : nil
-                let score = SimilarityScorer.score(image, other, hashesMatch: exact, perceptualSimilarity: perceptual, frameSimilarity: feature)
-                let relation: SimilarityRelation?
-                if score.score >= Self.relationStorageFloor {
-                    relation = SimilarityRelation(firstID: image.id, secondID: other.id, score: score.score, evidence: score.evidence)
+
+                while let relation = try await group.next() {
                     if let relation { relations.append(relation) }
-                } else {
-                    relation = nil
+                    if let next = iterator.next() {
+                        group.addTask {
+                            try await compareImageCandidate(next, cache: cache, featureCache: featureCache)
+                        }
+                    }
                 }
-                await cache?.upsertPairRelation(first: image, second: other, algorithmVersion: Self.pairRelationAlgorithmVersion, relation: relation)
             }
             await progress(ScanProgress(
                 stage: .comparing,
@@ -94,8 +121,25 @@ struct ImageSimilarityPipeline: Sendable {
     private func computeHashes(images: [MediaItem], progress: @escaping @Sendable (ScanProgress) async -> Void) async throws -> [UUID: ImagePerceptualHash] {
         var hashes: [UUID: ImagePerceptualHash] = [:]
         var missing: [MediaItem] = []
+        let keysByID = Dictionary(uniqueKeysWithValues: images.map {
+            (
+                $0.id,
+                MediaHashCacheKey(
+                    filePath: $0.url.path,
+                    fileSize: $0.fileSize,
+                    modifiedAt: $0.modifiedAt,
+                    mediaKind: .image,
+                    algorithmVersion: Self.algorithmVersion
+                )
+            )
+        })
+        let batch: [MediaHashCacheKey: CacheRecord] = cache == nil
+            ? [:]
+            : await cache?.lookupHashes(keys: Array(keysByID.values)) ?? [:]
         for image in images {
-            if let record = await cache?.lookup(filePath: image.url.path, fileSize: image.fileSize, modifiedAt: image.modifiedAt, mediaKind: .image, algorithmVersion: Self.algorithmVersion) {
+            if let key = keysByID[image.id], let record = batch[key] {
+                hashes[image.id] = ImagePerceptualHash(mediaID: image.id, hashBits: Array(record.perceptualHash))
+            } else if let record = await cache?.lookup(filePath: image.url.path, fileSize: image.fileSize, modifiedAt: image.modifiedAt, mediaKind: .image, algorithmVersion: Self.algorithmVersion) {
                 hashes[image.id] = ImagePerceptualHash(mediaID: image.id, hashBits: Array(record.perceptualHash))
             } else { missing.append(image) }
         }
@@ -147,4 +191,58 @@ private struct ImagePairKey: Hashable {
     init(_ lhs: UUID, _ rhs: UUID) {
         if lhs.uuidString < rhs.uuidString { first = lhs; second = rhs } else { first = rhs; second = lhs }
     }
+}
+
+private func compareImageCandidate(
+    _ candidate: ImageComparisonCandidate,
+    cache: (any HashCaching)?,
+    featureCache: ImageFeatureCache
+) async throws -> SimilarityRelation? {
+    try Task.checkCancellation()
+    let perceptual = candidate.firstHash.similarity(to: candidate.secondHash)
+    var exact = false
+    if candidate.first.fileSize > 0,
+       candidate.first.fileSize == candidate.second.fileSize,
+       candidate.neighborDistance == 0,
+       let firstHash = try? await FileHasher.sha256(of: candidate.first.url, mediaKind: .image, cache: cache),
+       let secondHash = try? await FileHasher.sha256(of: candidate.second.url, mediaKind: .image, cache: cache) {
+        exact = firstHash == secondHash
+    }
+
+    let feature = !exact && perceptual >= 0.72
+        ? await featureCache.similarity(between: candidate.first.url, and: candidate.second.url)
+        : nil
+    let score = SimilarityScorer.score(
+        candidate.first,
+        candidate.second,
+        hashesMatch: exact,
+        perceptualSimilarity: perceptual,
+        frameSimilarity: feature
+    )
+    let relation: SimilarityRelation?
+    if score.score >= ImageSimilarityPipeline.relationStorageFloor {
+        relation = SimilarityRelation(
+            firstID: candidate.first.id,
+            secondID: candidate.second.id,
+            score: score.score,
+            evidence: score.evidence
+        )
+    } else {
+        relation = nil
+    }
+    await cache?.upsertPairRelation(
+        first: candidate.first,
+        second: candidate.second,
+        algorithmVersion: ImageSimilarityPipeline.pairRelationAlgorithmVersion,
+        relation: relation
+    )
+    return relation
+}
+
+private struct ImageComparisonCandidate: Sendable {
+    let first: MediaItem
+    let second: MediaItem
+    let firstHash: ImagePerceptualHash
+    let secondHash: ImagePerceptualHash
+    let neighborDistance: Int
 }

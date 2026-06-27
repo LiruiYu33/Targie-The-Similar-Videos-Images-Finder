@@ -292,6 +292,62 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNotNil(metadata)
     }
 
+    func testBatchMetadataLookupReturnsOnlyMatchingPrimaryEntries() async {
+        let date = Date(timeIntervalSince1970: 5_600)
+        let matching = MediaMetadataCacheKey(filePath: "/tmp/batch-metadata.mp4", fileSize: 4, modifiedAt: date, mediaKind: .video)
+        let stale = MediaMetadataCacheKey(filePath: "/tmp/batch-stale.mp4", fileSize: 4, modifiedAt: date.addingTimeInterval(10), mediaKind: .video)
+        await cache.upsertMetadata(
+            filePath: matching.filePath,
+            fileSize: matching.fileSize,
+            modifiedAt: matching.modifiedAt,
+            mediaKind: matching.mediaKind,
+            duration: 12,
+            width: 1920,
+            height: 1080
+        )
+        await cache.upsertMetadata(
+            filePath: stale.filePath,
+            fileSize: stale.fileSize,
+            modifiedAt: date,
+            mediaKind: stale.mediaKind,
+            duration: 30,
+            width: 1280,
+            height: 720
+        )
+        let batch = await cache.lookupMetadata(keys: [matching, stale])
+
+        XCTAssertEqual(batch[matching]?.duration, 12)
+        XCTAssertEqual(batch[matching]?.width, 1920)
+        XCTAssertNil(batch[stale])
+    }
+
+    func testBatchFingerprintLookupReturnsOnlyMatchingPrimaryEntries() async {
+        let date = Date(timeIntervalSince1970: 5_700)
+        var record = makeRecord(path: "/tmp/batch-hash.mp4", size: 4, date: date)
+        record.mediaKind = MediaKind.video.rawValue
+        record.algorithmVersion = "video-dct3d-v1"
+        await cache.upsert(record)
+        let matching = MediaHashCacheKey(
+            filePath: record.filePath,
+            fileSize: record.fileSize,
+            modifiedAt: record.modifiedAt,
+            mediaKind: .video,
+            algorithmVersion: "video-dct3d-v1"
+        )
+        let wrongVersion = MediaHashCacheKey(
+            filePath: record.filePath,
+            fileSize: record.fileSize,
+            modifiedAt: record.modifiedAt,
+            mediaKind: .video,
+            algorithmVersion: "video-dct3d-v2"
+        )
+
+        let batch = await cache.lookupHashes(keys: [matching, wrongVersion])
+
+        XCTAssertEqual(batch[matching]?.filePath, record.filePath)
+        XCTAssertNil(batch[wrongVersion])
+    }
+
     // MARK: - Pair Relation Cache
 
     func testPairRelationCachePersistsSymmetricallyAcrossDatabaseConnections() async throws {
@@ -314,6 +370,28 @@ final class HashCacheTests: XCTestCase {
         XCTAssertEqual(cached?.evidence, [.similarPerceptualHash, .similarName])
     }
 
+    func testPairRelationCacheToleratesSubmillisecondDateNoise() async {
+        let first = makeMedia(path: "/tmp/pair-date-a.mp4", size: 100, date: Date(timeIntervalSince1970: 6_025.123_1))
+        let second = makeMedia(path: "/tmp/pair-date-b.mp4", size: 120, date: Date(timeIntervalSince1970: 6_025.456_1))
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.91,
+            evidence: [.similarPerceptualHash]
+        )
+
+        await cache.upsertPairRelation(first: first, second: second, algorithmVersion: "test-pair-v1", relation: relation)
+        let noisySecond = makeMedia(
+            path: second.url.path,
+            size: second.fileSize,
+            date: second.modifiedAt?.addingTimeInterval(0.000_2)
+        )
+
+        let cached = await cache.lookupPairRelation(first: first, second: noisySecond, algorithmVersion: "test-pair-v1")
+
+        XCTAssertEqual(cached?.score, 0.91)
+    }
+
     func testPairRelationCacheStoresNoRelationAndInvalidatesChangedFileIdentity() async {
         let first = makeMedia(path: "/tmp/no-relation-a.mp4", size: 100, date: Date(timeIntervalSince1970: 6_200))
         let second = makeMedia(path: "/tmp/no-relation-b.mp4", size: 120, date: Date(timeIntervalSince1970: 6_300))
@@ -328,6 +406,26 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNil(cached?.score)
         XCTAssertEqual(cached?.evidence, [])
         XCTAssertNil(changed)
+    }
+
+    func testBatchPairRelationLookupReturnsOnlyMatchingIdentities() async throws {
+        let first = makeMedia(path: "/tmp/batch-pair-a.mp4", size: 100, date: Date(timeIntervalSince1970: 6_400))
+        let second = makeMedia(path: "/tmp/batch-pair-b.mp4", size: 120, date: Date(timeIntervalSince1970: 6_500))
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.91,
+            evidence: [.similarPerceptualHash]
+        )
+        await cache.upsertPairRelation(first: first, second: second, algorithmVersion: "test-pair-v1", relation: relation)
+        let matching = try XCTUnwrap(PairRelationCacheKey(first: first, second: second, algorithmVersion: "test-pair-v1"))
+        let changedSecond = makeMedia(path: second.url.path, size: second.fileSize, date: second.modifiedAt?.addingTimeInterval(1))
+        let changed = try XCTUnwrap(PairRelationCacheKey(first: first, second: changedSecond, algorithmVersion: "test-pair-v1"))
+
+        let batch = await cache.lookupPairRelations(keys: [matching, changed])
+
+        XCTAssertEqual(batch[matching]?.score, 0.91)
+        XCTAssertNil(batch[changed])
     }
 
     // MARK: - Pruning

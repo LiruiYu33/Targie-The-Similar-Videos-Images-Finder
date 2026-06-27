@@ -22,6 +22,7 @@ struct ImageScanner: Sendable {
     let loader: ImageLoader
     let metadataCache: (any HashCaching)?
     let usesDefaultLoader: Bool
+    private let thumbnailStore: ThumbnailStore
     private let progressLoader: ImageProgressLoader
 
     init(
@@ -33,6 +34,7 @@ struct ImageScanner: Sendable {
         self.maxConcurrentLoads = max(1, maxConcurrentLoads)
         self.metadataCache = metadataCache
         self.usesDefaultLoader = loader == nil
+        self.thumbnailStore = thumbnailStore
         if let loader {
             self.loader = loader
             self.progressLoader = { url in
@@ -72,6 +74,10 @@ struct ImageScanner: Sendable {
     ) async throws -> ImageScanResult {
         let urls = try Self.discoverImageURLs(in: folder)
         let reportsMetadataCache = metadataCache != nil && usesDefaultLoader
+        let metadataKeysByPath = reportsMetadataCache ? Self.metadataKeysByPath(urls: urls, mediaKind: .image) : [:]
+        let prefetchedMetadata = reportsMetadataCache
+            ? await metadataCache?.lookupMetadata(keys: Array(metadataKeysByPath.values)) ?? [:]
+            : [:]
         await progress(ScanProgress(
             stage: .readingMetadata,
             fraction: 0,
@@ -90,7 +96,19 @@ struct ImageScanner: Sendable {
 
             for _ in 0..<min(limit, urls.count) {
                 guard let next = iterator.next() else { break }
-                group.addTask { try await Self.load(index: next.offset, url: next.element, using: loader) }
+                group.addTask {
+                    try await Self.load(
+                        index: next.offset,
+                        url: next.element,
+                        using: loader,
+                        cachedMetadata: Self.cachedMetadata(
+                            for: next.element,
+                            keysByPath: metadataKeysByPath,
+                            prefetchedMetadata: prefetchedMetadata
+                        ),
+                        thumbnailStore: thumbnailStore
+                    )
+                }
             }
 
             while let result = try await group.next() {
@@ -108,7 +126,19 @@ struct ImageScanner: Sendable {
                     cacheKind: reportsMetadataCache ? .metadata : nil
                 ))
                 if let next = iterator.next() {
-                    group.addTask { try await Self.load(index: next.offset, url: next.element, using: loader) }
+                    group.addTask {
+                        try await Self.load(
+                            index: next.offset,
+                            url: next.element,
+                            using: loader,
+                            cachedMetadata: Self.cachedMetadata(
+                                for: next.element,
+                                keysByPath: metadataKeysByPath,
+                                prefetchedMetadata: prefetchedMetadata
+                            ),
+                            thumbnailStore: thumbnailStore
+                        )
+                    }
                 }
             }
             return collected.sorted { $0.index < $1.index }
@@ -121,7 +151,35 @@ struct ImageScanner: Sendable {
     }
 
     private static func load(index: Int, url: URL, using loader: ImageProgressLoader) async throws -> LoadedImage {
+        try await load(index: index, url: url, using: loader, cachedMetadata: nil, thumbnailStore: nil)
+    }
+
+    private static func load(
+        index: Int,
+        url: URL,
+        using loader: ImageProgressLoader,
+        cachedMetadata: (key: MediaMetadataCacheKey, entry: MediaMetadataCacheEntry)?,
+        thumbnailStore: ThumbnailStore?
+    ) async throws -> LoadedImage {
         do {
+            if let cachedMetadata,
+               let thumbnailStore,
+               let width = cachedMetadata.entry.width,
+               let height = cachedMetadata.entry.height,
+               let existingURL = thumbnailStore.existingThumbnailURL(for: url, modifiedAt: cachedMetadata.key.modifiedAt) {
+                let image = MediaItem(
+                    kind: .image,
+                    url: url,
+                    fileSize: cachedMetadata.key.fileSize,
+                    duration: nil,
+                    width: width,
+                    height: height,
+                    modifiedAt: cachedMetadata.key.modifiedAt,
+                    thumbnailData: nil,
+                    thumbnailURL: existingURL
+                )
+                return LoadedImage(index: index, url: url, image: image, metadataCacheHit: true, issue: nil)
+            }
             let loaded = try await loader(url)
             return LoadedImage(index: index, url: url, image: loaded.image, metadataCacheHit: loaded.metadataCacheHit, issue: nil)
         } catch is CancellationError {
@@ -135,6 +193,27 @@ struct ImageScanner: Sendable {
                 issue: ScanIssue(url: url, reason: .unreadableImage)
             )
         }
+    }
+
+    private static func metadataKeysByPath(urls: [URL], mediaKind: MediaKind) -> [String: MediaMetadataCacheKey] {
+        urls.reduce(into: [:]) { result, url in
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
+            result[url.path] = MediaMetadataCacheKey(
+                filePath: url.path,
+                fileSize: Int64(values.fileSize ?? 0),
+                modifiedAt: values.contentModificationDate,
+                mediaKind: mediaKind
+            )
+        }
+    }
+
+    private static func cachedMetadata(
+        for url: URL,
+        keysByPath: [String: MediaMetadataCacheKey],
+        prefetchedMetadata: [MediaMetadataCacheKey: MediaMetadataCacheEntry]
+    ) -> (key: MediaMetadataCacheKey, entry: MediaMetadataCacheEntry)? {
+        guard let key = keysByPath[url.path], let entry = prefetchedMetadata[key] else { return nil }
+        return (key, entry)
     }
 
     private static func loadImage(at url: URL, thumbnailStore: ThumbnailStore, metadataCache: (any HashCaching)?) async throws -> LoadedImageMedia {

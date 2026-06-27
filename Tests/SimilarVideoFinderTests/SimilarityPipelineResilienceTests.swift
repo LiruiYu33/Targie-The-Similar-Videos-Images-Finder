@@ -102,6 +102,29 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         )
     }
 
+    func testCachedPairRelationUsesBatchLookupDuringComparison() async throws {
+        let first = video(path: "/missing/batch-pair-cache-first.mp4", size: 1_000)
+        let second = video(path: "/missing/batch-pair-cache-second.mp4", size: 1_100)
+        let cache = VideoPairRelationBatchRecordingCache()
+        await cache.seed(video: first, hash: [UInt8](repeating: 0, count: 8))
+        await cache.seed(video: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        await cache.seedRelation(
+            first: first,
+            second: second,
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false),
+            entry: PairRelationCacheEntry(score: 0.93, evidence: [.similarPerceptualHash])
+        )
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        let result = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+
+        XCTAssertEqual(result.groups.count, 1)
+        let pairBatchLookupCount = await cache.pairBatchLookupCount
+        let pairSingleLookupCount = await cache.pairSingleLookupCount
+        XCTAssertEqual(pairBatchLookupCount, 1)
+        XCTAssertEqual(pairSingleLookupCount, 0)
+    }
+
     private func video(path: String, size: Int64) -> MediaItem {
         MediaItem(
             kind: .video,
@@ -151,5 +174,52 @@ private actor VideoProgressRecorder {
 
     func updates(for stage: ScanStage) -> [ScanProgress] {
         updates.filter { $0.stage == stage }
+    }
+}
+
+private actor VideoPairRelationBatchRecordingCache: HashCaching {
+    private var hashes: [String: CacheRecord] = [:]
+    private var relations: [PairRelationCacheKey: PairRelationCacheEntry] = [:]
+    private(set) var pairBatchLookupCount = 0
+    private(set) var pairSingleLookupCount = 0
+
+    func seed(video: MediaItem, hash: [UInt8]) {
+        let prehash = QuickPrehasher.prehash(for: video)
+        var record = CacheRecord.make(
+            video: video,
+            perceptualHash: VideoPerceptualHash(videoID: video.id, hashBits: hash),
+            quickPrehash: prehash
+        )
+        record.mediaKind = MediaKind.video.rawValue
+        record.algorithmVersion = "video-dct3d-v1"
+        hashes[video.url.path] = record
+    }
+
+    func seedRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, entry: PairRelationCacheEntry) {
+        guard let key = PairRelationCacheKey(first: first, second: second, algorithmVersion: algorithmVersion) else { return }
+        relations[key] = entry
+    }
+
+    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
+        hashes[filePath]
+    }
+
+    func upsert(_ record: CacheRecord) {}
+    func pruneStale(validPaths: Set<String>) {}
+    func count() -> Int { hashes.count }
+    func clearAll() {}
+    func sizeInBytes() -> Int64 { 0 }
+
+    func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? {
+        pairSingleLookupCount += 1
+        guard let key = PairRelationCacheKey(first: first, second: second, algorithmVersion: algorithmVersion) else { return nil }
+        return relations[key]
+    }
+
+    func lookupPairRelations(keys: [PairRelationCacheKey]) -> [PairRelationCacheKey: PairRelationCacheEntry] {
+        pairBatchLookupCount += 1
+        return keys.reduce(into: [:]) { result, key in
+            if let entry = relations[key] { result[key] = entry }
+        }
     }
 }
