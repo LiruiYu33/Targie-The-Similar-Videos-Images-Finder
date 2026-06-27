@@ -80,7 +80,16 @@ struct MediaItem: Identifiable, Hashable, Sendable {
 
     var filename: String { url.lastPathComponent }
     var thumbnailData: Data? {
-        embeddedThumbnailData ?? thumbnailURL.flatMap(ThumbnailStore.data(at:))
+        if let embeddedThumbnailData { return embeddedThumbnailData }
+        if let thumbnailURL, let data = ThumbnailStore.persistedData(at: thumbnailURL) {
+            return data
+        }
+        guard kind == .image else { return nil }
+        return ThumbnailStore.imageThumbnailData(
+            sourceURL: url,
+            modifiedAt: modifiedAt,
+            thumbnailURL: thumbnailURL
+        )
     }
     var isThumbnailDiskBacked: Bool { embeddedThumbnailData == nil && thumbnailURL != nil }
 
