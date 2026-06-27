@@ -51,6 +51,11 @@ struct SimilarityPipeline: SimilarityProcessing {
     private let usesFrameVerification: Bool
     /// 感知哈希之间被视为"潜在相似"的最大 Hamming 距离 (64-bit 哈希中允许多达 24 bits 不同)
     static let perceptualMaxDistance = 24
+    private static let relationStorageFloor = 0.60
+
+    static func pairRelationAlgorithmVersion(usesFrameVerification: Bool) -> String {
+        usesFrameVerification ? "video-pair-relation-v1-frame" : "video-pair-relation-v1-perceptual"
+    }
 
     init(
         cache: (any HashCaching)? = nil,
@@ -135,6 +140,9 @@ struct SimilarityPipeline: SimilarityProcessing {
         var fileHashes: [UUID: String] = [:]
         var processedPairs = Set<PairKey>()
         let frameFeatureCache = FrameFeatureCache(extractor: extractor, persistentCache: cache)
+        let pairRelationAlgorithmVersion = Self.pairRelationAlgorithmVersion(usesFrameVerification: usesFrameVerification)
+        var pairCacheHits = 0
+        var pairCacheTotal = 0
 
         // Exact duplicates must not depend on video frame extraction succeeding.
         // This also keeps corrupt or partially supported files from aborting the scan.
@@ -142,16 +150,29 @@ struct SimilarityPipeline: SimilarityProcessing {
             try Task.checkCancellation()
             let key = PairKey(first.id, second.id)
             guard !processedPairs.contains(key) else { continue }
+            if let cache {
+                pairCacheTotal += 1
+                if let cached = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: pairRelationAlgorithmVersion) {
+                    pairCacheHits += 1
+                    processedPairs.insert(key)
+                    if let relation = cached.relation(firstID: first.id, secondID: second.id) {
+                        relations.append(relation)
+                    }
+                    continue
+                }
+            }
             let firstHash = try? await fileSHA256(for: first, memoizedHashes: &fileHashes)
             let secondHash = try? await fileSHA256(for: second, memoizedHashes: &fileHashes)
             guard let firstHash, firstHash == secondHash else { continue }
             processedPairs.insert(key)
-            relations.append(SimilarityRelation(
+            let relation = SimilarityRelation(
                 firstID: first.id,
                 secondID: second.id,
                 score: 1,
                 evidence: [.identicalContentHash]
-            ))
+            )
+            relations.append(relation)
+            await cache?.upsertPairRelation(first: first, second: second, algorithmVersion: pairRelationAlgorithmVersion, relation: relation)
         }
 
         // 对每个有感知哈希的视频, 用 BK-Tree 搜索它的近邻
@@ -175,6 +196,16 @@ struct SimilarityPipeline: SimilarityProcessing {
                 processedPairs.insert(key)
 
                 guard let other = videosByID[neighbor.item.videoID] else { continue }
+                if let cache {
+                    pairCacheTotal += 1
+                    if let cached = await cache.lookupPairRelation(first: video, second: other, algorithmVersion: pairRelationAlgorithmVersion) {
+                        pairCacheHits += 1
+                        if let relation = cached.relation(firstID: video.id, secondID: other.id) {
+                            relations.append(relation)
+                        }
+                        continue
+                    }
+                }
 
                 // 感知哈希相似度 (主信号)
                 let percSimilarity = queryHash.similarity(to: neighbor.item)
@@ -209,21 +240,29 @@ struct SimilarityPipeline: SimilarityProcessing {
                     frameSimilarity: frameScore
                 )
 
-                if score.score >= min(threshold, 0.60) {
-                    relations.append(SimilarityRelation(
+                let relation: SimilarityRelation?
+                if score.score >= Self.relationStorageFloor {
+                    relation = SimilarityRelation(
                         firstID: video.id,
                         secondID: other.id,
                         score: score.score,
                         evidence: score.evidence
-                    ))
+                    )
+                    if let relation { relations.append(relation) }
+                } else {
+                    relation = nil
                 }
+                await cache?.upsertPairRelation(first: video, second: other, algorithmVersion: pairRelationAlgorithmVersion, relation: relation)
             }
 
             await progress(ScanProgress(
                 stage: .comparing,
                 fraction: Double(qIndex + 1) / Double(totalQueries),
                 currentFile: video.filename,
-                discoveredCount: videos.count
+                discoveredCount: videos.count,
+                cacheHits: pairCacheHits,
+                cacheTotal: pairCacheTotal,
+                cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil
             ))
         }
 

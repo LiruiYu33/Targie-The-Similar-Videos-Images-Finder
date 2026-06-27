@@ -61,6 +61,47 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(finalHashing.cacheTotal, 2)
     }
 
+    func testCachedPairRelationSkipsFrameVerification() async throws {
+        let first = video(path: "/missing/pair-cache-first.mp4", size: 1_000)
+        let second = video(path: "/missing/pair-cache-second.mp4", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, video: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, video: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.93,
+            evidence: [.similarPerceptualHash]
+        )
+        await cache.upsertPairRelation(
+            first: first,
+            second: second,
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: true),
+            relation: relation
+        )
+        let extractor = CountingThrowingExtractor()
+        let progress = VideoProgressRecorder()
+        let pipeline = SimilarityPipeline(cache: cache, extractor: extractor, usesFrameVerification: true)
+
+        let result = try await pipeline.process(videos: [first, second], threshold: 0.88) {
+            await progress.append($0)
+        }
+
+        let extractionCount = await extractor.extractionCount
+        XCTAssertEqual(extractionCount, 0)
+        XCTAssertEqual(result.relations, [relation])
+        XCTAssertEqual(result.groups.count, 1)
+        let comparingUpdates = await progress.updates(for: .comparing)
+        let relationCacheUpdate = comparingUpdates.first { $0.cacheTotal == 1 }
+        let cachedComparing = try XCTUnwrap(relationCacheUpdate)
+        XCTAssertEqual(cachedComparing.cacheHits, 1)
+        XCTAssertEqual(cachedComparing.cacheKind.map { "\($0)" }, "relation")
+        XCTAssertEqual(
+            L10n.scanProgressDetail(cachedComparing, .english),
+            "Pair comparison cache hits: 1 of 1 - pair-cache-first.mp4"
+        )
+    }
+
     private func video(path: String, size: Int64) -> MediaItem {
         MediaItem(
             kind: .video,

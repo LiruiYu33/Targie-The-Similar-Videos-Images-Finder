@@ -193,6 +193,7 @@ enum ScanStage: Equatable, Sendable {
 enum ScanProgressCacheKind: Equatable, Sendable {
     case metadata
     case fingerprint
+    case relation
 }
 
 struct ScanProgress: Equatable, Sendable {

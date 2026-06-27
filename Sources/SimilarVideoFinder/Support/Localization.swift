@@ -235,6 +235,15 @@ enum L10n {
                 "Aciertos de caché de huellas: \(clampedHits) de \(total)",
                 "Empreintes en cache : \(clampedHits) sur \(total)"
             )
+        case .relation:
+            return text(
+                l,
+                "Pair comparison cache hits: \(clampedHits) of \(total)",
+                "配对比较缓存命中：\(clampedHits) / \(total)",
+                "配對比較快取命中：\(clampedHits) / \(total)",
+                "Aciertos de caché de comparaciones: \(clampedHits) de \(total)",
+                "Comparaisons en cache : \(clampedHits) sur \(total)"
+            )
         }
     }
 }

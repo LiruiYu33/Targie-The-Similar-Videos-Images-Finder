@@ -99,6 +99,105 @@ struct FrameFeatureRecord: Codable, Sendable, FetchableRecord, PersistableRecord
 
 extension FrameFeatureRecord: FilePathCacheRecord {}
 
+// MARK: - Pair Relation Cache
+
+struct PairRelationCacheEntry: Equatable, Sendable {
+    let score: Double?
+    let evidence: Set<SimilarityEvidence>
+
+    func relation(firstID: UUID, secondID: UUID) -> SimilarityRelation? {
+        guard let score else { return nil }
+        return SimilarityRelation(firstID: firstID, secondID: secondID, score: score, evidence: evidence)
+    }
+}
+
+private struct PairRelationRecord: Codable, Sendable, FetchableRecord, TableRecord {
+    var firstPath: String
+    var secondPath: String
+    var firstFileSize: Int64
+    var secondFileSize: Int64
+    var firstModifiedAt: Date?
+    var secondModifiedAt: Date?
+    var mediaKind: String
+    var algorithmVersion: String
+    var score: Double?
+    var evidence: String
+
+    static var databaseTableName: String { "pair_relations" }
+}
+
+private struct PairRelationIdentity: Hashable, Sendable {
+    let firstPath: String
+    let secondPath: String
+    let firstFileSize: Int64
+    let secondFileSize: Int64
+    let firstModifiedAt: Date?
+    let secondModifiedAt: Date?
+    let mediaKind: MediaKind
+    let algorithmVersion: String
+}
+
+private enum PairRelationCacheCodec {
+    static func identity(first lhs: MediaItem, second rhs: MediaItem, algorithmVersion: String) -> PairRelationIdentity? {
+        guard lhs.kind == rhs.kind, lhs.url.path != rhs.url.path else { return nil }
+        let first: MediaItem
+        let second: MediaItem
+        if lhs.url.path < rhs.url.path {
+            first = lhs
+            second = rhs
+        } else {
+            first = rhs
+            second = lhs
+        }
+        return PairRelationIdentity(
+            firstPath: first.url.path,
+            secondPath: second.url.path,
+            firstFileSize: first.fileSize,
+            secondFileSize: second.fileSize,
+            firstModifiedAt: first.modifiedAt,
+            secondModifiedAt: second.modifiedAt,
+            mediaKind: first.kind,
+            algorithmVersion: algorithmVersion
+        )
+    }
+
+    static func record(identity: PairRelationIdentity, relation: SimilarityRelation?) -> PairRelationRecord {
+        PairRelationRecord(
+            firstPath: identity.firstPath,
+            secondPath: identity.secondPath,
+            firstFileSize: identity.firstFileSize,
+            secondFileSize: identity.secondFileSize,
+            firstModifiedAt: identity.firstModifiedAt,
+            secondModifiedAt: identity.secondModifiedAt,
+            mediaKind: identity.mediaKind.rawValue,
+            algorithmVersion: identity.algorithmVersion,
+            score: relation?.score,
+            evidence: encode(relation?.evidence ?? [])
+        )
+    }
+
+    static func entry(record: PairRelationRecord, identity: PairRelationIdentity) -> PairRelationCacheEntry? {
+        guard record.firstFileSize == identity.firstFileSize,
+              record.secondFileSize == identity.secondFileSize,
+              exactDateMatch(record.firstModifiedAt, identity.firstModifiedAt),
+              exactDateMatch(record.secondModifiedAt, identity.secondModifiedAt)
+        else { return nil }
+        return PairRelationCacheEntry(score: record.score, evidence: decode(record.evidence))
+    }
+
+    private static func encode(_ evidence: Set<SimilarityEvidence>) -> String {
+        evidence.map(\.rawValue).sorted().joined(separator: ",")
+    }
+
+    private static func decode(_ value: String) -> Set<SimilarityEvidence> {
+        Set(value.split(separator: ",").compactMap { SimilarityEvidence(rawValue: String($0)) })
+    }
+
+    private static func exactDateMatch(_ lhs: Date?, _ rhs: Date?) -> Bool {
+        lhs == rhs
+    }
+}
+
 // MARK: - HashCache Protocol
 
 /// 缓存接口 — 通过协议化便于测试时注入 InMemory 替身。
@@ -131,6 +230,11 @@ protocol HashCaching: Sendable {
     func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async
     func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data?
 
+    // Pair relation cache — stores the final comparison result for a candidate
+    // pair so re-scans can skip pair-level SHA / Vision / scoring work.
+    func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async
+    func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry?
+
     /// Returns the previous path of a file that was moved, if one can be found
     /// in the cache. Read-only — does NOT update the path; the caller is
     /// responsible for migrating other caches (e.g. thumbnails) using the
@@ -161,6 +265,8 @@ extension HashCaching {
     func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? { nil }
     func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {}
     func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? { nil }
+    func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {}
+    func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? { nil }
     func detectMove(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) async -> String? { nil }
 }
 
@@ -293,6 +399,7 @@ actor HashCache: HashCaching {
                 for table in Self.stalePruneTables {
                     try db.execute(sql: "DELETE FROM \(table)")
                 }
+                try db.execute(sql: "DELETE FROM pair_relations")
                 return
             }
 
@@ -325,6 +432,20 @@ actor HashCache: HashCaching {
                     """)
             }
 
+            try db.execute(sql: """
+                DELETE FROM pair_relations
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM temp_valid_cache_paths
+                    WHERE temp_valid_cache_paths.filePath = pair_relations.firstPath
+                )
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM temp_valid_cache_paths
+                    WHERE temp_valid_cache_paths.filePath = pair_relations.secondPath
+                )
+                """)
+
             try db.execute(sql: "DELETE FROM temp_valid_cache_paths")
         }
     }
@@ -341,6 +462,7 @@ actor HashCache: HashCaching {
             try db.execute(sql: "DELETE FROM media_metadata")
             try db.execute(sql: "DELETE FROM image_features")
             try db.execute(sql: "DELETE FROM frame_features")
+            try db.execute(sql: "DELETE FROM pair_relations")
         }
     }
 
@@ -585,6 +707,55 @@ actor HashCache: HashCaching {
         return candidate.featureData
     }
 
+    // MARK: - Pair Relation Cache
+
+    func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {
+        guard let identity = PairRelationCacheCodec.identity(first: first, second: second, algorithmVersion: algorithmVersion) else { return }
+        let record = PairRelationCacheCodec.record(identity: identity, relation: relation)
+        try? await dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO pair_relations (
+                    firstPath, secondPath, firstFileSize, secondFileSize,
+                    firstModifiedAt, secondModifiedAt, mediaKind, algorithmVersion,
+                    score, evidence
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(firstPath, secondPath, mediaKind, algorithmVersion) DO UPDATE SET
+                    firstFileSize = excluded.firstFileSize,
+                    secondFileSize = excluded.secondFileSize,
+                    firstModifiedAt = excluded.firstModifiedAt,
+                    secondModifiedAt = excluded.secondModifiedAt,
+                    score = excluded.score,
+                    evidence = excluded.evidence
+                """, arguments: [
+                    record.firstPath,
+                    record.secondPath,
+                    record.firstFileSize,
+                    record.secondFileSize,
+                    record.firstModifiedAt,
+                    record.secondModifiedAt,
+                    record.mediaKind,
+                    record.algorithmVersion,
+                    record.score,
+                    record.evidence
+                ])
+        }
+    }
+
+    func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? {
+        guard let identity = PairRelationCacheCodec.identity(first: first, second: second, algorithmVersion: algorithmVersion) else { return nil }
+        return try? await dbQueue.read { db in
+            guard let record = try PairRelationRecord
+                .filter(Column("firstPath") == identity.firstPath)
+                .filter(Column("secondPath") == identity.secondPath)
+                .filter(Column("mediaKind") == identity.mediaKind.rawValue)
+                .filter(Column("algorithmVersion") == identity.algorithmVersion)
+                .fetchOne(db)
+            else { return nil }
+            return PairRelationCacheCodec.entry(record: record, identity: identity)
+        }
+    }
+
     // MARK: - Helpers
 
     private func modifiedAtMatches(_ cached: Date?, _ current: Date?) -> Bool {
@@ -699,6 +870,25 @@ actor HashCache: HashCaching {
                 t.column("featureData", .blob).notNull()
             }
         }
+        migrator.registerMigration("v7_pair_relations") { db in
+            try db.execute(sql: """
+                CREATE TABLE pair_relations (
+                    firstPath TEXT NOT NULL,
+                    secondPath TEXT NOT NULL,
+                    firstFileSize INTEGER NOT NULL,
+                    secondFileSize INTEGER NOT NULL,
+                    firstModifiedAt DATETIME,
+                    secondModifiedAt DATETIME,
+                    mediaKind TEXT NOT NULL,
+                    algorithmVersion TEXT NOT NULL,
+                    score DOUBLE,
+                    evidence TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (firstPath, secondPath, mediaKind, algorithmVersion)
+                )
+                """)
+            try db.execute(sql: "CREATE INDEX pair_relations_firstPath_idx ON pair_relations(firstPath)")
+            try db.execute(sql: "CREATE INDEX pair_relations_secondPath_idx ON pair_relations(secondPath)")
+        }
         try migrator.migrate(dbQueue)
     }
 
@@ -766,6 +956,7 @@ actor InMemoryHashCache: HashCaching {
     private var sha256Store: [String: String] = [:]
     private var imageFeatures: [String: Data] = [:]
     private var frameFeatures: [String: Data] = [:]
+    private var pairRelations: [PairRelationIdentity: PairRelationRecord] = [:]
 
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
         guard let record = storage[filePath] else { return nil }
@@ -787,11 +978,14 @@ actor InMemoryHashCache: HashCaching {
         sha256Store = sha256Store.filter { validPaths.contains($0.key) }
         imageFeatures = imageFeatures.filter { validPaths.contains($0.key) }
         frameFeatures = frameFeatures.filter { validPaths.contains($0.key) }
+        pairRelations = pairRelations.filter {
+            validPaths.contains($0.key.firstPath) && validPaths.contains($0.key.secondPath)
+        }
     }
 
     func count() -> Int { storage.count }
 
-    func clearAll() { storage.removeAll(); metadata.removeAll(); sha256Store.removeAll(); imageFeatures.removeAll(); frameFeatures.removeAll() }
+    func clearAll() { storage.removeAll(); metadata.removeAll(); sha256Store.removeAll(); imageFeatures.removeAll(); frameFeatures.removeAll(); pairRelations.removeAll() }
 
     func sizeInBytes() -> Int64 { 0 }
 
@@ -825,6 +1019,18 @@ actor InMemoryHashCache: HashCaching {
 
     func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
         frameFeatures[filePath]
+    }
+
+    func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {
+        guard let identity = PairRelationCacheCodec.identity(first: first, second: second, algorithmVersion: algorithmVersion) else { return }
+        pairRelations[identity] = PairRelationCacheCodec.record(identity: identity, relation: relation)
+    }
+
+    func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? {
+        guard let identity = PairRelationCacheCodec.identity(first: first, second: second, algorithmVersion: algorithmVersion),
+              let record = pairRelations[identity]
+        else { return nil }
+        return PairRelationCacheCodec.entry(record: record, identity: identity)
     }
 
     func detectMove(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> String? { nil }

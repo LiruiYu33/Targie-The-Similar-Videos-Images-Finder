@@ -292,6 +292,44 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNotNil(metadata)
     }
 
+    // MARK: - Pair Relation Cache
+
+    func testPairRelationCachePersistsSymmetricallyAcrossDatabaseConnections() async throws {
+        let first = makeMedia(path: "/tmp/pair-a.mp4", size: 100, date: Date(timeIntervalSince1970: 6_000))
+        let second = makeMedia(path: "/tmp/pair-b.mp4", size: 120, date: Date(timeIntervalSince1970: 6_100))
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.91,
+            evidence: [.similarPerceptualHash, .similarName]
+        )
+
+        await cache.upsertPairRelation(first: first, second: second, algorithmVersion: "test-pair-v1", relation: relation)
+        cache = nil
+        cache = try HashCache(databaseURL: dbURL)
+
+        let cached = await cache.lookupPairRelation(first: second, second: first, algorithmVersion: "test-pair-v1")
+
+        XCTAssertEqual(cached?.score, 0.91)
+        XCTAssertEqual(cached?.evidence, [.similarPerceptualHash, .similarName])
+    }
+
+    func testPairRelationCacheStoresNoRelationAndInvalidatesChangedFileIdentity() async {
+        let first = makeMedia(path: "/tmp/no-relation-a.mp4", size: 100, date: Date(timeIntervalSince1970: 6_200))
+        let second = makeMedia(path: "/tmp/no-relation-b.mp4", size: 120, date: Date(timeIntervalSince1970: 6_300))
+
+        await cache.upsertPairRelation(first: first, second: second, algorithmVersion: "test-pair-v1", relation: nil)
+
+        let cached = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: "test-pair-v1")
+        let changedSecond = makeMedia(path: second.url.path, size: second.fileSize, date: second.modifiedAt?.addingTimeInterval(0.5))
+        let changed = await cache.lookupPairRelation(first: first, second: changedSecond, algorithmVersion: "test-pair-v1")
+
+        XCTAssertNotNil(cached)
+        XCTAssertNil(cached?.score)
+        XCTAssertEqual(cached?.evidence, [])
+        XCTAssertNil(changed)
+    }
+
     // MARK: - Pruning
 
     func testPruneStaleRemovesNonValidEntries() async {
@@ -309,6 +347,23 @@ final class HashCacheTests: XCTestCase {
 
         let removed = await cache.lookup(filePath: "/tmp/b.mp4", fileSize: 2, modifiedAt: nil)
         XCTAssertNil(removed)
+    }
+
+    func testPruneStaleRemovesPairRelationsWithInvalidMembers() async {
+        let first = makeMedia(path: "/tmp/pair-prune-a.mp4", size: 100, date: nil)
+        let second = makeMedia(path: "/tmp/pair-prune-b.mp4", size: 120, date: nil)
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.91,
+            evidence: [.similarPerceptualHash]
+        )
+        await cache.upsertPairRelation(first: first, second: second, algorithmVersion: "test-pair-v1", relation: relation)
+
+        await cache.pruneStale(validPaths: [first.url.path])
+
+        let cached = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: "test-pair-v1")
+        XCTAssertNil(cached)
     }
 
     func testPruneStaleEmptyValidPathsRemovesAll() async {
@@ -424,6 +479,19 @@ final class HashCacheTests: XCTestCase {
             prehashAspectBucket: 59,
             prehashThumbnailMean: 128,
             prehashThumbnailVariance: 1000
+        )
+    }
+
+    private func makeMedia(path: String, size: Int64, date: Date?) -> MediaItem {
+        MediaItem(
+            kind: .video,
+            url: URL(fileURLWithPath: path),
+            fileSize: size,
+            duration: 60,
+            width: 1920,
+            height: 1080,
+            modifiedAt: date,
+            thumbnailData: nil
         )
     }
 
