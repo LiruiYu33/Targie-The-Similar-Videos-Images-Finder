@@ -34,4 +34,16 @@ final class VideoPreviewTests: XCTestCase {
         XCTAssertTrue(playerView.allowsPictureInPicturePlayback)
         XCTAssertTrue(playerView.showsFullScreenToggleButton)
     }
+
+    func testCoordinatorReleasesCurrentPlayerFromView() {
+        let playerView = AVPlayerView()
+        let player = AVPlayer()
+        playerView.player = player
+        let coordinator = NativeVideoPlayerView.Coordinator(volume: .constant(0.5))
+
+        coordinator.releaseCurrentPlayer(from: playerView)
+
+        XCTAssertNil(playerView.player)
+        XCTAssertNil(player.currentItem)
+    }
 }

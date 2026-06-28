@@ -374,7 +374,7 @@ struct BrowseThumbnailCell: View {
     let item: MediaItem
     var body: some View {
         Group {
-            if let data = item.thumbnailData, let image = NSImage(data: data) {
+            if let image = MediaThumbnailImageCache.shared.image(for: item) {
                 Image(nsImage: image).resizable().scaledToFit()
             } else {
                 Image(systemName: item.kind == .video ? "film" : "photo")

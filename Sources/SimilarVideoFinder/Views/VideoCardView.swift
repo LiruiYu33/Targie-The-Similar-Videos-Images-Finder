@@ -38,7 +38,7 @@ struct VideoCardView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.black.opacity(0.88))
-                if let data = video.thumbnailData, let image = NSImage(data: data) {
+                if let image = MediaThumbnailImageCache.shared.image(for: video) {
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFit()

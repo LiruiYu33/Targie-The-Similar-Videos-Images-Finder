@@ -130,7 +130,7 @@ struct MediaPreview: View {
         Group {
             if media.kind == .video {
                 NativeVideoPlayerView(url: media.url, fallbackData: media.thumbnailData, volume: $playerVolume)
-            } else if let data = media.thumbnailData, let image = NSImage(data: data) {
+            } else if let image = MediaThumbnailImageCache.shared.image(for: media) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()

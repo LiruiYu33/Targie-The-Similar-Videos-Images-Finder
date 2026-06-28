@@ -813,6 +813,7 @@ final class ScanViewModel: ObservableObject {
     /// The next scan re-derives everything, so it'll be slower — used by the
     /// "Clear Cache" button in Browse.
     func clearAllCaches() async {
+        MediaThumbnailImageCache.shared.removeAll()
         try? ThumbnailStore.shared.clearAll()
         await hashCache?.clearAll()
     }

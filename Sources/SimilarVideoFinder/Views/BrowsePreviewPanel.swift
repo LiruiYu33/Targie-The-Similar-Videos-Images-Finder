@@ -249,7 +249,7 @@ struct BrowseMediaPreview: View {
             if media.kind == .video {
                 NativeVideoPlayerView(url: media.url, fallbackData: media.thumbnailData, volume: $playerVolume)
                     .aspectRatio(16 / 9, contentMode: .fit)
-            } else if let data = media.thumbnailData, let image = NSImage(data: data) {
+            } else if let image = MediaThumbnailImageCache.shared.image(for: media) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
@@ -300,8 +300,8 @@ struct NativeVideoPlayerView: NSViewRepresentable {
             nsView.player?.volume = Float(volume)
             return
         }
+        context.coordinator.releaseCurrentPlayer(from: nsView)
         context.coordinator.currentURL = url
-        context.coordinator.removeVolumeObservation()
 
         if FileManager.default.fileExists(atPath: url.path) {
             let item = AVPlayerItem(url: url)
@@ -315,9 +315,7 @@ struct NativeVideoPlayerView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: AVPlayerView, coordinator: Coordinator) {
-        coordinator.removeVolumeObservation()
-        nsView.player?.pause()
-        nsView.player = nil
+        coordinator.releaseCurrentPlayer(from: nsView)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -340,7 +338,18 @@ struct NativeVideoPlayerView: NSViewRepresentable {
             }
         }
 
-        func removeVolumeObservation() {
+        @MainActor
+        func releaseCurrentPlayer(from playerView: AVPlayerView) {
+            removeVolumeObservation()
+            playerView.player?.pause()
+            playerView.player?.currentItem?.cancelPendingSeeks()
+            playerView.player?.currentItem?.asset.cancelLoading()
+            playerView.player?.replaceCurrentItem(with: nil)
+            playerView.player = nil
+            currentURL = nil
+        }
+
+        private func removeVolumeObservation() {
             volumeObservation?.invalidate()
             volumeObservation = nil
         }
