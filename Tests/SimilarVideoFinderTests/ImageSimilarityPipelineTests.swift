@@ -100,9 +100,10 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         let cachedComparing = try XCTUnwrap(relationCacheUpdate)
         XCTAssertEqual(cachedComparing.cacheHits, 1)
         XCTAssertEqual(cachedComparing.cacheKind.map { "\($0)" }, "relation")
+        XCTAssertEqual(cachedComparing.comparisonPhase, .checkingPairCache)
         XCTAssertEqual(
             L10n.scanProgressDetail(cachedComparing, .english),
-            "Pair comparison cache hits: 1 of 1 - pair-cache-first.jpg"
+            "Checking pair cache: hits 1 of 1 - pair-cache-first.jpg"
         )
     }
 
@@ -127,6 +128,95 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         let pairSingleLookupCount = await cache.pairSingleLookupCount
         XCTAssertEqual(pairBatchLookupCount, 1)
         XCTAssertEqual(pairSingleLookupCount, 0)
+    }
+
+    func testCachedPairRelationsAreLookedUpOnceForWholeComparisonPhase() async throws {
+        let images = [
+            image(path: "/missing/bulk-pair-cache-1.jpg", size: 1_000),
+            image(path: "/missing/bulk-pair-cache-2.jpg", size: 1_100),
+            image(path: "/missing/bulk-pair-cache-3.jpg", size: 1_200),
+            image(path: "/missing/bulk-pair-cache-4.jpg", size: 1_300)
+        ]
+        let cache = ImagePairRelationBatchRecordingCache()
+        for image in images {
+            await cache.seed(image: image, hash: [UInt8](repeating: 0, count: 8))
+        }
+        for firstIndex in images.indices {
+            for secondIndex in images.indices.dropFirst(firstIndex + 1) {
+                await cache.seedRelation(
+                    first: images[firstIndex],
+                    second: images[secondIndex],
+                    algorithmVersion: ImageSimilarityPipeline.pairRelationAlgorithmVersion,
+                    entry: PairRelationCacheEntry(score: 0.92, evidence: [.similarPerceptualHash])
+                )
+            }
+        }
+        let pipeline = ImageSimilarityPipeline(cache: cache)
+
+        let result = try await pipeline.process(images: images, threshold: 0.88) { _ in }
+
+        XCTAssertEqual(result.relations.count, 6)
+        XCTAssertEqual(result.groups.count, 1)
+        let pairBatchLookupCount = await cache.pairBatchLookupCount
+        let pairSingleLookupCount = await cache.pairSingleLookupCount
+        XCTAssertEqual(pairBatchLookupCount, 1)
+        XCTAssertEqual(pairSingleLookupCount, 0)
+    }
+
+    func testUnchangedImageScanUsesScanRelationIndexAndSkipsCandidateLookup() async throws {
+        let first = image(path: "/missing/index-first.jpg", size: 1_000)
+        let second = image(path: "/missing/index-second.jpg", size: 1_100)
+        let cache = ImagePairRelationBatchRecordingCache()
+        await cache.seed(image: first, hash: [UInt8](repeating: 0, count: 8))
+        await cache.seed(image: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        await cache.seedScanRelationIndex(
+            items: [first, second],
+            algorithmVersion: ImageSimilarityPipeline.pairRelationAlgorithmVersion,
+            relations: [
+                CachedScanRelation(
+                    firstPath: first.url.path,
+                    secondPath: second.url.path,
+                    score: 0.92,
+                    evidence: [.similarPerceptualHash]
+                )
+            ]
+        )
+        let pipeline = ImageSimilarityPipeline(cache: cache)
+
+        let result = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+
+        XCTAssertEqual(result.relations.count, 1)
+        let pairBatchLookupCount = await cache.pairBatchLookupCount
+        XCTAssertEqual(pairBatchLookupCount, 0)
+    }
+
+    func testImageComparisonProgressReportsCandidateCacheAndUncachedPhases() async throws {
+        let first = image(path: "/missing/phase-first.jpg", size: 1_000)
+        let second = image(path: "/missing/phase-second.jpg", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, image: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, image: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        let progress = ImageProgressRecorder()
+        let pipeline = ImageSimilarityPipeline(cache: cache)
+
+        _ = try await pipeline.process(images: [first, second], threshold: 0.88) {
+            await progress.append($0)
+        }
+
+        let comparingUpdates = await progress.updates(for: .comparing)
+        let firstComparing = try XCTUnwrap(comparingUpdates.first)
+        XCTAssertEqual(firstComparing.comparisonPhase, .findingCandidates)
+        XCTAssertEqual(firstComparing.comparisonCompleted, 0)
+        XCTAssertEqual(firstComparing.comparisonTotal, 2)
+        let finding = try XCTUnwrap(comparingUpdates.last { $0.comparisonPhase == .findingCandidates })
+        XCTAssertEqual(finding.comparisonCompleted, 2)
+        XCTAssertEqual(finding.comparisonTotal, 2)
+        let checking = try XCTUnwrap(comparingUpdates.first { $0.comparisonPhase == .checkingPairCache })
+        XCTAssertEqual(checking.cacheHits, 0)
+        XCTAssertEqual(checking.cacheTotal, 1)
+        let uncached = try XCTUnwrap(comparingUpdates.last { $0.comparisonPhase == .comparingUncached })
+        XCTAssertEqual(uncached.comparisonCompleted, 1)
+        XCTAssertEqual(uncached.comparisonTotal, 1)
     }
 
     private func writePattern(to url: URL) throws {
@@ -208,6 +298,7 @@ private final class CountingThrowingImageFeatureExtractor: @unchecked Sendable, 
 private actor ImagePairRelationBatchRecordingCache: HashCaching {
     private var hashes: [String: CacheRecord] = [:]
     private var relations: [PairRelationCacheKey: PairRelationCacheEntry] = [:]
+    private var scanIndexes: [String: CachedScanRelationIndex] = [:]
     private(set) var pairBatchLookupCount = 0
     private(set) var pairSingleLookupCount = 0
 
@@ -233,6 +324,27 @@ private actor ImagePairRelationBatchRecordingCache: HashCaching {
         relations[key] = entry
     }
 
+    func seedScanRelationIndex(items: [MediaItem], algorithmVersion: String, relations: [CachedScanRelation]) {
+        let hashData = Dictionary(uniqueKeysWithValues: items.compactMap { item -> (UUID, Data)? in
+            guard let record = hashes[item.url.path] else { return nil }
+            return (item.id, record.perceptualHash)
+        })
+        let signature = ImageSimilarityPipeline.scanRelationSignature(
+            items: items,
+            hashes: hashData,
+            algorithmVersion: algorithmVersion
+        )
+        let index = CachedScanRelationIndex(
+            signature: signature,
+            mediaKind: .image,
+            algorithmVersion: algorithmVersion,
+            fileCount: items.count,
+            candidateCount: relations.count,
+            relations: relations
+        )
+        scanIndexes[scanIndexKey(signature: signature, mediaKind: .image, algorithmVersion: algorithmVersion)] = index
+    }
+
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
         hashes[filePath]
     }
@@ -254,5 +366,13 @@ private actor ImagePairRelationBatchRecordingCache: HashCaching {
         return keys.reduce(into: [:]) { result, key in
             if let entry = relations[key] { result[key] = entry }
         }
+    }
+
+    func lookupScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> CachedScanRelationIndex? {
+        scanIndexes[scanIndexKey(signature: signature, mediaKind: mediaKind, algorithmVersion: algorithmVersion)]
+    }
+
+    private func scanIndexKey(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> String {
+        "\(signature)\u{0}\(mediaKind.rawValue)\u{0}\(algorithmVersion)"
     }
 }

@@ -113,7 +113,7 @@ struct SidebarView: View {
     private var scanAction: some View {
         if model.isScanning {
             ProgressView(value: model.progress.fraction) {
-                Text(L10n.scanStage(model.progress.stage, language))
+                Text(L10n.scanProgressTitle(model.progress, language))
             } currentValueLabel: {
                 Text(L10n.scanProgressDetail(model.progress, language))
                     .lineLimit(1)

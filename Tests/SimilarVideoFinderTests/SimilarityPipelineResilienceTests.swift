@@ -39,6 +39,125 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(SimilarityPipeline.hashConcurrencyLimit(processorCount: 12), 4)
     }
 
+    func testScanRelationSignatureChangesWhenFileIdentityChanges() {
+        let first = video(path: "/tmp/a.mp4", size: 100)
+        let changed = MediaItem(
+            kind: first.kind,
+            url: first.url,
+            fileSize: 101,
+            duration: first.duration,
+            width: first.width,
+            height: first.height,
+            modifiedAt: first.modifiedAt,
+            thumbnailData: first.thumbnailData
+        )
+        let hash = VideoPerceptualHash(videoID: first.id, hashBits: [UInt8](repeating: 1, count: 8))
+
+        let original = SimilarityPipeline.scanRelationSignature(
+            items: [first],
+            hashes: [first.id: Data(hash.hashBits)],
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+        let updated = SimilarityPipeline.scanRelationSignature(
+            items: [changed],
+            hashes: [changed.id: Data(hash.hashBits)],
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+
+        XCTAssertNotEqual(original, updated)
+    }
+
+    func testScanRelationSignatureToleratesSubmillisecondModifiedDateNoise() {
+        let first = MediaItem(
+            kind: .video,
+            url: URL(fileURLWithPath: "/tmp/stable.mp4"),
+            fileSize: 100,
+            duration: 60,
+            width: 1920,
+            height: 1080,
+            modifiedAt: Date(timeIntervalSince1970: 1_000.123_456_1),
+            thumbnailData: nil
+        )
+        let second = MediaItem(
+            kind: first.kind,
+            url: first.url,
+            fileSize: first.fileSize,
+            duration: first.duration,
+            width: first.width,
+            height: first.height,
+            modifiedAt: Date(timeIntervalSince1970: 1_000.123_456_4),
+            thumbnailData: first.thumbnailData
+        )
+        let hash = Data([1, 2, 3, 4, 5, 6, 7, 8])
+
+        let original = SimilarityPipeline.scanRelationSignature(
+            items: [first],
+            hashes: [first.id: hash],
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+        let updated = SimilarityPipeline.scanRelationSignature(
+            items: [second],
+            hashes: [second.id: hash],
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+
+        XCTAssertEqual(original, updated)
+    }
+
+    func testScanRelationSignatureUsesFingerprintInsteadOfModifiedDateAsContentIdentity() {
+        let first = MediaItem(
+            kind: .video,
+            url: URL(fileURLWithPath: "/tmp/fingerprint-stable.mp4"),
+            fileSize: 100,
+            duration: 60,
+            width: 1920,
+            height: 1080,
+            modifiedAt: Date(timeIntervalSince1970: 1_000),
+            thumbnailData: nil
+        )
+        let second = MediaItem(
+            kind: first.kind,
+            url: first.url,
+            fileSize: first.fileSize,
+            duration: first.duration,
+            width: first.width,
+            height: first.height,
+            modifiedAt: Date(timeIntervalSince1970: 1_030),
+            thumbnailData: first.thumbnailData
+        )
+        let hash = Data([1, 2, 3, 4, 5, 6, 7, 8])
+
+        let original = SimilarityPipeline.scanRelationSignature(
+            items: [first],
+            hashes: [first.id: hash],
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+        let updated = SimilarityPipeline.scanRelationSignature(
+            items: [second],
+            hashes: [second.id: hash],
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+
+        XCTAssertEqual(original, updated)
+    }
+
+    func testScanRelationSignatureChangesWhenFingerprintChanges() {
+        let item = video(path: "/tmp/hash-change.mp4", size: 100)
+
+        let original = SimilarityPipeline.scanRelationSignature(
+            items: [item],
+            hashes: [item.id: Data([1, 2, 3, 4, 5, 6, 7, 8])],
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+        let updated = SimilarityPipeline.scanRelationSignature(
+            items: [item],
+            hashes: [item.id: Data([8, 7, 6, 5, 4, 3, 2, 1])],
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+
+        XCTAssertNotEqual(original, updated)
+    }
+
     func testCachedVideoHashesAdvanceHashingProgress() async throws {
         let first = video(path: "/missing/cached-first.mp4", size: 1_000)
         let second = video(path: "/missing/cached-second.mp4", size: 1_100)
@@ -96,9 +215,10 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         let cachedComparing = try XCTUnwrap(relationCacheUpdate)
         XCTAssertEqual(cachedComparing.cacheHits, 1)
         XCTAssertEqual(cachedComparing.cacheKind.map { "\($0)" }, "relation")
+        XCTAssertEqual(cachedComparing.comparisonPhase, .checkingPairCache)
         XCTAssertEqual(
             L10n.scanProgressDetail(cachedComparing, .english),
-            "Pair comparison cache hits: 1 of 1 - pair-cache-first.mp4"
+            "Checking pair cache: hits 1 of 1 - pair-cache-first.mp4"
         )
     }
 
@@ -123,6 +243,151 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         let pairSingleLookupCount = await cache.pairSingleLookupCount
         XCTAssertEqual(pairBatchLookupCount, 1)
         XCTAssertEqual(pairSingleLookupCount, 0)
+    }
+
+    func testCachedPairRelationsAreLookedUpOnceForWholeComparisonPhase() async throws {
+        let videos = [
+            video(path: "/missing/bulk-pair-cache-1.mp4", size: 1_000),
+            video(path: "/missing/bulk-pair-cache-2.mp4", size: 1_100),
+            video(path: "/missing/bulk-pair-cache-3.mp4", size: 1_200),
+            video(path: "/missing/bulk-pair-cache-4.mp4", size: 1_300)
+        ]
+        let cache = VideoPairRelationBatchRecordingCache()
+        for video in videos {
+            await cache.seed(video: video, hash: [UInt8](repeating: 0, count: 8))
+        }
+        for firstIndex in videos.indices {
+            for secondIndex in videos.indices.dropFirst(firstIndex + 1) {
+                await cache.seedRelation(
+                    first: videos[firstIndex],
+                    second: videos[secondIndex],
+                    algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false),
+                    entry: PairRelationCacheEntry(score: 0.93, evidence: [.similarPerceptualHash])
+                )
+            }
+        }
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        let result = try await pipeline.process(videos: videos, threshold: 0.88) { _ in }
+
+        XCTAssertEqual(result.relations.count, 6)
+        XCTAssertEqual(result.groups.count, 1)
+        let pairBatchLookupCount = await cache.pairBatchLookupCount
+        let pairSingleLookupCount = await cache.pairSingleLookupCount
+        XCTAssertEqual(pairBatchLookupCount, 1)
+        XCTAssertEqual(pairSingleLookupCount, 0)
+    }
+
+    func testUnchangedVideoScanUsesScanRelationIndexAndSkipsCandidateLookup() async throws {
+        let first = video(path: "/missing/index-first.mp4", size: 1_000)
+        let second = video(path: "/missing/index-second.mp4", size: 1_100)
+        let cache = VideoPairRelationBatchRecordingCache()
+        await cache.seed(video: first, hash: [UInt8](repeating: 0, count: 8))
+        await cache.seed(video: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        await cache.seedScanRelationIndex(
+            items: [first, second],
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false),
+            relations: [
+                CachedScanRelation(
+                    firstPath: first.url.path,
+                    secondPath: second.url.path,
+                    score: 0.93,
+                    evidence: [.similarPerceptualHash]
+                )
+            ]
+        )
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        let result = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+
+        XCTAssertEqual(result.relations.count, 1)
+        let pairBatchLookupCount = await cache.pairBatchLookupCount
+        XCTAssertEqual(pairBatchLookupCount, 0)
+    }
+
+    func testUncachedPairComparisonProgressDoesNotRepeatStaleRelationCacheStats() async throws {
+        let first = video(path: "/missing/miss-progress-first.mp4", size: 1_000)
+        let second = video(path: "/missing/miss-progress-second.mp4", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, video: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, video: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        let progress = VideoProgressRecorder()
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        _ = try await pipeline.process(videos: [first, second], threshold: 0.88) {
+            await progress.append($0)
+        }
+
+        let comparingUpdates = await progress.updates(for: .comparing)
+        let finalComparing = try XCTUnwrap(comparingUpdates.last)
+        XCTAssertEqual(finalComparing.fraction, 1)
+        XCTAssertEqual(finalComparing.currentFile, first.filename)
+        XCTAssertNil(finalComparing.cacheKind)
+        XCTAssertEqual(finalComparing.cacheHits, 0)
+        XCTAssertEqual(finalComparing.cacheTotal, 0)
+        XCTAssertEqual(finalComparing.comparisonPhase, .comparingUncached)
+        XCTAssertEqual(finalComparing.comparisonCompleted, 1)
+        XCTAssertEqual(finalComparing.comparisonTotal, 1)
+    }
+
+    func testVideoComparisonProgressReportsCandidateCacheAndUncachedPhases() async throws {
+        let first = video(path: "/missing/phase-first.mp4", size: 1_000)
+        let second = video(path: "/missing/phase-second.mp4", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, video: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, video: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        let progress = VideoProgressRecorder()
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        _ = try await pipeline.process(videos: [first, second], threshold: 0.88) {
+            await progress.append($0)
+        }
+
+        let comparingUpdates = await progress.updates(for: .comparing)
+        let firstComparing = try XCTUnwrap(comparingUpdates.first)
+        XCTAssertEqual(firstComparing.comparisonPhase, .findingCandidates)
+        XCTAssertEqual(firstComparing.comparisonCompleted, 0)
+        XCTAssertEqual(firstComparing.comparisonTotal, 2)
+        let finding = try XCTUnwrap(comparingUpdates.last { $0.comparisonPhase == .findingCandidates })
+        XCTAssertEqual(finding.comparisonCompleted, 2)
+        XCTAssertEqual(finding.comparisonTotal, 2)
+        let checking = try XCTUnwrap(comparingUpdates.first { $0.comparisonPhase == .checkingPairCache })
+        XCTAssertEqual(checking.cacheHits, 0)
+        XCTAssertEqual(checking.cacheTotal, 1)
+        let uncached = try XCTUnwrap(comparingUpdates.last { $0.comparisonPhase == .comparingUncached })
+        XCTAssertEqual(uncached.comparisonCompleted, 1)
+        XCTAssertEqual(uncached.comparisonTotal, 1)
+    }
+
+    func testIncrementalScanIndexReuseForAddedFileIsFutureWork() async throws {
+        let existing = [
+            video(path: "/missing/incremental-existing-1.mp4", size: 1_000),
+            video(path: "/missing/incremental-existing-2.mp4", size: 1_100)
+        ]
+        let added = video(path: "/missing/incremental-added.mp4", size: 1_200)
+        let cache = VideoPairRelationBatchRecordingCache()
+        for item in existing + [added] {
+            await cache.seed(video: item, hash: [UInt8](repeating: 0, count: 8))
+        }
+        await cache.seedScanRelationIndex(
+            items: existing,
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false),
+            relations: [
+                CachedScanRelation(
+                    firstPath: existing[0].url.path,
+                    secondPath: existing[1].url.path,
+                    score: 0.93,
+                    evidence: [.similarPerceptualHash]
+                )
+            ]
+        )
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        _ = try await pipeline.process(videos: existing + [added], threshold: 0.88) { _ in }
+
+        XCTExpectFailure("Incremental scan relation index reuse is the next pass: old-old pairs should come from the prior scan index, while only new/changed pairs are probed.")
+        let lastPairBatchLookupKeyCount = await cache.lastPairBatchLookupKeyCount
+        XCTAssertEqual(lastPairBatchLookupKeyCount, 2)
     }
 
     private func video(path: String, size: Int64) -> MediaItem {
@@ -180,8 +445,10 @@ private actor VideoProgressRecorder {
 private actor VideoPairRelationBatchRecordingCache: HashCaching {
     private var hashes: [String: CacheRecord] = [:]
     private var relations: [PairRelationCacheKey: PairRelationCacheEntry] = [:]
+    private var scanIndexes: [String: CachedScanRelationIndex] = [:]
     private(set) var pairBatchLookupCount = 0
     private(set) var pairSingleLookupCount = 0
+    private(set) var lastPairBatchLookupKeyCount = 0
 
     func seed(video: MediaItem, hash: [UInt8]) {
         let prehash = QuickPrehasher.prehash(for: video)
@@ -198,6 +465,27 @@ private actor VideoPairRelationBatchRecordingCache: HashCaching {
     func seedRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, entry: PairRelationCacheEntry) {
         guard let key = PairRelationCacheKey(first: first, second: second, algorithmVersion: algorithmVersion) else { return }
         relations[key] = entry
+    }
+
+    func seedScanRelationIndex(items: [MediaItem], algorithmVersion: String, relations: [CachedScanRelation]) {
+        let hashData = Dictionary(uniqueKeysWithValues: items.compactMap { item -> (UUID, Data)? in
+            guard let record = hashes[item.url.path] else { return nil }
+            return (item.id, record.perceptualHash)
+        })
+        let signature = SimilarityPipeline.scanRelationSignature(
+            items: items,
+            hashes: hashData,
+            algorithmVersion: algorithmVersion
+        )
+        let index = CachedScanRelationIndex(
+            signature: signature,
+            mediaKind: .video,
+            algorithmVersion: algorithmVersion,
+            fileCount: items.count,
+            candidateCount: relations.count,
+            relations: relations
+        )
+        scanIndexes[scanIndexKey(signature: signature, mediaKind: .video, algorithmVersion: algorithmVersion)] = index
     }
 
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
@@ -218,8 +506,17 @@ private actor VideoPairRelationBatchRecordingCache: HashCaching {
 
     func lookupPairRelations(keys: [PairRelationCacheKey]) -> [PairRelationCacheKey: PairRelationCacheEntry] {
         pairBatchLookupCount += 1
+        lastPairBatchLookupKeyCount = keys.count
         return keys.reduce(into: [:]) { result, key in
             if let entry = relations[key] { result[key] = entry }
         }
+    }
+
+    func lookupScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> CachedScanRelationIndex? {
+        scanIndexes[scanIndexKey(signature: signature, mediaKind: mediaKind, algorithmVersion: algorithmVersion)]
+    }
+
+    private func scanIndexKey(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> String {
+        "\(signature)\u{0}\(mediaKind.rawValue)\u{0}\(algorithmVersion)"
     }
 }

@@ -65,4 +65,68 @@ final class LocalizationTests: XCTestCase {
         )
         XCTAssertEqual(L10n.scanProgressDetail(metadata, .english), "Metadata cache hits: 2 of 5 - clip.mov")
     }
+
+    func testComparisonSubProgressDetails() {
+        let finding = ScanProgress(
+            stage: .comparing,
+            fraction: 0.1,
+            currentFile: "clip.mp4",
+            comparisonPhase: .findingCandidates,
+            comparisonCompleted: 42,
+            comparisonTotal: 100
+        )
+        XCTAssertEqual(
+            L10n.scanProgressDetail(finding, .english),
+            "Finding candidate pairs: 42 of 100 - clip.mp4"
+        )
+
+        let checking = ScanProgress(
+            stage: .comparing,
+            fraction: 0.2,
+            cacheHits: 90,
+            cacheTotal: 100,
+            cacheKind: .relation,
+            comparisonPhase: .checkingPairCache
+        )
+        XCTAssertEqual(
+            L10n.scanProgressDetail(checking, .english),
+            "Checking pair cache: hits 90 of 100"
+        )
+
+        let comparing = ScanProgress(
+            stage: .comparing,
+            fraction: 0.6,
+            currentFile: "miss.mp4",
+            comparisonPhase: .comparingUncached,
+            comparisonCompleted: 3,
+            comparisonTotal: 8
+        )
+        XCTAssertEqual(
+            L10n.scanProgressDetail(comparing, .english),
+            "Comparing uncached pairs: 3 of 8 - miss.mp4"
+        )
+    }
+
+    func testComparisonSubProgressTitleUsesCurrentPhase() {
+        let finding = ScanProgress(
+            stage: .comparing,
+            fraction: 0.1,
+            comparisonPhase: .findingCandidates
+        )
+        XCTAssertEqual(L10n.scanProgressTitle(finding, .english), "Finding candidate pairs")
+
+        let checking = ScanProgress(
+            stage: .comparing,
+            fraction: 0.2,
+            comparisonPhase: .checkingPairCache
+        )
+        XCTAssertEqual(L10n.scanProgressTitle(checking, .english), "Checking pair cache")
+
+        let comparing = ScanProgress(
+            stage: .comparing,
+            fraction: 0.6,
+            comparisonPhase: .comparingUncached
+        )
+        XCTAssertEqual(L10n.scanProgressTitle(comparing, .english), "Comparing uncached pairs")
+    }
 }

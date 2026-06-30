@@ -19,6 +19,7 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
+import CryptoKit
 import Foundation
 
 struct PipelineResult: Sendable {
@@ -33,6 +34,30 @@ protocol SimilarityProcessing: Sendable {
         threshold: Double,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> PipelineResult
+}
+
+enum ScanRelationSignatureBuilder {
+    static func signature(
+        items: [MediaItem],
+        hashes: [UUID: Data],
+        algorithmVersion: String
+    ) -> String {
+        var hasher = SHA256()
+        func update(_ string: String) {
+            hasher.update(data: Data(string.utf8))
+            hasher.update(data: Data([0]))
+        }
+
+        update(algorithmVersion)
+        for item in items.sorted(by: { $0.url.path < $1.url.path }) {
+            guard let hash = hashes[item.id] else { continue }
+            update(item.url.path)
+            update(String(item.fileSize))
+            hasher.update(data: hash)
+            hasher.update(data: Data([0xff]))
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 /// 三阶段相似度流水线:
@@ -55,6 +80,18 @@ struct SimilarityPipeline: SimilarityProcessing {
 
     static func pairRelationAlgorithmVersion(usesFrameVerification: Bool) -> String {
         usesFrameVerification ? "video-pair-relation-v1-frame" : "video-pair-relation-v1-perceptual"
+    }
+
+    static func scanRelationSignature(
+        items: [MediaItem],
+        hashes: [UUID: Data],
+        algorithmVersion: String
+    ) -> String {
+        ScanRelationSignatureBuilder.signature(
+            items: items,
+            hashes: hashes,
+            algorithmVersion: algorithmVersion
+        )
     }
 
     init(
@@ -126,6 +163,47 @@ struct SimilarityPipeline: SimilarityProcessing {
 
         try Task.checkCancellation()
 
+        let pairRelationAlgorithmVersion = Self.pairRelationAlgorithmVersion(usesFrameVerification: usesFrameVerification)
+        let hashDataByID = perceptualHashes.mapValues { Data($0.hashBits) }
+        let indexSignature = Self.scanRelationSignature(
+            items: videosNeedingHash,
+            hashes: hashDataByID,
+            algorithmVersion: pairRelationAlgorithmVersion
+        )
+        if let cachedIndex = await cache?.lookupScanRelationIndex(
+            signature: indexSignature,
+            mediaKind: .video,
+            algorithmVersion: pairRelationAlgorithmVersion
+        ) {
+            let itemsByPath = Dictionary(uniqueKeysWithValues: videos.map { ($0.url.path, $0) })
+            let cachedRelations = cachedIndex.relations.compactMap { cached -> SimilarityRelation? in
+                guard let first = itemsByPath[cached.firstPath],
+                      let second = itemsByPath[cached.secondPath]
+                else { return nil }
+                return SimilarityRelation(
+                    firstID: first.id,
+                    secondID: second.id,
+                    score: cached.score,
+                    evidence: cached.evidence
+                )
+            }
+            await progress(ScanProgress(
+                stage: .comparing,
+                fraction: 1,
+                currentFile: "",
+                discoveredCount: videos.count,
+                cacheHits: cachedIndex.candidateCount,
+                cacheTotal: cachedIndex.candidateCount,
+                cacheKind: .relation,
+                comparisonPhase: .checkingPairCache
+            ))
+            return PipelineResult(
+                videos: videos,
+                relations: cachedRelations,
+                groups: SimilarityGrouper.groups(items: videos, relations: cachedRelations, threshold: threshold)
+            )
+        }
+
         // 构建 BK-Tree 用于近邻搜索
         var bkTree = BKTree<VideoPerceptualHash>()
         for hash in perceptualHashes.values {
@@ -137,14 +215,16 @@ struct SimilarityPipeline: SimilarityProcessing {
             stage: .comparing,
             fraction: 0,
             currentFile: "",
-            discoveredCount: videos.count
+            discoveredCount: videos.count,
+            comparisonPhase: .findingCandidates,
+            comparisonCompleted: 0,
+            comparisonTotal: max(videosNeedingHash.count, 1)
         ))
 
         var relations: [SimilarityRelation] = []
         var fileHashes: [UUID: String] = [:]
         var processedPairs = Set<PairKey>()
         let frameFeatureCache = FrameFeatureCache(extractor: extractor, persistentCache: cache)
-        let pairRelationAlgorithmVersion = Self.pairRelationAlgorithmVersion(usesFrameVerification: usesFrameVerification)
         var pairCacheHits = 0
         var pairCacheTotal = 0
 
@@ -197,6 +277,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         let queryVideos = videosNeedingHash
         let totalQueries = max(queryVideos.count, 1)
 
+        var pendingComparisonCandidates: [(candidate: VideoComparisonCandidate, relationKey: PairRelationCacheKey?)] = []
         for (qIndex, video) in queryVideos.enumerated() {
             try Task.checkCancellation()
 
@@ -207,87 +288,155 @@ struct SimilarityPipeline: SimilarityProcessing {
                 distance: { $0.hammingDistance(to: $1) }
             )
 
-            var pendingNeighbors: [(other: MediaItem, neighbor: (item: VideoPerceptualHash, dist: Int), relationKey: PairRelationCacheKey?)] = []
             for neighbor in neighbors where neighbor.item.videoID != video.id {
                 let key = PairKey(video.id, neighbor.item.videoID)
                 guard !processedPairs.contains(key) else { continue }
                 processedPairs.insert(key)
 
                 guard let other = videosByID[neighbor.item.videoID] else { continue }
-                pendingNeighbors.append((
-                    other: other,
-                    neighbor: neighbor,
+                pendingComparisonCandidates.append((
+                    candidate: VideoComparisonCandidate(
+                        first: video,
+                        second: other,
+                        firstHash: queryHash,
+                        secondHash: neighbor.item,
+                        algorithmVersion: pairRelationAlgorithmVersion
+                    ),
                     relationKey: PairRelationCacheKey(first: video, second: other, algorithmVersion: pairRelationAlgorithmVersion)
                 ))
             }
 
-            let relationKeys = pendingNeighbors.compactMap(\.relationKey)
-            let relationCache: [PairRelationCacheKey: PairRelationCacheEntry] = cache == nil || relationKeys.isEmpty
-                ? [:]
-                : await cache?.lookupPairRelations(keys: relationKeys) ?? [:]
-            var misses: [VideoComparisonCandidate] = []
-            for pending in pendingNeighbors {
-                if let relationKey = pending.relationKey {
-                    pairCacheTotal += 1
-                    if let cached = relationCache[relationKey] {
-                        pairCacheHits += 1
-                        if let relation = cached.relation(firstID: video.id, secondID: pending.other.id) {
-                            relations.append(relation)
-                        }
-                        continue
+            await progress(ScanProgress(
+                stage: .comparing,
+                fraction: Double(qIndex + 1) / Double(totalQueries) * 0.2,
+                currentFile: video.filename,
+                discoveredCount: videos.count,
+                cacheHits: 0,
+                cacheTotal: 0,
+                cacheKind: nil,
+                comparisonPhase: .findingCandidates,
+                comparisonCompleted: qIndex + 1,
+                comparisonTotal: totalQueries
+            ))
+        }
+
+        let relationKeys = pendingComparisonCandidates.compactMap(\.relationKey)
+        let relationCache: [PairRelationCacheKey: PairRelationCacheEntry] = cache == nil || relationKeys.isEmpty
+            ? [:]
+            : await cache?.lookupPairRelations(keys: relationKeys) ?? [:]
+        var misses: [VideoComparisonCandidate] = []
+        for pending in pendingComparisonCandidates {
+            if let relationKey = pending.relationKey {
+                pairCacheTotal += 1
+                if let cached = relationCache[relationKey] {
+                    pairCacheHits += 1
+                    if let relation = cached.relation(
+                        firstID: pending.candidate.first.id,
+                        secondID: pending.candidate.second.id
+                    ) {
+                        relations.append(relation)
                     }
+                    continue
                 }
-                misses.append(VideoComparisonCandidate(
-                    first: video,
-                    second: pending.other,
-                    firstHash: queryHash,
-                    secondHash: pending.neighbor.item,
-                    algorithmVersion: pairRelationAlgorithmVersion
-                ))
             }
+            misses.append(pending.candidate)
+        }
+
+        let cacheProgressFile = pendingComparisonCandidates.first?.candidate.first.filename
+            ?? exactCandidates.first?.first.filename
+            ?? ""
+        if misses.isEmpty {
+            await progress(ScanProgress(
+                stage: .comparing,
+                fraction: 1,
+                currentFile: cacheProgressFile,
+                discoveredCount: videos.count,
+                cacheHits: pairCacheHits,
+                cacheTotal: pairCacheTotal,
+                cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil,
+                comparisonPhase: .checkingPairCache
+            ))
+        } else {
+            await progress(ScanProgress(
+                stage: .comparing,
+                fraction: 0.2,
+                currentFile: cacheProgressFile,
+                discoveredCount: videos.count,
+                cacheHits: pairCacheHits,
+                cacheTotal: pairCacheTotal,
+                cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil,
+                comparisonPhase: .checkingPairCache
+            ))
 
             let comparisonLimit = Self.comparisonConcurrencyLimit(
                 processorCount: ProcessInfo.processInfo.activeProcessorCount
             )
-            try await withThrowingTaskGroup(of: SimilarityRelation?.self) { group in
+            var completedMisses = 0
+            try await withThrowingTaskGroup(of: (String, SimilarityRelation?).self) { group in
                 var iterator = misses.makeIterator()
                 for _ in 0..<min(comparisonLimit, misses.count) {
                     guard let next = iterator.next() else { break }
                     group.addTask {
-                        try await compareVideoCandidate(
+                        let relation = try await compareVideoCandidate(
                             next,
                             cache: cache,
                             frameFeatureCache: frameFeatureCache,
                             usesFrameVerification: usesFrameVerification
                         )
+                        return (next.first.filename, relation)
                     }
                 }
 
-                while let relation = try await group.next() {
+                while let (currentFile, relation) = try await group.next() {
+                    completedMisses += 1
                     if let relation { relations.append(relation) }
+                    await progress(ScanProgress(
+                        stage: .comparing,
+                        fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
+                        currentFile: currentFile,
+                        discoveredCount: videos.count,
+                        cacheHits: 0,
+                        cacheTotal: 0,
+                        cacheKind: nil,
+                        comparisonPhase: .comparingUncached,
+                        comparisonCompleted: completedMisses,
+                        comparisonTotal: misses.count
+                    ))
                     if let next = iterator.next() {
                         group.addTask {
-                            try await compareVideoCandidate(
+                            let relation = try await compareVideoCandidate(
                                 next,
                                 cache: cache,
                                 frameFeatureCache: frameFeatureCache,
                                 usesFrameVerification: usesFrameVerification
                             )
+                            return (next.first.filename, relation)
                         }
                     }
                 }
             }
-
-            await progress(ScanProgress(
-                stage: .comparing,
-                fraction: Double(qIndex + 1) / Double(totalQueries),
-                currentFile: video.filename,
-                discoveredCount: videos.count,
-                cacheHits: pairCacheHits,
-                cacheTotal: pairCacheTotal,
-                cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil
-            ))
         }
+
+        let scanIndexRelations = relations.compactMap { relation -> CachedScanRelation? in
+            guard let first = videosByID[relation.firstID],
+                  let second = videosByID[relation.secondID]
+            else { return nil }
+            let ordered = first.url.path < second.url.path ? (first, second) : (second, first)
+            return CachedScanRelation(
+                firstPath: ordered.0.url.path,
+                secondPath: ordered.1.url.path,
+                score: relation.score,
+                evidence: relation.evidence
+            )
+        }
+        await cache?.upsertScanRelationIndex(
+            signature: indexSignature,
+            mediaKind: .video,
+            algorithmVersion: pairRelationAlgorithmVersion,
+            fileCount: videosNeedingHash.count,
+            candidateCount: pairCacheTotal,
+            relations: scanIndexRelations
+        )
 
         return PipelineResult(
             videos: videos,

@@ -63,17 +63,17 @@ private struct ScanSideResult: Sendable {
     let issues: [ScanIssue]
 }
 
-private enum ScanProgressLane: CaseIterable, Hashable, Sendable {
+enum ScanProgressLane: CaseIterable, Hashable, Sendable {
     case video
     case image
 }
 
-private enum ScanProgressWorkflow: Sendable {
+enum ScanProgressWorkflow: Sendable {
     case fullScan
     case discovery
 }
 
-private actor ScanProgressAggregator {
+actor ScanProgressAggregator {
     private let workflow: ScanProgressWorkflow
     private var updates: [ScanProgressLane: ScanProgress] = [:]
     private var completedLanes = Set<ScanProgressLane>()
@@ -108,9 +108,11 @@ private actor ScanProgressAggregator {
             partial.weighted += normalizedFraction(for: progress) * weight
             partial.total += weight
         }
+        let currentStage: ScanStage
         if allCompleted {
             emittedFraction = 1
             emittedStage = .completed
+            currentStage = .completed
         } else {
             let nextFraction = rawFraction.total > 0 ? rawFraction.weighted / rawFraction.total : 0
             emittedFraction = max(emittedFraction, min(1, max(0, nextFraction)))
@@ -118,23 +120,27 @@ private actor ScanProgressAggregator {
             if stageRank(nextStage) >= stageRank(emittedStage) {
                 emittedStage = nextStage
             }
+            currentStage = nextStage
         }
 
-        let cacheKind = cacheKind(for: emittedStage)
-        let cacheStats = updates.values.reduce(into: (hits: 0, total: 0)) { partial, progress in
-            guard progress.cacheKind == cacheKind else { return }
-            partial.hits += progress.cacheHits
-            partial.total += progress.cacheTotal
-        }
+        let displayProgress = progressForDisplay(preferredLane: preferredLane, stage: currentStage)
+            ?? fallbackProgressForDisplay(preferredLane: preferredLane)
+        let displayStage = allCompleted ? .completed : displayProgress?.stage ?? currentStage
+        let expectedCacheKind = cacheKind(for: displayStage)
+        let displayedCacheKind = displayProgress?.cacheKind == expectedCacheKind ? expectedCacheKind : nil
+        let displayedComparisonPhase = displayProgress?.stage == displayStage ? displayProgress?.comparisonPhase : nil
 
         return ScanProgress(
-            stage: emittedStage,
+            stage: displayStage,
             fraction: emittedFraction,
-            currentFile: currentFile(preferredLane: preferredLane, stage: emittedStage),
+            currentFile: displayProgress?.currentFile ?? "",
             discoveredCount: updates.values.reduce(0) { $0 + $1.discoveredCount },
-            cacheHits: cacheStats.hits,
-            cacheTotal: cacheStats.total,
-            cacheKind: cacheStats.total > 0 ? cacheKind : nil
+            cacheHits: displayedCacheKind == nil ? 0 : displayProgress?.cacheHits ?? 0,
+            cacheTotal: displayedCacheKind == nil ? 0 : displayProgress?.cacheTotal ?? 0,
+            cacheKind: displayedCacheKind != nil && (displayProgress?.cacheTotal ?? 0) > 0 ? displayedCacheKind : nil,
+            comparisonPhase: displayedComparisonPhase,
+            comparisonCompleted: displayedComparisonPhase == nil ? 0 : (displayProgress?.comparisonCompleted ?? 0),
+            comparisonTotal: displayedComparisonPhase == nil ? 0 : (displayProgress?.comparisonTotal ?? 0)
         )
     }
 
@@ -184,16 +190,48 @@ private actor ScanProgressAggregator {
         }
     }
 
-    private func currentFile(preferredLane: ScanProgressLane, stage: ScanStage) -> String {
+    private func progressForDisplay(preferredLane: ScanProgressLane, stage: ScanStage) -> ScanProgress? {
         if let preferred = updates[preferredLane],
            preferred.stage == stage,
-           !preferred.currentFile.isEmpty {
-            return preferred.currentFile
+           hasDisplayDetails(preferred, for: stage) {
+            return preferred
         }
-        if let matching = updates.values.first(where: { $0.stage == stage && !$0.currentFile.isEmpty }) {
-            return matching.currentFile
+        for lane in ScanProgressLane.allCases where lane != preferredLane {
+            if let progress = updates[lane],
+               progress.stage == stage,
+               hasDisplayDetails(progress, for: stage) {
+                return progress
+            }
         }
-        return updates[preferredLane]?.currentFile ?? ""
+        return nil
+    }
+
+    private func fallbackProgressForDisplay(preferredLane: ScanProgressLane) -> ScanProgress? {
+        if let preferred = updates[preferredLane],
+           isActiveDisplayStage(preferred.stage),
+           hasDisplayDetails(preferred, for: preferred.stage) {
+            return preferred
+        }
+        return ScanProgressLane.allCases
+            .filter { $0 != preferredLane }
+            .compactMap { updates[$0] }
+            .filter { isActiveDisplayStage($0.stage) && hasDisplayDetails($0, for: $0.stage) }
+            .max { stageRank($0.stage) < stageRank($1.stage) }
+    }
+
+    private func hasDisplayDetails(_ progress: ScanProgress, for stage: ScanStage) -> Bool {
+        !progress.currentFile.isEmpty
+            || (progress.cacheKind == cacheKind(for: stage) && progress.cacheTotal > 0)
+            || progress.comparisonPhase != nil
+    }
+
+    private func isActiveDisplayStage(_ stage: ScanStage) -> Bool {
+        switch stage {
+        case .readingMetadata, .prehashing, .hashing, .comparing:
+            true
+        case .idle, .discovering, .completed, .cancelled:
+            false
+        }
     }
 
     private func stageRank(_ stage: ScanStage) -> Int {

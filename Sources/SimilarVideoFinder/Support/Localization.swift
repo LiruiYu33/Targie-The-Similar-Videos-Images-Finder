@@ -203,8 +203,50 @@ enum L10n {
         }
     }
 
+    static func scanProgressTitle(_ progress: ScanProgress, _ l: AppLanguage) -> String {
+        guard progress.stage == .comparing, let phase = progress.comparisonPhase else {
+            return scanStage(progress.stage, l)
+        }
+        switch phase {
+        case .findingCandidates:
+            return text(
+                l,
+                "Finding candidate pairs",
+                "正在查找候选配对",
+                "正在尋找候選配對",
+                "Buscando pares candidatos",
+                "Recherche des paires candidates"
+            )
+        case .checkingPairCache:
+            return text(
+                l,
+                "Checking pair cache",
+                "正在检查配对缓存",
+                "正在檢查配對快取",
+                "Comprobando caché de pares",
+                "Vérification du cache des paires"
+            )
+        case .comparingUncached:
+            return text(
+                l,
+                "Comparing uncached pairs",
+                "正在比较未缓存配对",
+                "正在比較未快取配對",
+                "Comparando pares sin caché",
+                "Comparaison des paires non mises en cache"
+            )
+        }
+    }
+
     static func scanProgressDetail(_ progress: ScanProgress, _ l: AppLanguage) -> String {
         var parts: [String] = []
+        if progress.stage == .comparing, let comparisonPhase = progress.comparisonPhase {
+            parts.append(comparisonProgressText(phase: comparisonPhase, progress: progress, l))
+            if !progress.currentFile.isEmpty {
+                parts.append(progress.currentFile)
+            }
+            return parts.joined(separator: " - ")
+        }
         if let cacheKind = progress.cacheKind, progress.cacheTotal > 0 {
             parts.append(cacheHitText(kind: cacheKind, hits: progress.cacheHits, total: progress.cacheTotal, l))
         }
@@ -212,6 +254,41 @@ enum L10n {
             parts.append(progress.currentFile)
         }
         return parts.joined(separator: " - ")
+    }
+
+    private static func comparisonProgressText(phase: ScanComparisonPhase, progress: ScanProgress, _ l: AppLanguage) -> String {
+        let total = max(progress.comparisonTotal, 0)
+        let completed = max(0, min(progress.comparisonCompleted, total))
+        switch phase {
+        case .findingCandidates:
+            return text(
+                l,
+                "Finding candidate pairs: \(completed) of \(total)",
+                "正在查找候选配对：\(completed) / \(total)",
+                "正在尋找候選配對：\(completed) / \(total)",
+                "Buscando pares candidatos: \(completed) de \(total)",
+                "Recherche des paires candidates : \(completed) sur \(total)"
+            )
+        case .checkingPairCache:
+            let clampedHits = max(0, min(progress.cacheHits, progress.cacheTotal))
+            return text(
+                l,
+                "Checking pair cache: hits \(clampedHits) of \(progress.cacheTotal)",
+                "正在检查配对缓存：命中 \(clampedHits) / \(progress.cacheTotal)",
+                "正在檢查配對快取：命中 \(clampedHits) / \(progress.cacheTotal)",
+                "Comprobando caché de pares: \(clampedHits) de \(progress.cacheTotal)",
+                "Vérification du cache des paires : \(clampedHits) sur \(progress.cacheTotal)"
+            )
+        case .comparingUncached:
+            return text(
+                l,
+                "Comparing uncached pairs: \(completed) of \(total)",
+                "正在比较未缓存配对：\(completed) / \(total)",
+                "正在比較未快取配對：\(completed) / \(total)",
+                "Comparando pares sin caché: \(completed) de \(total)",
+                "Comparaison des paires non mises en cache : \(completed) sur \(total)"
+            )
+        }
     }
 
     private static func cacheHitText(kind: ScanProgressCacheKind, hits: Int, total: Int, _ l: AppLanguage) -> String {

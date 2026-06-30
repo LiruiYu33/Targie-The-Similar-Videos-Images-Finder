@@ -26,6 +26,18 @@ struct ImageSimilarityPipeline: Sendable {
         min(6, max(2, processorCount / 2))
     }
 
+    static func scanRelationSignature(
+        items: [MediaItem],
+        hashes: [UUID: Data],
+        algorithmVersion: String
+    ) -> String {
+        ScanRelationSignatureBuilder.signature(
+            items: items,
+            hashes: hashes,
+            algorithmVersion: algorithmVersion
+        )
+    }
+
     func process(
         images: [MediaItem],
         threshold: Double,
@@ -34,87 +46,201 @@ struct ImageSimilarityPipeline: Sendable {
         let images = images.filter { $0.kind == .image }
         await progress(ScanProgress(stage: .hashing, fraction: 0, discoveredCount: images.count))
         let hashes = try await computeHashes(images: images, progress: progress)
+        let hashDataByID = hashes.mapValues { Data($0.hashBits) }
+        let indexSignature = Self.scanRelationSignature(
+            items: images,
+            hashes: hashDataByID,
+            algorithmVersion: Self.pairRelationAlgorithmVersion
+        )
+        if let cachedIndex = await cache?.lookupScanRelationIndex(
+            signature: indexSignature,
+            mediaKind: .image,
+            algorithmVersion: Self.pairRelationAlgorithmVersion
+        ) {
+            let itemsByPath = Dictionary(uniqueKeysWithValues: images.map { ($0.url.path, $0) })
+            let cachedRelations = cachedIndex.relations.compactMap { cached -> SimilarityRelation? in
+                guard let first = itemsByPath[cached.firstPath],
+                      let second = itemsByPath[cached.secondPath]
+                else { return nil }
+                return SimilarityRelation(
+                    firstID: first.id,
+                    secondID: second.id,
+                    score: cached.score,
+                    evidence: cached.evidence
+                )
+            }
+            await progress(ScanProgress(
+                stage: .comparing,
+                fraction: 1,
+                currentFile: "",
+                discoveredCount: images.count,
+                cacheHits: cachedIndex.candidateCount,
+                cacheTotal: cachedIndex.candidateCount,
+                cacheKind: .relation,
+                comparisonPhase: .checkingPairCache
+            ))
+            return ImagePipelineResult(
+                images: images,
+                relations: cachedRelations,
+                groups: SimilarityGrouper.groups(items: images, relations: cachedRelations, threshold: threshold)
+            )
+        }
+
         var tree = BKTree<ImagePerceptualHash>()
         for hash in hashes.values { tree.insert(hash) { $0.hammingDistance(to: $1) } }
 
         try Task.checkCancellation()
-        await progress(ScanProgress(stage: .comparing, fraction: 0, discoveredCount: images.count))
+        await progress(ScanProgress(
+            stage: .comparing,
+            fraction: 0,
+            discoveredCount: images.count,
+            comparisonPhase: .findingCandidates,
+            comparisonCompleted: 0,
+            comparisonTotal: max(images.count, 1)
+        ))
         let byID = Dictionary(uniqueKeysWithValues: images.map { ($0.id, $0) })
         let featureCache = ImageFeatureCache(extractor: featureExtractor, persistentCache: cache)
         var seen = Set<ImagePairKey>()
         var relations: [SimilarityRelation] = []
         var pairCacheHits = 0
         var pairCacheTotal = 0
+        var pendingComparisonCandidates: [(candidate: ImageComparisonCandidate, relationKey: PairRelationCacheKey?)] = []
         for (index, image) in images.enumerated() {
             try Task.checkCancellation()
             guard let hash = hashes[image.id] else { continue }
-            var pendingNeighbors: [(other: MediaItem, neighbor: (item: ImagePerceptualHash, dist: Int), relationKey: PairRelationCacheKey?)] = []
             for neighbor in tree.search(hash, maxDistance: Self.maxDistance, distance: { $0.hammingDistance(to: $1) }) where neighbor.item.mediaID != image.id {
                 let key = ImagePairKey(image.id, neighbor.item.mediaID)
                 guard seen.insert(key).inserted, let other = byID[neighbor.item.mediaID] else { continue }
-                pendingNeighbors.append((
-                    other: other,
-                    neighbor: neighbor,
+                pendingComparisonCandidates.append((
+                    candidate: ImageComparisonCandidate(
+                        first: image,
+                        second: other,
+                        firstHash: hash,
+                        secondHash: neighbor.item,
+                        neighborDistance: neighbor.dist
+                    ),
                     relationKey: PairRelationCacheKey(first: image, second: other, algorithmVersion: Self.pairRelationAlgorithmVersion)
                 ))
             }
 
-            let relationKeys = pendingNeighbors.compactMap(\.relationKey)
-            let relationCache: [PairRelationCacheKey: PairRelationCacheEntry] = cache == nil || relationKeys.isEmpty
-                ? [:]
-                : await cache?.lookupPairRelations(keys: relationKeys) ?? [:]
-            var misses: [ImageComparisonCandidate] = []
-            for pending in pendingNeighbors {
-                if let relationKey = pending.relationKey {
-                    pairCacheTotal += 1
-                    if let cached = relationCache[relationKey] {
-                        pairCacheHits += 1
-                        if let relation = cached.relation(firstID: image.id, secondID: pending.other.id) {
-                            relations.append(relation)
-                        }
-                        continue
-                    }
-                }
-                misses.append(ImageComparisonCandidate(
-                    first: image,
-                    second: pending.other,
-                    firstHash: hash,
-                    secondHash: pending.neighbor.item,
-                    neighborDistance: pending.neighbor.dist
-                ))
-            }
-
-            let comparisonLimit = Self.comparisonConcurrencyLimit(
-                processorCount: ProcessInfo.processInfo.activeProcessorCount
-            )
-            try await withThrowingTaskGroup(of: SimilarityRelation?.self) { group in
-                var iterator = misses.makeIterator()
-                for _ in 0..<min(comparisonLimit, misses.count) {
-                    guard let next = iterator.next() else { break }
-                    group.addTask {
-                        try await compareImageCandidate(next, cache: cache, featureCache: featureCache)
-                    }
-                }
-
-                while let relation = try await group.next() {
-                    if let relation { relations.append(relation) }
-                    if let next = iterator.next() {
-                        group.addTask {
-                            try await compareImageCandidate(next, cache: cache, featureCache: featureCache)
-                        }
-                    }
-                }
-            }
             await progress(ScanProgress(
                 stage: .comparing,
-                fraction: images.isEmpty ? 1 : Double(index + 1) / Double(images.count),
+                fraction: images.isEmpty ? 1 : Double(index + 1) / Double(images.count) * 0.2,
                 currentFile: image.filename,
                 discoveredCount: images.count,
                 cacheHits: pairCacheHits,
                 cacheTotal: pairCacheTotal,
-                cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil
+                cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil,
+                comparisonPhase: .findingCandidates,
+                comparisonCompleted: index + 1,
+                comparisonTotal: max(images.count, 1)
             ))
         }
+
+        let relationKeys = pendingComparisonCandidates.compactMap(\.relationKey)
+        let relationCache: [PairRelationCacheKey: PairRelationCacheEntry] = cache == nil || relationKeys.isEmpty
+            ? [:]
+            : await cache?.lookupPairRelations(keys: relationKeys) ?? [:]
+        var misses: [ImageComparisonCandidate] = []
+        for pending in pendingComparisonCandidates {
+            if let relationKey = pending.relationKey {
+                pairCacheTotal += 1
+                if let cached = relationCache[relationKey] {
+                    pairCacheHits += 1
+                    if let relation = cached.relation(
+                        firstID: pending.candidate.first.id,
+                        secondID: pending.candidate.second.id
+                    ) {
+                        relations.append(relation)
+                    }
+                    continue
+                }
+            }
+            misses.append(pending.candidate)
+        }
+
+        let cacheProgressFile = pendingComparisonCandidates.first?.candidate.first.filename ?? ""
+        if misses.isEmpty {
+            await progress(ScanProgress(
+                stage: .comparing,
+                fraction: 1,
+                currentFile: cacheProgressFile,
+                discoveredCount: images.count,
+                cacheHits: pairCacheHits,
+                cacheTotal: pairCacheTotal,
+                cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil,
+                comparisonPhase: .checkingPairCache
+            ))
+        } else {
+            await progress(ScanProgress(
+                stage: .comparing,
+                fraction: 0.2,
+                currentFile: cacheProgressFile,
+                discoveredCount: images.count,
+                cacheHits: pairCacheHits,
+                cacheTotal: pairCacheTotal,
+                cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil,
+                comparisonPhase: .checkingPairCache
+            ))
+
+            let comparisonLimit = Self.comparisonConcurrencyLimit(
+                processorCount: ProcessInfo.processInfo.activeProcessorCount
+            )
+            var completedMisses = 0
+            try await withThrowingTaskGroup(of: (String, SimilarityRelation?).self) { group in
+                var iterator = misses.makeIterator()
+                for _ in 0..<min(comparisonLimit, misses.count) {
+                    guard let next = iterator.next() else { break }
+                    group.addTask {
+                        let relation = try await compareImageCandidate(next, cache: cache, featureCache: featureCache)
+                        return (next.first.filename, relation)
+                    }
+                }
+
+                while let (currentFile, relation) = try await group.next() {
+                    completedMisses += 1
+                    if let relation { relations.append(relation) }
+                    await progress(ScanProgress(
+                        stage: .comparing,
+                        fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
+                        currentFile: currentFile,
+                        discoveredCount: images.count,
+                        cacheHits: 0,
+                        cacheTotal: 0,
+                        cacheKind: nil,
+                        comparisonPhase: .comparingUncached,
+                        comparisonCompleted: completedMisses,
+                        comparisonTotal: misses.count
+                    ))
+                    if let next = iterator.next() {
+                        group.addTask {
+                            let relation = try await compareImageCandidate(next, cache: cache, featureCache: featureCache)
+                            return (next.first.filename, relation)
+                        }
+                    }
+                }
+            }
+        }
+        let scanIndexRelations = relations.compactMap { relation -> CachedScanRelation? in
+            guard let first = byID[relation.firstID],
+                  let second = byID[relation.secondID]
+            else { return nil }
+            let ordered = first.url.path < second.url.path ? (first, second) : (second, first)
+            return CachedScanRelation(
+                firstPath: ordered.0.url.path,
+                secondPath: ordered.1.url.path,
+                score: relation.score,
+                evidence: relation.evidence
+            )
+        }
+        await cache?.upsertScanRelationIndex(
+            signature: indexSignature,
+            mediaKind: .image,
+            algorithmVersion: Self.pairRelationAlgorithmVersion,
+            fileCount: images.count,
+            candidateCount: pairCacheTotal,
+            relations: scanIndexRelations
+        )
         return ImagePipelineResult(images: images, relations: relations, groups: SimilarityGrouper.groups(items: images, relations: relations, threshold: threshold))
     }
 

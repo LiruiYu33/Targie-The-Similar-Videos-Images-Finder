@@ -428,6 +428,38 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNil(batch[changed])
     }
 
+    func testScanRelationIndexPersistsPositiveRelations() async throws {
+        let first = makeMedia(path: "/tmp/index-a.mp4", size: 100, date: Date(timeIntervalSince1970: 10))
+        let second = makeMedia(path: "/tmp/index-b.mp4", size: 120, date: Date(timeIntervalSince1970: 20))
+        let relation = CachedScanRelation(
+            firstPath: first.url.path,
+            secondPath: second.url.path,
+            score: 0.91,
+            evidence: [.similarPerceptualHash]
+        )
+
+        await cache.upsertScanRelationIndex(
+            signature: "sig-video-1",
+            mediaKind: .video,
+            algorithmVersion: "pair-v1",
+            fileCount: 2,
+            candidateCount: 1,
+            relations: [relation]
+        )
+
+        cache = nil
+        cache = try HashCache(databaseURL: dbURL)
+
+        let cached = await cache.lookupScanRelationIndex(
+            signature: "sig-video-1",
+            mediaKind: .video,
+            algorithmVersion: "pair-v1"
+        )
+        XCTAssertEqual(cached?.fileCount, 2)
+        XCTAssertEqual(cached?.candidateCount, 1)
+        XCTAssertEqual(cached?.relations, [relation])
+    }
+
     // MARK: - Pruning
 
     func testPruneStaleRemovesNonValidEntries() async {
@@ -461,6 +493,35 @@ final class HashCacheTests: XCTestCase {
         await cache.pruneStale(validPaths: [first.url.path])
 
         let cached = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: "test-pair-v1")
+        XCTAssertNil(cached)
+    }
+
+    func testPruneStaleRemovesScanRelationIndexWithInvalidRelationMembers() async {
+        let first = makeMedia(path: "/tmp/index-prune-a.mp4", size: 100, date: nil)
+        let second = makeMedia(path: "/tmp/index-prune-b.mp4", size: 120, date: nil)
+        await cache.upsertScanRelationIndex(
+            signature: "sig-prune",
+            mediaKind: .video,
+            algorithmVersion: "test-pair-v1",
+            fileCount: 2,
+            candidateCount: 1,
+            relations: [
+                CachedScanRelation(
+                    firstPath: first.url.path,
+                    secondPath: second.url.path,
+                    score: 0.91,
+                    evidence: [.similarPerceptualHash]
+                )
+            ]
+        )
+
+        await cache.pruneStale(validPaths: [first.url.path])
+
+        let cached = await cache.lookupScanRelationIndex(
+            signature: "sig-prune",
+            mediaKind: .video,
+            algorithmVersion: "test-pair-v1"
+        )
         XCTAssertNil(cached)
     }
 

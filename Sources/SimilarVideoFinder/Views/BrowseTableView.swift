@@ -51,7 +51,7 @@ struct BrowseTableView: View {
         if browseModel.scanModel.isScanning && browseModel.scanModel.items.isEmpty {
             VStack(spacing: 12) {
                 ProgressView(value: browseModel.scanModel.progress.fraction) {
-                    Text(L10n.scanStage(browseModel.scanModel.progress.stage, language))
+                    Text(L10n.scanProgressTitle(browseModel.scanModel.progress, language))
                 } currentValueLabel: {
                     Text(L10n.scanProgressDetail(browseModel.scanModel.progress, language))
                         .lineLimit(1)

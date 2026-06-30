@@ -111,6 +111,22 @@ struct PairRelationCacheEntry: Equatable, Sendable {
     }
 }
 
+struct CachedScanRelation: Equatable, Sendable {
+    let firstPath: String
+    let secondPath: String
+    let score: Double
+    let evidence: Set<SimilarityEvidence>
+}
+
+struct CachedScanRelationIndex: Equatable, Sendable {
+    let signature: String
+    let mediaKind: MediaKind
+    let algorithmVersion: String
+    let fileCount: Int
+    let candidateCount: Int
+    let relations: [CachedScanRelation]
+}
+
 struct MediaMetadataCacheKey: Hashable, Sendable {
     let filePath: String
     let fileSize: Int64
@@ -185,6 +201,28 @@ private struct PairRelationRecord: Codable, Sendable, FetchableRecord, TableReco
     static var databaseTableName: String { "pair_relations" }
 }
 
+private struct ScanRelationIndexRecord: Codable, Sendable, FetchableRecord, TableRecord {
+    var signature: String
+    var mediaKind: String
+    var algorithmVersion: String
+    var fileCount: Int
+    var candidateCount: Int
+
+    static var databaseTableName: String { "scan_relation_indexes" }
+}
+
+private struct ScanRelationIndexRelationRecord: Codable, Sendable, FetchableRecord, TableRecord {
+    var signature: String
+    var mediaKind: String
+    var algorithmVersion: String
+    var firstPath: String
+    var secondPath: String
+    var score: Double
+    var evidence: String
+
+    static var databaseTableName: String { "scan_relation_index_relations" }
+}
+
 private enum PairRelationCacheCodec {
     static func identity(first lhs: MediaItem, second rhs: MediaItem, algorithmVersion: String) -> PairRelationCacheKey? {
         PairRelationCacheKey(first: lhs, second: rhs, algorithmVersion: algorithmVersion)
@@ -228,6 +266,28 @@ private enum PairRelationCacheCodec {
     }
 }
 
+private enum ScanRelationIndexCodec {
+    static func storedRelation(_ relation: CachedScanRelation) -> CachedScanRelation {
+        let ordered = relation.firstPath < relation.secondPath
+            ? (relation.firstPath, relation.secondPath)
+            : (relation.secondPath, relation.firstPath)
+        return CachedScanRelation(
+            firstPath: ordered.0,
+            secondPath: ordered.1,
+            score: relation.score,
+            evidence: relation.evidence
+        )
+    }
+
+    static func encode(_ evidence: Set<SimilarityEvidence>) -> String {
+        evidence.map(\.rawValue).sorted().joined(separator: ",")
+    }
+
+    static func decode(_ value: String) -> Set<SimilarityEvidence> {
+        Set(value.split(separator: ",").compactMap { SimilarityEvidence(rawValue: String($0)) })
+    }
+}
+
 // MARK: - HashCache Protocol
 
 /// 缓存接口 — 通过协议化便于测试时注入 InMemory 替身。
@@ -267,6 +327,11 @@ protocol HashCaching: Sendable {
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async
     func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry?
     func lookupPairRelations(keys: [PairRelationCacheKey]) async -> [PairRelationCacheKey: PairRelationCacheEntry]
+
+    // Scan relation index cache — stores the complete positive relation result
+    // for an unchanged scan signature so re-scans can skip candidate generation.
+    func lookupScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String) async -> CachedScanRelationIndex?
+    func upsertScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String, fileCount: Int, candidateCount: Int, relations: [CachedScanRelation]) async
 
     /// Returns the previous path of a file that was moved, if one can be found
     /// in the cache. Read-only — does NOT update the path; the caller is
@@ -329,6 +394,8 @@ extension HashCaching {
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {}
     func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? { nil }
     func lookupPairRelations(keys: [PairRelationCacheKey]) async -> [PairRelationCacheKey: PairRelationCacheEntry] { [:] }
+    func lookupScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String) async -> CachedScanRelationIndex? { nil }
+    func upsertScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String, fileCount: Int, candidateCount: Int, relations: [CachedScanRelation]) async {}
     func detectMove(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) async -> String? { nil }
 }
 
@@ -492,6 +559,8 @@ actor HashCache: HashCaching {
                     try db.execute(sql: "DELETE FROM \(table)")
                 }
                 try db.execute(sql: "DELETE FROM pair_relations")
+                try db.execute(sql: "DELETE FROM scan_relation_index_relations")
+                try db.execute(sql: "DELETE FROM scan_relation_indexes")
                 return
             }
 
@@ -538,6 +607,40 @@ actor HashCache: HashCaching {
                 )
                 """)
 
+            try db.execute(sql: """
+                DELETE FROM scan_relation_indexes
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM scan_relation_index_relations
+                    WHERE scan_relation_index_relations.signature = scan_relation_indexes.signature
+                    AND scan_relation_index_relations.mediaKind = scan_relation_indexes.mediaKind
+                    AND scan_relation_index_relations.algorithmVersion = scan_relation_indexes.algorithmVersion
+                    AND (
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM temp_valid_cache_paths
+                            WHERE temp_valid_cache_paths.filePath = scan_relation_index_relations.firstPath
+                        )
+                        OR NOT EXISTS (
+                            SELECT 1
+                            FROM temp_valid_cache_paths
+                            WHERE temp_valid_cache_paths.filePath = scan_relation_index_relations.secondPath
+                        )
+                    )
+                )
+                """)
+
+            try db.execute(sql: """
+                DELETE FROM scan_relation_index_relations
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM scan_relation_indexes
+                    WHERE scan_relation_indexes.signature = scan_relation_index_relations.signature
+                    AND scan_relation_indexes.mediaKind = scan_relation_index_relations.mediaKind
+                    AND scan_relation_indexes.algorithmVersion = scan_relation_index_relations.algorithmVersion
+                )
+                """)
+
             try db.execute(sql: "DELETE FROM temp_valid_cache_paths")
         }
     }
@@ -555,6 +658,8 @@ actor HashCache: HashCaching {
             try db.execute(sql: "DELETE FROM image_features")
             try db.execute(sql: "DELETE FROM frame_features")
             try db.execute(sql: "DELETE FROM pair_relations")
+            try db.execute(sql: "DELETE FROM scan_relation_index_relations")
+            try db.execute(sql: "DELETE FROM scan_relation_indexes")
         }
     }
 
@@ -886,7 +991,7 @@ actor HashCache: HashCaching {
             let keysByGroup = Dictionary(grouping: keys) { "\($0.mediaKind.rawValue)\u{0}\($0.algorithmVersion)" }
             for group in keysByGroup.values {
                 guard let first = group.first else { continue }
-                let keysByPair = Dictionary(grouping: group) { "\($0.firstPath)\u{0}\($0.secondPath)" }
+                let keysByLookupIdentity = Dictionary(grouping: group, by: Self.pairRelationLookupIdentity)
                 let firstPaths = Array(Set(group.map(\.firstPath)))
                 for chunk in firstPaths.chunked(size: Self.cacheLookupBatchSize) {
                     let records = try PairRelationRecord
@@ -895,8 +1000,8 @@ actor HashCache: HashCaching {
                         .filter(Column("algorithmVersion") == first.algorithmVersion)
                         .fetchAll(db)
                     for record in records {
-                        let pairKey = "\(record.firstPath)\u{0}\(record.secondPath)"
-                        for identity in keysByPair[pairKey] ?? [] {
+                        let lookupIdentity = Self.pairRelationLookupIdentity(record)
+                        for identity in keysByLookupIdentity[lookupIdentity] ?? [] {
                             guard let entry = PairRelationCacheCodec.entry(record: record, identity: identity) else { continue }
                             results[identity] = entry
                         }
@@ -905,6 +1010,98 @@ actor HashCache: HashCaching {
             }
             return results
         }) ?? [:]
+    }
+
+    func lookupScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String) async -> CachedScanRelationIndex? {
+        try? await dbQueue.read { db in
+            guard let record = try ScanRelationIndexRecord
+                .filter(Column("signature") == signature)
+                .filter(Column("mediaKind") == mediaKind.rawValue)
+                .filter(Column("algorithmVersion") == algorithmVersion)
+                .fetchOne(db)
+            else { return nil }
+
+            let relationRecords = try ScanRelationIndexRelationRecord
+                .filter(Column("signature") == signature)
+                .filter(Column("mediaKind") == mediaKind.rawValue)
+                .filter(Column("algorithmVersion") == algorithmVersion)
+                .order(Column("firstPath"), Column("secondPath"))
+                .fetchAll(db)
+            let relations = relationRecords.map {
+                CachedScanRelation(
+                    firstPath: $0.firstPath,
+                    secondPath: $0.secondPath,
+                    score: $0.score,
+                    evidence: ScanRelationIndexCodec.decode($0.evidence)
+                )
+            }
+            return CachedScanRelationIndex(
+                signature: record.signature,
+                mediaKind: mediaKind,
+                algorithmVersion: record.algorithmVersion,
+                fileCount: record.fileCount,
+                candidateCount: record.candidateCount,
+                relations: relations
+            )
+        }
+    }
+
+    func upsertScanRelationIndex(
+        signature: String,
+        mediaKind: MediaKind,
+        algorithmVersion: String,
+        fileCount: Int,
+        candidateCount: Int,
+        relations: [CachedScanRelation]
+    ) async {
+        let normalizedRelations = relations.map { ScanRelationIndexCodec.storedRelation($0) }
+        let storedRelations = normalizedRelations.sorted { lhs, rhs in
+            if lhs.firstPath == rhs.firstPath {
+                return lhs.secondPath < rhs.secondPath
+            }
+            return lhs.firstPath < rhs.firstPath
+        }
+        try? await dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO scan_relation_indexes (
+                    signature, mediaKind, algorithmVersion, fileCount, candidateCount
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(signature, mediaKind, algorithmVersion) DO UPDATE SET
+                    fileCount = excluded.fileCount,
+                    candidateCount = excluded.candidateCount,
+                    createdAt = CURRENT_TIMESTAMP
+                """, arguments: [
+                    signature,
+                    mediaKind.rawValue,
+                    algorithmVersion,
+                    fileCount,
+                    candidateCount
+                ])
+            try db.execute(sql: """
+                DELETE FROM scan_relation_index_relations
+                WHERE signature = ?
+                AND mediaKind = ?
+                AND algorithmVersion = ?
+                """, arguments: [signature, mediaKind.rawValue, algorithmVersion])
+            for relation in storedRelations {
+                try db.execute(sql: """
+                    INSERT INTO scan_relation_index_relations (
+                        signature, mediaKind, algorithmVersion,
+                        firstPath, secondPath, score, evidence
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [
+                        signature,
+                        mediaKind.rawValue,
+                        algorithmVersion,
+                        relation.firstPath,
+                        relation.secondPath,
+                        relation.score,
+                        ScanRelationIndexCodec.encode(relation.evidence)
+                    ])
+            }
+        }
     }
 
     // MARK: - Helpers
@@ -918,6 +1115,14 @@ actor HashCache: HashCaching {
 
     private nonisolated func modifiedAtExactlyMatches(_ cached: Date?, _ current: Date?) -> Bool {
         cached == current
+    }
+
+    private nonisolated static func pairRelationLookupIdentity(_ key: PairRelationCacheKey) -> String {
+        "\(key.firstPath)\u{0}\(key.secondPath)\u{0}\(key.mediaKind.rawValue)\u{0}\(key.algorithmVersion)"
+    }
+
+    private nonisolated static func pairRelationLookupIdentity(_ record: PairRelationRecord) -> String {
+        "\(record.firstPath)\u{0}\(record.secondPath)\u{0}\(record.mediaKind)\u{0}\(record.algorithmVersion)"
     }
 
     private func verifiedMovedRecord<T: FilePathCacheRecord>(
@@ -1040,6 +1245,31 @@ actor HashCache: HashCaching {
             try db.execute(sql: "CREATE INDEX pair_relations_firstPath_idx ON pair_relations(firstPath)")
             try db.execute(sql: "CREATE INDEX pair_relations_secondPath_idx ON pair_relations(secondPath)")
         }
+        migrator.registerMigration("v8_scan_relation_indexes") { db in
+            try db.execute(sql: """
+                CREATE TABLE scan_relation_indexes (
+                    signature TEXT NOT NULL,
+                    mediaKind TEXT NOT NULL,
+                    algorithmVersion TEXT NOT NULL,
+                    fileCount INTEGER NOT NULL,
+                    candidateCount INTEGER NOT NULL,
+                    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (signature, mediaKind, algorithmVersion)
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TABLE scan_relation_index_relations (
+                    signature TEXT NOT NULL,
+                    mediaKind TEXT NOT NULL,
+                    algorithmVersion TEXT NOT NULL,
+                    firstPath TEXT NOT NULL,
+                    secondPath TEXT NOT NULL,
+                    score DOUBLE NOT NULL,
+                    evidence TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (signature, mediaKind, algorithmVersion, firstPath, secondPath)
+                )
+                """)
+        }
         try migrator.migrate(dbQueue)
     }
 
@@ -1117,6 +1347,7 @@ actor InMemoryHashCache: HashCaching {
     private var imageFeatures: [String: Data] = [:]
     private var frameFeatures: [String: Data] = [:]
     private var pairRelations: [PairRelationCacheKey: PairRelationRecord] = [:]
+    private var scanRelationIndexes: [String: CachedScanRelationIndex] = [:]
 
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
         guard let record = storage[filePath] else { return nil }
@@ -1156,11 +1387,16 @@ actor InMemoryHashCache: HashCaching {
         pairRelations = pairRelations.filter {
             validPaths.contains($0.key.firstPath) && validPaths.contains($0.key.secondPath)
         }
+        scanRelationIndexes = scanRelationIndexes.filter { _, index in
+            index.relations.allSatisfy {
+                validPaths.contains($0.firstPath) && validPaths.contains($0.secondPath)
+            }
+        }
     }
 
     func count() -> Int { storage.count }
 
-    func clearAll() { storage.removeAll(); metadata.removeAll(); sha256Store.removeAll(); imageFeatures.removeAll(); frameFeatures.removeAll(); pairRelations.removeAll() }
+    func clearAll() { storage.removeAll(); metadata.removeAll(); sha256Store.removeAll(); imageFeatures.removeAll(); frameFeatures.removeAll(); pairRelations.removeAll(); scanRelationIndexes.removeAll() }
 
     func sizeInBytes() -> Int64 { 0 }
 
@@ -1238,7 +1474,41 @@ actor InMemoryHashCache: HashCaching {
         return results
     }
 
+    func lookupScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> CachedScanRelationIndex? {
+        scanRelationIndexes[scanRelationIndexKey(signature: signature, mediaKind: mediaKind, algorithmVersion: algorithmVersion)]
+    }
+
+    func upsertScanRelationIndex(
+        signature: String,
+        mediaKind: MediaKind,
+        algorithmVersion: String,
+        fileCount: Int,
+        candidateCount: Int,
+        relations: [CachedScanRelation]
+    ) {
+        let normalizedRelations = relations.map { ScanRelationIndexCodec.storedRelation($0) }
+        let storedRelations = normalizedRelations.sorted { lhs, rhs in
+            if lhs.firstPath == rhs.firstPath {
+                return lhs.secondPath < rhs.secondPath
+            }
+            return lhs.firstPath < rhs.firstPath
+        }
+        let index = CachedScanRelationIndex(
+            signature: signature,
+            mediaKind: mediaKind,
+            algorithmVersion: algorithmVersion,
+            fileCount: fileCount,
+            candidateCount: candidateCount,
+            relations: storedRelations
+        )
+        scanRelationIndexes[scanRelationIndexKey(signature: signature, mediaKind: mediaKind, algorithmVersion: algorithmVersion)] = index
+    }
+
     func detectMove(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> String? { nil }
+
+    private func scanRelationIndexKey(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> String {
+        "\(signature)\u{0}\(mediaKind.rawValue)\u{0}\(algorithmVersion)"
+    }
 
     private func datesMatch(_ cached: Date?, _ current: Date?) -> Bool {
         if let a = cached, let b = current {

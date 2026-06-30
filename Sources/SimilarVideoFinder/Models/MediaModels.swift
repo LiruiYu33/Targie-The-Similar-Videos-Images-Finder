@@ -205,6 +205,12 @@ enum ScanProgressCacheKind: Equatable, Sendable {
     case relation
 }
 
+enum ScanComparisonPhase: Equatable, Sendable {
+    case findingCandidates
+    case checkingPairCache
+    case comparingUncached
+}
+
 struct ScanProgress: Equatable, Sendable {
     var stage: ScanStage = .idle
     var fraction: Double = 0
@@ -213,4 +219,7 @@ struct ScanProgress: Equatable, Sendable {
     var cacheHits: Int = 0
     var cacheTotal: Int = 0
     var cacheKind: ScanProgressCacheKind?
+    var comparisonPhase: ScanComparisonPhase?
+    var comparisonCompleted: Int = 0
+    var comparisonTotal: Int = 0
 }

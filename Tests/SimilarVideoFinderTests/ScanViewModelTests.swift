@@ -177,6 +177,97 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertTrue(bothStarted)
     }
 
+    func testProgressAggregationDoesNotMixCacheStatsFromAnotherLane() async {
+        let aggregator = ScanProgressAggregator(workflow: .fullScan)
+        _ = await aggregator.update(.image, with: ScanProgress(
+            stage: .comparing,
+            fraction: 1,
+            currentFile: "photo.jpg",
+            discoveredCount: 955,
+            cacheHits: 3_152,
+            cacheTotal: 3_152,
+            cacheKind: .relation,
+            comparisonPhase: .checkingPairCache
+        ))
+
+        let aggregate = await aggregator.update(.video, with: ScanProgress(
+            stage: .comparing,
+            fraction: 0.1,
+            currentFile: "clip.mp4",
+            discoveredCount: 2_848,
+            comparisonPhase: .findingCandidates,
+            comparisonCompleted: 42,
+            comparisonTotal: 100
+        ))
+
+        XCTAssertEqual(aggregate.currentFile, "clip.mp4")
+        XCTAssertNil(aggregate.cacheKind)
+        XCTAssertEqual(aggregate.cacheHits, 0)
+        XCTAssertEqual(aggregate.cacheTotal, 0)
+        XCTAssertEqual(aggregate.comparisonPhase, .findingCandidates)
+        XCTAssertEqual(aggregate.comparisonCompleted, 42)
+        XCTAssertEqual(aggregate.comparisonTotal, 100)
+    }
+
+    func testProgressAggregationFallsBackToActiveLowerStageWhenComparingHasNoDetails() async {
+        let aggregator = ScanProgressAggregator(workflow: .fullScan)
+        _ = await aggregator.update(.image, with: ScanProgress(
+            stage: .comparing,
+            fraction: 0,
+            discoveredCount: 20
+        ))
+
+        let aggregate = await aggregator.update(.video, with: ScanProgress(
+            stage: .hashing,
+            fraction: 0.5,
+            currentFile: "clip.mp4",
+            discoveredCount: 100,
+            cacheHits: 50,
+            cacheTotal: 100,
+            cacheKind: .fingerprint
+        ))
+
+        XCTAssertEqual(aggregate.stage, .hashing)
+        XCTAssertEqual(aggregate.currentFile, "clip.mp4")
+        XCTAssertEqual(aggregate.cacheKind, .fingerprint)
+        XCTAssertEqual(aggregate.cacheHits, 50)
+        XCTAssertEqual(aggregate.cacheTotal, 100)
+        XCTAssertNil(aggregate.comparisonPhase)
+    }
+
+    func testProgressAggregationShowsActiveLaneAfterHigherStageLaneCompletes() async {
+        let aggregator = ScanProgressAggregator(workflow: .fullScan)
+        _ = await aggregator.update(.image, with: ScanProgress(
+            stage: .comparing,
+            fraction: 1,
+            currentFile: "photo.jpg",
+            discoveredCount: 20,
+            cacheHits: 12,
+            cacheTotal: 12,
+            cacheKind: .relation,
+            comparisonPhase: .checkingPairCache
+        ))
+        _ = await aggregator.complete(.image, discoveredCount: 20)
+
+        let aggregate = await aggregator.update(.video, with: ScanProgress(
+            stage: .hashing,
+            fraction: 0.5,
+            currentFile: "clip.mp4",
+            discoveredCount: 100,
+            cacheHits: 50,
+            cacheTotal: 100,
+            cacheKind: .fingerprint
+        ))
+
+        XCTAssertEqual(aggregate.stage, .hashing)
+        XCTAssertGreaterThanOrEqual(aggregate.fraction, 0.65)
+        XCTAssertEqual(aggregate.currentFile, "clip.mp4")
+        XCTAssertEqual(aggregate.cacheKind, .fingerprint)
+        XCTAssertEqual(aggregate.cacheHits, 50)
+        XCTAssertEqual(aggregate.cacheTotal, 100)
+        XCTAssertNil(aggregate.comparisonPhase)
+    }
+
     func testConcurrentKindProgressDoesNotMoveBackward() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ParallelProgress-\(UUID().uuidString)", isDirectory: true)
