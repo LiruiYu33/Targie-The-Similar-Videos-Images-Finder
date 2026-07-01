@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package macOS release
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          swift --version
+          xcodebuild -version
+
+      - name: Build release artifact
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          ./script/release.sh "$VERSION"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Targie-${{ github.ref_name }}-macos-universal
+          path: |
+            dist/release/Targie-${{ github.ref_name }}-macos-universal.zip
+            dist/release/Targie-${{ github.ref_name }}-macos-universal.zip.sha256
+          if-no-files-found: error
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ZIP="dist/release/Targie-${TAG}-macos-universal.zip"
+          SHA256="${ZIP}.sha256"
+          cat > release-notes.md <<EOF
+          Automated draft release for ${TAG}.
+
+          Validation:
+          - ./script/release.sh ${TAG#v}
+          - Universal macOS app with arm64 and x86_64 slices
+
+          Publish this draft after manually checking the generated assets.
+          EOF
+
+          gh release create "$TAG" "$ZIP" "$SHA256" \
+            --draft \
+            --verify-tag \
+            --title "Targie ${TAG}" \
+            --notes-file release-notes.md

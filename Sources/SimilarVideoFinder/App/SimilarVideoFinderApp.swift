@@ -39,7 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SimilarVideoFinderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     /// Owned at the App level so state survives window close (Cmd+W).
-    @StateObject private var scanModel = ScanViewModel()
+    @StateObject private var scanModel: ScanViewModel
+
+    init() {
+        _scanModel = StateObject(wrappedValue: ScanViewModel())
+    }
 
     var body: some Scene {
         WindowGroup(AppIdentity.displayName) {
