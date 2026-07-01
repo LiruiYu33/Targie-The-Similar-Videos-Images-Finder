@@ -28,6 +28,8 @@ struct ContentView: View {
 
     @State private var appMode: AppMode = .scan
     @StateObject private var browseSession = BrowseSessionCoordinator()
+    @State private var isClearCacheConfirmPresented = false
+    @State private var cacheMB = (thumbnailMB: "0", hashMB: "0")
 
     private var language: AppLanguage {
         AppLanguage(rawValue: languageRawValue) ?? .defaultLanguage
@@ -54,6 +56,17 @@ struct ContentView: View {
             Button(L10n.ok(language)) { model.presentedError = nil }
         } message: {
             Text(model.localizedError(language) ?? L10n.unknownError(language))
+        }
+        .alert(
+            L10n.clearCacheConfirmTitle(language),
+            isPresented: $isClearCacheConfirmPresented
+        ) {
+            Button(L10n.clearCache(language), role: .destructive) {
+                Task { await model.clearAllCaches() }
+            }
+            Button(L10n.cancel(language), role: .cancel) {}
+        } message: {
+            Text(L10n.clearCacheConfirmMessage(cacheMB.thumbnailMB, cacheMB.hashMB, language))
         }
         .dropDestination(for: URL.self) { urls, _ in
             model.addFolders(urls)
@@ -129,6 +142,17 @@ struct ContentView: View {
                     action: enterBrowseMode
                 )
                 .disabled(model.selectedFolders.isEmpty)
+
+                ToolbarLabeledButton(
+                    title: L10n.clearCache(language),
+                    systemImage: "arrow.triangle.2.circlepath"
+                ) {
+                    Task {
+                        cacheMB = await model.cacheStats()
+                        isClearCacheConfirmPresented = true
+                    }
+                }
+                .disabled(model.isScanning)
 
                 ToolbarLabeledPopover(
                     title: L10n.language(language),

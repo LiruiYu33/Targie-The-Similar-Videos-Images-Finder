@@ -849,7 +849,7 @@ final class ScanViewModel: ObservableObject {
 
     /// Clears both the on-disk thumbnail cache and the perceptual-hash cache.
     /// The next scan re-derives everything, so it'll be slower — used by the
-    /// "Clear Cache" button in Browse.
+    /// "Clear Cache" button in the main toolbar.
     func clearAllCaches() async {
         MediaThumbnailImageCache.shared.removeAll()
         try? ThumbnailStore.shared.clearAll()

@@ -247,7 +247,7 @@ enum L10n {
             }
             return parts.joined(separator: " - ")
         }
-        if let cacheKind = progress.cacheKind, progress.cacheTotal > 0 {
+        if let cacheKind = progress.cacheKind, progress.cacheHits > 0, progress.cacheTotal > 0 {
             parts.append(cacheHitText(kind: cacheKind, hits: progress.cacheHits, total: progress.cacheTotal, l))
         }
         if !progress.currentFile.isEmpty {

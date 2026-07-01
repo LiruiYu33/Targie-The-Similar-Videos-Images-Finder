@@ -66,6 +66,21 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.scanProgressDetail(metadata, .english), "Metadata cache hits: 2 of 5 - clip.mov")
     }
 
+    func testScanProgressDetailHidesZeroCacheHitsOutsidePairCachePhase() {
+        let fingerprint = ScanProgress(
+            stage: .hashing,
+            fraction: 0.25,
+            currentFile: "1252.mp4",
+            discoveredCount: 2_096,
+            cacheHits: 0,
+            cacheTotal: 2_096,
+            cacheKind: .fingerprint
+        )
+
+        XCTAssertEqual(L10n.scanProgressDetail(fingerprint, .english), "1252.mp4")
+        XCTAssertEqual(L10n.scanProgressDetail(fingerprint, .simplifiedChinese), "1252.mp4")
+    }
+
     func testComparisonSubProgressDetails() {
         let finding = ScanProgress(
             stage: .comparing,

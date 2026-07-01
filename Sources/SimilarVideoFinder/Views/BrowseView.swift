@@ -35,12 +35,6 @@ struct BrowseView: View {
     /// Track whether the user is currently dragging the divider.
     @State private var isDraggingDivider = false
 
-    /// Drives the "Clear Cache" confirmation alert.
-    @State private var isClearCacheConfirmPresented = false
-
-    /// Last-fetched cache stats shown in the confirmation alert.
-    @State private var cacheMB = (thumbnailMB: "0", hashMB: "0")
-
     var body: some View {
         GeometryReader { geo in
             let totalWidth = geo.size.width
@@ -118,16 +112,6 @@ struct BrowseView: View {
                     BrowseFilterPopover(browseModel: browseModel)
                 }
 
-                ToolbarLabeledButton(
-                    title: L10n.clearCache(language),
-                    systemImage: "arrow.triangle.2.circlepath"
-                ) {
-                    Task {
-                        cacheMB = await browseModel.scanModel.cacheStats()
-                        isClearCacheConfirmPresented = true
-                    }
-                }
-
                 if !browseModel.isBatchSelectionMode {
                     ToolbarLabeledButton(
                         title: L10n.select(language),
@@ -156,17 +140,6 @@ struct BrowseView: View {
                     .disabled(browseModel.selectedMediaIDs.isEmpty)
                 }
             }
-        }
-        .alert(
-            L10n.clearCacheConfirmTitle(language),
-            isPresented: $isClearCacheConfirmPresented
-        ) {
-            Button(L10n.clearCache(language), role: .destructive) {
-                Task { await browseModel.scanModel.clearAllCaches() }
-            }
-            Button(L10n.cancel(language), role: .cancel) {}
-        } message: {
-            Text(L10n.clearCacheConfirmMessage(cacheMB.thumbnailMB, cacheMB.hashMB, language))
         }
     }
 
