@@ -652,14 +652,19 @@ actor HashCache: HashCaching {
     /// Deletes every cached perceptual hash, metadata, and image feature.
     /// Next scan re-derives them.
     func clearAll() {
-        try? dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM hash_cache")
-            try db.execute(sql: "DELETE FROM media_metadata")
-            try db.execute(sql: "DELETE FROM image_features")
-            try db.execute(sql: "DELETE FROM frame_features")
-            try db.execute(sql: "DELETE FROM pair_relations")
-            try db.execute(sql: "DELETE FROM scan_relation_index_relations")
-            try db.execute(sql: "DELETE FROM scan_relation_indexes")
+        do {
+            try dbQueue.write { db in
+                try db.execute(sql: "DELETE FROM hash_cache")
+                try db.execute(sql: "DELETE FROM media_metadata")
+                try db.execute(sql: "DELETE FROM image_features")
+                try db.execute(sql: "DELETE FROM frame_features")
+                try db.execute(sql: "DELETE FROM pair_relations")
+                try db.execute(sql: "DELETE FROM scan_relation_index_relations")
+                try db.execute(sql: "DELETE FROM scan_relation_indexes")
+            }
+            try dbQueue.vacuum()
+        } catch {
+            // Clear Cache is best-effort; scans can rebuild any missing data.
         }
     }
 
@@ -1168,7 +1173,8 @@ actor HashCache: HashCaching {
     }
 
     func sizeInBytes() -> Int64 {
-        Int64((try? databaseURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        let size = (try? FileManager.default.attributesOfItem(atPath: databaseURL.path)[.size]) as? NSNumber
+        return size?.int64Value ?? 0
     }
 
     // MARK: - Migrations

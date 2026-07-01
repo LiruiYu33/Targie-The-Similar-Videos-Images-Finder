@@ -545,6 +545,30 @@ final class HashCacheTests: XCTestCase {
         XCTAssertEqual(remainingCount, 0)
     }
 
+    func testClearAllRemovesRowsAndCompactsDatabaseFile() async {
+        let record = CacheRecord(
+            filePath: "/tmp/large-cache-entry.mp4",
+            fileSize: 2_000_000,
+            modifiedAt: Date(timeIntervalSince1970: 7_000),
+            perceptualHash: Data(repeating: 0xAB, count: 2_000_000),
+            prehashDurationBucket: 50,
+            prehashSizeBucket: 60,
+            prehashAspectBucket: 59,
+            prehashThumbnailMean: 128,
+            prehashThumbnailVariance: 1000
+        )
+        await cache.upsert(record)
+        let populatedSize = await cache.sizeInBytes()
+        XCTAssertGreaterThan(populatedSize, 1_000_000)
+
+        await cache.clearAll()
+
+        let remainingCount = await cache.count()
+        let clearedSize = await cache.sizeInBytes()
+        XCTAssertEqual(remainingCount, 0)
+        XCTAssertLessThan(clearedSize, 512_000)
+    }
+
     // MARK: - Persistence Across Instances
 
     func testCachePersistsAcrossDatabaseConnections() async throws {
