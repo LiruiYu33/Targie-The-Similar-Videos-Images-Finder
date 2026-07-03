@@ -263,11 +263,11 @@ enum L10n {
         case .findingCandidates:
             return text(
                 l,
-                "Finding candidate pairs: \(completed) of \(total)",
-                "正在查找候选配对：\(completed) / \(total)",
-                "正在尋找候選配對：\(completed) / \(total)",
-                "Buscando pares candidatos: \(completed) de \(total)",
-                "Recherche des paires candidates : \(completed) sur \(total)"
+                "Checked files: \(completed) of \(total)",
+                "已检查文件：\(completed) / \(total)",
+                "已檢查檔案：\(completed) / \(total)",
+                "Archivos comprobados: \(completed) de \(total)",
+                "Fichiers vérifiés : \(completed) sur \(total)"
             )
         case .checkingPairCache:
             let clampedHits = max(0, min(progress.cacheHits, progress.cacheTotal))

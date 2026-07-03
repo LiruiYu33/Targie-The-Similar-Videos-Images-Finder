@@ -92,7 +92,11 @@ final class LocalizationTests: XCTestCase {
         )
         XCTAssertEqual(
             L10n.scanProgressDetail(finding, .english),
-            "Finding candidate pairs: 42 of 100 - clip.mp4"
+            "Checked files: 42 of 100 - clip.mp4"
+        )
+        XCTAssertEqual(
+            L10n.scanProgressDetail(finding, .simplifiedChinese),
+            "已检查文件：42 / 100 - clip.mp4"
         )
 
         let checking = ScanProgress(
