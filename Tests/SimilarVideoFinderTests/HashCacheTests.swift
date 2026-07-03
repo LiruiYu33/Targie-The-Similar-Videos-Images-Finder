@@ -408,6 +408,42 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNil(changed)
     }
 
+    func testBatchPairRelationUpsertPersistsMultipleRelations() async throws {
+        let first = makeMedia(path: "/tmp/batch-upsert-a.mp4", size: 100, date: Date(timeIntervalSince1970: 10))
+        let second = makeMedia(path: "/tmp/batch-upsert-b.mp4", size: 120, date: Date(timeIntervalSince1970: 20))
+        let third = makeMedia(path: "/tmp/batch-upsert-c.mp4", size: 140, date: Date(timeIntervalSince1970: 30))
+        let firstRelation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.91,
+            evidence: [.similarPerceptualHash]
+        )
+
+        await cache.upsertPairRelations([
+            PairRelationCacheUpsert(
+                first: first,
+                second: second,
+                algorithmVersion: "test-pair-v1",
+                relation: firstRelation
+            ),
+            PairRelationCacheUpsert(
+                first: first,
+                second: third,
+                algorithmVersion: "test-pair-v1",
+                relation: nil
+            )
+        ])
+
+        let positive = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: "test-pair-v1")
+        let negative = await cache.lookupPairRelation(first: first, second: third, algorithmVersion: "test-pair-v1")
+
+        XCTAssertEqual(positive?.score, 0.91)
+        XCTAssertEqual(positive?.evidence, [.similarPerceptualHash])
+        XCTAssertNotNil(negative)
+        XCTAssertNil(negative?.score)
+        XCTAssertTrue(negative?.evidence.isEmpty == true)
+    }
+
     func testBatchPairRelationLookupReturnsOnlyMatchingIdentities() async throws {
         let first = makeMedia(path: "/tmp/batch-pair-a.mp4", size: 100, date: Date(timeIntervalSince1970: 6_400))
         let second = makeMedia(path: "/tmp/batch-pair-b.mp4", size: 120, date: Date(timeIntervalSince1970: 6_500))

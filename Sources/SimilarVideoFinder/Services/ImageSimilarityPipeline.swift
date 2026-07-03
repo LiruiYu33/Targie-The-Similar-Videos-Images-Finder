@@ -14,6 +14,7 @@ struct ImageSimilarityPipeline: Sendable {
     static let pairRelationAlgorithmVersion = "image-pair-relation-v1"
     static let maxDistance = 20
     fileprivate static let relationStorageFloor = 0.60
+    private static let pairRelationWriteBatchSize = 512
     private let cache: (any HashCaching)?
     private let featureExtractor: any ImageFeatureExtracting
 
@@ -104,6 +105,7 @@ struct ImageSimilarityPipeline: Sendable {
         var relations: [SimilarityRelation] = []
         var pairCacheHits = 0
         var pairCacheTotal = 0
+        var pendingPairRelationUpserts: [PairRelationCacheUpsert] = []
         var pendingComparisonCandidates: [(candidate: ImageComparisonCandidate, relationKey: PairRelationCacheKey?)] = []
         for (index, image) in images.enumerated() {
             try Task.checkCancellation()
@@ -187,23 +189,32 @@ struct ImageSimilarityPipeline: Sendable {
                 processorCount: ProcessInfo.processInfo.activeProcessorCount
             )
             var completedMisses = 0
-            try await withThrowingTaskGroup(of: (String, SimilarityRelation?).self) { group in
+            try await withThrowingTaskGroup(of: (ImageComparisonCandidate, SimilarityRelation?).self) { group in
                 var iterator = misses.makeIterator()
                 for _ in 0..<min(comparisonLimit, misses.count) {
                     guard let next = iterator.next() else { break }
                     group.addTask {
                         let relation = try await compareImageCandidate(next, cache: cache, featureCache: featureCache)
-                        return (next.first.filename, relation)
+                        return (next, relation)
                     }
                 }
 
-                while let (currentFile, relation) = try await group.next() {
+                while let (completedCandidate, relation) = try await group.next() {
                     completedMisses += 1
                     if let relation { relations.append(relation) }
+                    pendingPairRelationUpserts.append(PairRelationCacheUpsert(
+                        first: completedCandidate.first,
+                        second: completedCandidate.second,
+                        algorithmVersion: Self.pairRelationAlgorithmVersion,
+                        relation: relation
+                    ))
+                    if pendingPairRelationUpserts.count >= Self.pairRelationWriteBatchSize {
+                        await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
+                    }
                     await progress(ScanProgress(
                         stage: .comparing,
                         fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
-                        currentFile: currentFile,
+                        currentFile: completedCandidate.first.filename,
                         discoveredCount: images.count,
                         cacheHits: 0,
                         cacheTotal: 0,
@@ -215,11 +226,12 @@ struct ImageSimilarityPipeline: Sendable {
                     if let next = iterator.next() {
                         group.addTask {
                             let relation = try await compareImageCandidate(next, cache: cache, featureCache: featureCache)
-                            return (next.first.filename, relation)
+                            return (next, relation)
                         }
                     }
                 }
             }
+            await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
         }
         let scanIndexRelations = relations.compactMap { relation -> CachedScanRelation? in
             guard let first = byID[relation.firstID],
@@ -356,13 +368,17 @@ private func compareImageCandidate(
     } else {
         relation = nil
     }
-    await cache?.upsertPairRelation(
-        first: candidate.first,
-        second: candidate.second,
-        algorithmVersion: ImageSimilarityPipeline.pairRelationAlgorithmVersion,
-        relation: relation
-    )
     return relation
+}
+
+private func flushPairRelationUpserts(
+    _ pending: inout [PairRelationCacheUpsert],
+    cache: (any HashCaching)?
+) async {
+    guard !pending.isEmpty else { return }
+    let batch = pending
+    pending.removeAll(keepingCapacity: true)
+    await cache?.upsertPairRelations(batch)
 }
 
 private struct ImageComparisonCandidate: Sendable {

@@ -245,6 +245,22 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(pairSingleLookupCount, 0)
     }
 
+    func testUncachedVideoPairRelationsAreWrittenInBatches() async throws {
+        let first = video(path: "/missing/batch-write-video-a.mp4", size: 1_000)
+        let second = video(path: "/missing/batch-write-video-b.mp4", size: 1_100)
+        let cache = VideoPairRelationBatchRecordingCache()
+        await cache.seed(video: first, hash: [UInt8](repeating: 0, count: 8))
+        await cache.seed(video: second, hash: [1] + [UInt8](repeating: 0, count: 7))
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        _ = try await pipeline.process(videos: [first, second], threshold: 0.60) { _ in }
+
+        let counts = await cache.pairUpsertCounts()
+        XCTAssertEqual(counts.batchCalls, 1)
+        XCTAssertEqual(counts.singleCalls, 0)
+        XCTAssertEqual(counts.lastBatchSize, 1)
+    }
+
     func testCachedPairRelationsAreLookedUpOnceForWholeComparisonPhase() async throws {
         let videos = [
             video(path: "/missing/bulk-pair-cache-1.mp4", size: 1_000),
@@ -449,6 +465,9 @@ private actor VideoPairRelationBatchRecordingCache: HashCaching {
     private(set) var pairBatchLookupCount = 0
     private(set) var pairSingleLookupCount = 0
     private(set) var lastPairBatchLookupKeyCount = 0
+    private var pairBatchUpsertCount = 0
+    private var pairSingleUpsertCount = 0
+    private var lastPairBatchUpsertCount = 0
 
     func seed(video: MediaItem, hash: [UInt8]) {
         let prehash = QuickPrehasher.prehash(for: video)
@@ -498,6 +517,24 @@ private actor VideoPairRelationBatchRecordingCache: HashCaching {
     func clearAll() {}
     func sizeInBytes() -> Int64 { 0 }
 
+    func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {
+        pairSingleUpsertCount += 1
+        storePairRelation(first: first, second: second, algorithmVersion: algorithmVersion, relation: relation)
+    }
+
+    func upsertPairRelations(_ upserts: [PairRelationCacheUpsert]) async {
+        pairBatchUpsertCount += 1
+        lastPairBatchUpsertCount = upserts.count
+        for upsert in upserts {
+            storePairRelation(
+                first: upsert.first,
+                second: upsert.second,
+                algorithmVersion: upsert.algorithmVersion,
+                relation: upsert.relation
+            )
+        }
+    }
+
     func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? {
         pairSingleLookupCount += 1
         guard let key = PairRelationCacheKey(first: first, second: second, algorithmVersion: algorithmVersion) else { return nil }
@@ -514,6 +551,15 @@ private actor VideoPairRelationBatchRecordingCache: HashCaching {
 
     func lookupScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> CachedScanRelationIndex? {
         scanIndexes[scanIndexKey(signature: signature, mediaKind: mediaKind, algorithmVersion: algorithmVersion)]
+    }
+
+    func pairUpsertCounts() -> (batchCalls: Int, singleCalls: Int, lastBatchSize: Int) {
+        (pairBatchUpsertCount, pairSingleUpsertCount, lastPairBatchUpsertCount)
+    }
+
+    private func storePairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) {
+        guard let key = PairRelationCacheKey(first: first, second: second, algorithmVersion: algorithmVersion) else { return }
+        relations[key] = PairRelationCacheEntry(score: relation?.score, evidence: relation?.evidence ?? [])
     }
 
     private func scanIndexKey(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> String {

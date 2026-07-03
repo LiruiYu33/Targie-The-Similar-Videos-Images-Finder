@@ -130,6 +130,22 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         XCTAssertEqual(pairSingleLookupCount, 0)
     }
 
+    func testUncachedImagePairRelationsAreWrittenInBatches() async throws {
+        let first = image(path: "/missing/batch-write-image-a.jpg", size: 1_000)
+        let second = image(path: "/missing/batch-write-image-b.jpg", size: 1_100)
+        let cache = ImagePairRelationBatchRecordingCache()
+        await cache.seed(image: first, hash: [UInt8](repeating: 0, count: 8))
+        await cache.seed(image: second, hash: [1] + [UInt8](repeating: 0, count: 7))
+        let pipeline = ImageSimilarityPipeline(cache: cache, featureExtractor: CountingThrowingImageFeatureExtractor())
+
+        _ = try await pipeline.process(images: [first, second], threshold: 0.60) { _ in }
+
+        let counts = await cache.pairUpsertCounts()
+        XCTAssertEqual(counts.batchCalls, 1)
+        XCTAssertEqual(counts.singleCalls, 0)
+        XCTAssertEqual(counts.lastBatchSize, 1)
+    }
+
     func testCachedPairRelationsAreLookedUpOnceForWholeComparisonPhase() async throws {
         let images = [
             image(path: "/missing/bulk-pair-cache-1.jpg", size: 1_000),
@@ -301,6 +317,9 @@ private actor ImagePairRelationBatchRecordingCache: HashCaching {
     private var scanIndexes: [String: CachedScanRelationIndex] = [:]
     private(set) var pairBatchLookupCount = 0
     private(set) var pairSingleLookupCount = 0
+    private var pairBatchUpsertCount = 0
+    private var pairSingleUpsertCount = 0
+    private var lastPairBatchUpsertCount = 0
 
     func seed(image: MediaItem, hash: [UInt8]) {
         var record = CacheRecord(
@@ -355,6 +374,24 @@ private actor ImagePairRelationBatchRecordingCache: HashCaching {
     func clearAll() {}
     func sizeInBytes() -> Int64 { 0 }
 
+    func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {
+        pairSingleUpsertCount += 1
+        storePairRelation(first: first, second: second, algorithmVersion: algorithmVersion, relation: relation)
+    }
+
+    func upsertPairRelations(_ upserts: [PairRelationCacheUpsert]) async {
+        pairBatchUpsertCount += 1
+        lastPairBatchUpsertCount = upserts.count
+        for upsert in upserts {
+            storePairRelation(
+                first: upsert.first,
+                second: upsert.second,
+                algorithmVersion: upsert.algorithmVersion,
+                relation: upsert.relation
+            )
+        }
+    }
+
     func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? {
         pairSingleLookupCount += 1
         guard let key = PairRelationCacheKey(first: first, second: second, algorithmVersion: algorithmVersion) else { return nil }
@@ -370,6 +407,15 @@ private actor ImagePairRelationBatchRecordingCache: HashCaching {
 
     func lookupScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> CachedScanRelationIndex? {
         scanIndexes[scanIndexKey(signature: signature, mediaKind: mediaKind, algorithmVersion: algorithmVersion)]
+    }
+
+    func pairUpsertCounts() -> (batchCalls: Int, singleCalls: Int, lastBatchSize: Int) {
+        (pairBatchUpsertCount, pairSingleUpsertCount, lastPairBatchUpsertCount)
+    }
+
+    private func storePairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) {
+        guard let key = PairRelationCacheKey(first: first, second: second, algorithmVersion: algorithmVersion) else { return }
+        relations[key] = PairRelationCacheEntry(score: relation?.score, evidence: relation?.evidence ?? [])
     }
 
     private func scanIndexKey(signature: String, mediaKind: MediaKind, algorithmVersion: String) -> String {

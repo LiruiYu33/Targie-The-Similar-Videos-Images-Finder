@@ -201,6 +201,13 @@ private struct PairRelationRecord: Codable, Sendable, FetchableRecord, TableReco
     static var databaseTableName: String { "pair_relations" }
 }
 
+struct PairRelationCacheUpsert: Sendable {
+    let first: MediaItem
+    let second: MediaItem
+    let algorithmVersion: String
+    let relation: SimilarityRelation?
+}
+
 private struct ScanRelationIndexRecord: Codable, Sendable, FetchableRecord, TableRecord {
     var signature: String
     var mediaKind: String
@@ -325,6 +332,7 @@ protocol HashCaching: Sendable {
     // Pair relation cache — stores the final comparison result for a candidate
     // pair so re-scans can skip pair-level SHA / Vision / scoring work.
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async
+    func upsertPairRelations(_ upserts: [PairRelationCacheUpsert]) async
     func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry?
     func lookupPairRelations(keys: [PairRelationCacheKey]) async -> [PairRelationCacheKey: PairRelationCacheEntry]
 
@@ -392,6 +400,16 @@ extension HashCaching {
     func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {}
     func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? { nil }
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {}
+    func upsertPairRelations(_ upserts: [PairRelationCacheUpsert]) async {
+        for upsert in upserts {
+            await upsertPairRelation(
+                first: upsert.first,
+                second: upsert.second,
+                algorithmVersion: upsert.algorithmVersion,
+                relation: upsert.relation
+            )
+        }
+    }
     func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? { nil }
     func lookupPairRelations(keys: [PairRelationCacheKey]) async -> [PairRelationCacheKey: PairRelationCacheEntry] { [:] }
     func lookupScanRelationIndex(signature: String, mediaKind: MediaKind, algorithmVersion: String) async -> CachedScanRelationIndex? { nil }
@@ -943,35 +961,56 @@ actor HashCache: HashCaching {
     // MARK: - Pair Relation Cache
 
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {
-        guard let identity = PairRelationCacheCodec.identity(first: first, second: second, algorithmVersion: algorithmVersion) else { return }
-        let record = PairRelationCacheCodec.record(identity: identity, relation: relation)
+        await upsertPairRelations([
+            PairRelationCacheUpsert(
+                first: first,
+                second: second,
+                algorithmVersion: algorithmVersion,
+                relation: relation
+            )
+        ])
+    }
+
+    func upsertPairRelations(_ upserts: [PairRelationCacheUpsert]) async {
+        let records = upserts.compactMap { upsert -> PairRelationRecord? in
+            guard let identity = PairRelationCacheCodec.identity(
+                first: upsert.first,
+                second: upsert.second,
+                algorithmVersion: upsert.algorithmVersion
+            ) else { return nil }
+            return PairRelationCacheCodec.record(identity: identity, relation: upsert.relation)
+        }
+        guard !records.isEmpty else { return }
+
         try? await dbQueue.write { db in
-            try db.execute(sql: """
-                INSERT INTO pair_relations (
-                    firstPath, secondPath, firstFileSize, secondFileSize,
-                    firstModifiedAt, secondModifiedAt, mediaKind, algorithmVersion,
-                    score, evidence
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(firstPath, secondPath, mediaKind, algorithmVersion) DO UPDATE SET
-                    firstFileSize = excluded.firstFileSize,
-                    secondFileSize = excluded.secondFileSize,
-                    firstModifiedAt = excluded.firstModifiedAt,
-                    secondModifiedAt = excluded.secondModifiedAt,
-                    score = excluded.score,
-                    evidence = excluded.evidence
-                """, arguments: [
-                    record.firstPath,
-                    record.secondPath,
-                    record.firstFileSize,
-                    record.secondFileSize,
-                    record.firstModifiedAt,
-                    record.secondModifiedAt,
-                    record.mediaKind,
-                    record.algorithmVersion,
-                    record.score,
-                    record.evidence
-                ])
+            for record in records {
+                try db.execute(sql: """
+                    INSERT INTO pair_relations (
+                        firstPath, secondPath, firstFileSize, secondFileSize,
+                        firstModifiedAt, secondModifiedAt, mediaKind, algorithmVersion,
+                        score, evidence
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(firstPath, secondPath, mediaKind, algorithmVersion) DO UPDATE SET
+                        firstFileSize = excluded.firstFileSize,
+                        secondFileSize = excluded.secondFileSize,
+                        firstModifiedAt = excluded.firstModifiedAt,
+                        secondModifiedAt = excluded.secondModifiedAt,
+                        score = excluded.score,
+                        evidence = excluded.evidence
+                    """, arguments: [
+                        record.firstPath,
+                        record.secondPath,
+                        record.firstFileSize,
+                        record.secondFileSize,
+                        record.firstModifiedAt,
+                        record.secondModifiedAt,
+                        record.mediaKind,
+                        record.algorithmVersion,
+                        record.score,
+                        record.evidence
+                    ])
+            }
         }
     }
 
@@ -1458,8 +1497,25 @@ actor InMemoryHashCache: HashCaching {
     }
 
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {
-        guard let identity = PairRelationCacheCodec.identity(first: first, second: second, algorithmVersion: algorithmVersion) else { return }
-        pairRelations[identity] = PairRelationCacheCodec.record(identity: identity, relation: relation)
+        await upsertPairRelations([
+            PairRelationCacheUpsert(
+                first: first,
+                second: second,
+                algorithmVersion: algorithmVersion,
+                relation: relation
+            )
+        ])
+    }
+
+    func upsertPairRelations(_ upserts: [PairRelationCacheUpsert]) async {
+        for upsert in upserts {
+            guard let identity = PairRelationCacheCodec.identity(
+                first: upsert.first,
+                second: upsert.second,
+                algorithmVersion: upsert.algorithmVersion
+            ) else { continue }
+            pairRelations[identity] = PairRelationCacheCodec.record(identity: identity, relation: upsert.relation)
+        }
     }
 
     func lookupPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String) async -> PairRelationCacheEntry? {

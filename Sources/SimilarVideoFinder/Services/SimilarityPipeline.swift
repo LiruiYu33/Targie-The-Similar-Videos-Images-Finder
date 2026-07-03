@@ -77,6 +77,7 @@ struct SimilarityPipeline: SimilarityProcessing {
     /// 感知哈希之间被视为"潜在相似"的最大 Hamming 距离 (64-bit 哈希中允许多达 24 bits 不同)
     static let perceptualMaxDistance = 24
     fileprivate static let relationStorageFloor = 0.60
+    fileprivate static let pairRelationWriteBatchSize = 512
 
     static func pairRelationAlgorithmVersion(usesFrameVerification: Bool) -> String {
         usesFrameVerification ? "video-pair-relation-v1-frame" : "video-pair-relation-v1-perceptual"
@@ -227,6 +228,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         let frameFeatureCache = FrameFeatureCache(extractor: extractor, persistentCache: cache)
         var pairCacheHits = 0
         var pairCacheTotal = 0
+        var pendingPairRelationUpserts: [PairRelationCacheUpsert] = []
 
         // Exact duplicates must not depend on video frame extraction succeeding.
         // This also keeps corrupt or partially supported files from aborting the scan.
@@ -269,8 +271,17 @@ struct SimilarityPipeline: SimilarityProcessing {
                 evidence: [.identicalContentHash]
             )
             relations.append(relation)
-            await cache?.upsertPairRelation(first: candidate.first, second: candidate.second, algorithmVersion: pairRelationAlgorithmVersion, relation: relation)
+            pendingPairRelationUpserts.append(PairRelationCacheUpsert(
+                first: candidate.first,
+                second: candidate.second,
+                algorithmVersion: pairRelationAlgorithmVersion,
+                relation: relation
+            ))
+            if pendingPairRelationUpserts.count >= Self.pairRelationWriteBatchSize {
+                await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
+            }
         }
+        await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
 
         // 对每个有感知哈希的视频, 用 BK-Tree 搜索它的近邻
         let videosByID = Dictionary(uniqueKeysWithValues: videos.map { ($0.id, $0) })
@@ -372,7 +383,7 @@ struct SimilarityPipeline: SimilarityProcessing {
                 processorCount: ProcessInfo.processInfo.activeProcessorCount
             )
             var completedMisses = 0
-            try await withThrowingTaskGroup(of: (String, SimilarityRelation?).self) { group in
+            try await withThrowingTaskGroup(of: (VideoComparisonCandidate, SimilarityRelation?).self) { group in
                 var iterator = misses.makeIterator()
                 for _ in 0..<min(comparisonLimit, misses.count) {
                     guard let next = iterator.next() else { break }
@@ -383,17 +394,26 @@ struct SimilarityPipeline: SimilarityProcessing {
                             frameFeatureCache: frameFeatureCache,
                             usesFrameVerification: usesFrameVerification
                         )
-                        return (next.first.filename, relation)
+                        return (next, relation)
                     }
                 }
 
-                while let (currentFile, relation) = try await group.next() {
+                while let (completedCandidate, relation) = try await group.next() {
                     completedMisses += 1
                     if let relation { relations.append(relation) }
+                    pendingPairRelationUpserts.append(PairRelationCacheUpsert(
+                        first: completedCandidate.first,
+                        second: completedCandidate.second,
+                        algorithmVersion: completedCandidate.algorithmVersion,
+                        relation: relation
+                    ))
+                    if pendingPairRelationUpserts.count >= Self.pairRelationWriteBatchSize {
+                        await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
+                    }
                     await progress(ScanProgress(
                         stage: .comparing,
                         fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
-                        currentFile: currentFile,
+                        currentFile: completedCandidate.first.filename,
                         discoveredCount: videos.count,
                         cacheHits: 0,
                         cacheTotal: 0,
@@ -410,11 +430,12 @@ struct SimilarityPipeline: SimilarityProcessing {
                                 frameFeatureCache: frameFeatureCache,
                                 usesFrameVerification: usesFrameVerification
                             )
-                            return (next.first.filename, relation)
+                            return (next, relation)
                         }
                     }
                 }
             }
+            await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
         }
 
         let scanIndexRelations = relations.compactMap { relation -> CachedScanRelation? in
@@ -633,13 +654,17 @@ private func compareVideoCandidate(
     } else {
         relation = nil
     }
-    await cache?.upsertPairRelation(
-        first: candidate.first,
-        second: candidate.second,
-        algorithmVersion: candidate.algorithmVersion,
-        relation: relation
-    )
     return relation
+}
+
+private func flushPairRelationUpserts(
+    _ pending: inout [PairRelationCacheUpsert],
+    cache: (any HashCaching)?
+) async {
+    guard !pending.isEmpty else { return }
+    let batch = pending
+    pending.removeAll(keepingCapacity: true)
+    await cache?.upsertPairRelations(batch)
 }
 
 private struct VideoComparisonCandidate: Sendable {

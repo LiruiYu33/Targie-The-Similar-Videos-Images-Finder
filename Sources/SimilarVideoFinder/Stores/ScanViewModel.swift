@@ -309,7 +309,9 @@ final class ScanViewModel: ObservableObject {
     private let deletionService: any DeletionServicing
     private let hashCache: (any HashCaching)?
     private let thumbnailStore: ThumbnailStore
+    private let activityManager: ScanActivityManaging
     private var groupSelectionAnchorID: UUID?
+    private var scanActivity: NSObjectProtocol?
 
     init(
         scanner: VideoScanner = VideoScanner(),
@@ -317,11 +319,13 @@ final class ScanViewModel: ObservableObject {
         pipeline: (any SimilarityProcessing)? = nil,
         deletionService: any DeletionServicing = DeletionService(),
         hashCache: (any HashCaching)? = ScanViewModel.makeDefaultHashCache(),
-        thumbnailStore: ThumbnailStore = .shared
+        thumbnailStore: ThumbnailStore = .shared,
+        activityManager: ScanActivityManaging = ProcessInfoScanActivityManager()
     ) {
         self.deletionService = deletionService
         self.hashCache = hashCache
         self.thumbnailStore = thumbnailStore
+        self.activityManager = activityManager
         self.pipeline = pipeline ?? SimilarityPipeline(cache: hashCache)
         self.imagePipeline = ImageSimilarityPipeline(cache: hashCache)
         // Use caller-provided scanners, but if they used the default loader,
@@ -336,6 +340,17 @@ final class ScanViewModel: ObservableObject {
 
     private static func makeDefaultHashCache() -> (any HashCaching)? {
         try? HashCache()
+    }
+
+    private func beginScanActivity(reason: String) {
+        endScanActivity()
+        scanActivity = activityManager.begin(reason: reason)
+    }
+
+    private func endScanActivity() {
+        guard let activity = scanActivity else { return }
+        scanActivity = nil
+        activityManager.end(activity)
     }
 
     /// All media items discovered during scanning or file discovery.
@@ -408,6 +423,7 @@ final class ScanViewModel: ObservableObject {
         guard !selectedFolders.isEmpty, !isScanning else { return }
         let folders = selectedFolders
         scanTask?.cancel()
+        beginScanActivity(reason: "Scanning media for similar files")
         progress = ScanProgress(stage: .discovering)
         allItems = []
         allRelations = []
@@ -417,6 +433,7 @@ final class ScanViewModel: ObservableObject {
         issues = []
         scanTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.endScanActivity() }
             do {
                 // Always scan both kinds so the user can switch All / Images /
                 // Videos after scanning without re-scanning; `scanMode` only
@@ -569,10 +586,12 @@ final class ScanViewModel: ObservableObject {
 
         let folders = selectedFolders
         scanTask?.cancel()
+        beginScanActivity(reason: "Reading media metadata")
         progress = ScanProgress(stage: .discovering)
 
         scanTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.endScanActivity() }
             do {
                 // Always scan both kinds (see startScan); scanMode only filters.
                 let scanner = self.scanner

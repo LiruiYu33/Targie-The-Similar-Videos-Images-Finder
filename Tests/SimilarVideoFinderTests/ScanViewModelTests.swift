@@ -177,6 +177,84 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertTrue(bothStarted)
     }
 
+    func testStartScanHoldsUserInitiatedActivityUntilCompletion() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ScanActivityComplete-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data([1]).write(to: root.appendingPathComponent("clip.mp4"))
+
+        let activityManager = RecordingScanActivityManager()
+        let scanner = VideoScanner(maxConcurrentLoads: 1) { url in
+            MediaItem(
+                kind: .video,
+                url: url,
+                fileSize: 1,
+                duration: 1,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: nil
+            )
+        }
+        let model = ScanViewModel(
+            scanner: scanner,
+            pipeline: ExactDuplicatePipeline(),
+            hashCache: nil,
+            activityManager: activityManager
+        )
+        model.scanMode = .videos
+        model.selectedFolders = [root]
+
+        model.startScan()
+        XCTAssertEqual(activityManager.beginReasons, ["Scanning media for similar files"])
+        XCTAssertEqual(activityManager.endCount, 0)
+
+        try await waitUntil { model.progress.stage == .completed }
+
+        XCTAssertEqual(activityManager.beginReasons, ["Scanning media for similar files"])
+        XCTAssertEqual(activityManager.endCount, 1)
+    }
+
+    func testCancelScanReleasesUserInitiatedActivity() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ScanActivityCancel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data([1]).write(to: root.appendingPathComponent("clip.mp4"))
+
+        let activityManager = RecordingScanActivityManager()
+        let scanner = VideoScanner(maxConcurrentLoads: 1) { url in
+            try await Task.sleep(for: .seconds(10))
+            return MediaItem(
+                kind: .video,
+                url: url,
+                fileSize: 1,
+                duration: 1,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: nil
+            )
+        }
+        let model = ScanViewModel(
+            scanner: scanner,
+            pipeline: ExactDuplicatePipeline(),
+            hashCache: nil,
+            activityManager: activityManager
+        )
+        model.scanMode = .videos
+        model.selectedFolders = [root]
+
+        model.startScan()
+        XCTAssertEqual(activityManager.beginReasons, ["Scanning media for similar files"])
+
+        model.cancelScan()
+        try await waitUntil { model.progress.stage == .cancelled }
+
+        XCTAssertEqual(activityManager.endCount, 1)
+    }
+
     func testProgressAggregationDoesNotMixCacheStatsFromAnotherLane() async {
         let aggregator = ScanProgressAggregator(workflow: .fullScan)
         _ = await aggregator.update(.image, with: ScanProgress(
@@ -1126,6 +1204,22 @@ private actor CrossKindProgressTracker {
             if didReportVideoComparingProgress { return }
             try? await Task.sleep(for: .milliseconds(10))
         }
+    }
+}
+
+@MainActor
+private final class RecordingScanActivityManager: ScanActivityManaging {
+    private let token = NSObject()
+    private(set) var beginReasons: [String] = []
+    private(set) var endCount = 0
+
+    func begin(reason: String) -> NSObjectProtocol {
+        beginReasons.append(reason)
+        return token
+    }
+
+    func end(_ activity: NSObjectProtocol) {
+        endCount += 1
     }
 }
 
