@@ -50,6 +50,15 @@ struct ImageScanner: Sendable {
         }
     }
 
+    func withMaxConcurrentLoads(_ limit: Int) -> ImageScanner {
+        ImageScanner(
+            maxConcurrentLoads: limit,
+            thumbnailStore: thumbnailStore,
+            metadataCache: metadataCache,
+            loader: usesDefaultLoader ? nil : loader
+        )
+    }
+
     static func discoverImageURLs(in folder: URL) throws -> [URL] {
         guard let enumerator = FileManager.default.enumerator(
             at: folder,

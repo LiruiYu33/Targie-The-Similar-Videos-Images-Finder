@@ -223,3 +223,12 @@ struct ScanProgress: Equatable, Sendable {
     var comparisonCompleted: Int = 0
     var comparisonTotal: Int = 0
 }
+
+enum ScanProgressReporting {
+    static func shouldReportComparison(completed: Int, total: Int) -> Bool {
+        guard total > 100 else { return true }
+        guard completed < total else { return true }
+        if completed == 1 { return true }
+        return completed.isMultiple(of: max(1, total / 100))
+    }
+}

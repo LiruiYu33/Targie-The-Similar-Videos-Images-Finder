@@ -496,6 +496,40 @@ final class HashCacheTests: XCTestCase {
         XCTAssertEqual(cached?.relations, [relation])
     }
 
+    func testScanRelationIndexDeduplicatesRelationsBeforePersisting() async throws {
+        let first = makeMedia(path: "/tmp/index-duplicate-a.mp4", size: 100, date: Date(timeIntervalSince1970: 10))
+        let second = makeMedia(path: "/tmp/index-duplicate-b.mp4", size: 120, date: Date(timeIntervalSince1970: 20))
+        let relation = CachedScanRelation(
+            firstPath: first.url.path,
+            secondPath: second.url.path,
+            score: 0.91,
+            evidence: [.similarPerceptualHash]
+        )
+        let reversedDuplicate = CachedScanRelation(
+            firstPath: second.url.path,
+            secondPath: first.url.path,
+            score: 0.91,
+            evidence: [.similarPerceptualHash]
+        )
+
+        await cache.upsertScanRelationIndex(
+            signature: "sig-video-duplicates",
+            mediaKind: .video,
+            algorithmVersion: "pair-v1",
+            fileCount: 2,
+            candidateCount: 2,
+            relations: [relation, reversedDuplicate]
+        )
+
+        let cached = await cache.lookupScanRelationIndex(
+            signature: "sig-video-duplicates",
+            mediaKind: .video,
+            algorithmVersion: "pair-v1"
+        )
+        XCTAssertEqual(cached?.candidateCount, 2)
+        XCTAssertEqual(cached?.relations, [relation])
+    }
+
     // MARK: - Pruning
 
     func testPruneStaleRemovesNonValidEntries() async {

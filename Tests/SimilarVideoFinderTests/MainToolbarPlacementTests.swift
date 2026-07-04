@@ -22,14 +22,16 @@
 import XCTest
 
 final class MainToolbarPlacementTests: XCTestCase {
-    func testClearCacheLivesInMainToolbarBetweenBrowseAndLanguage() throws {
+    func testCacheAndIntensityControlsLiveInMainToolbarBeforeLanguage() throws {
         let source = try sourceText("Sources/SimilarVideoFinder/Views/ContentView.swift")
         let browse = try XCTUnwrap(source.range(of: "title: L10n.browse(language)"))
         let clearCache = try XCTUnwrap(source.range(of: "title: L10n.clearCache(language)"))
+        let intensity = try XCTUnwrap(source.range(of: "title: L10n.scanIntensity(language)"))
         let language = try XCTUnwrap(source.range(of: "title: L10n.language(language)"))
 
         XCTAssertLessThan(browse.lowerBound, clearCache.lowerBound)
-        XCTAssertLessThan(clearCache.lowerBound, language.lowerBound)
+        XCTAssertLessThan(clearCache.lowerBound, intensity.lowerBound)
+        XCTAssertLessThan(intensity.lowerBound, language.lowerBound)
         XCTAssertTrue(source.contains(".disabled(model.isScanning)"))
     }
 

@@ -34,6 +34,24 @@ protocol SimilarityProcessing: Sendable {
         threshold: Double,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> PipelineResult
+
+    func process(
+        videos: [MediaItem],
+        threshold: Double,
+        scanIntensity: ScanIntensity,
+        progress: @escaping @Sendable (ScanProgress) async -> Void
+    ) async throws -> PipelineResult
+}
+
+extension SimilarityProcessing {
+    func process(
+        videos: [MediaItem],
+        threshold: Double,
+        scanIntensity: ScanIntensity,
+        progress: @escaping @Sendable (ScanProgress) async -> Void
+    ) async throws -> PipelineResult {
+        try await process(videos: videos, threshold: threshold, progress: progress)
+    }
 }
 
 enum ScanRelationSignatureBuilder {
@@ -105,17 +123,34 @@ struct SimilarityPipeline: SimilarityProcessing {
         self.usesFrameVerification = usesFrameVerification
     }
 
-    static func hashConcurrencyLimit(processorCount: Int) -> Int {
-        min(4, max(2, processorCount))
+    static func hashConcurrencyLimit(
+        processorCount: Int,
+        thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState,
+        scanIntensity: ScanIntensity = .balanced
+    ) -> Int {
+        scanIntensity.hashConcurrencyLimit(processorCount: processorCount, thermalState: thermalState)
     }
 
-    static func comparisonConcurrencyLimit(processorCount: Int) -> Int {
-        min(6, max(2, processorCount / 2))
+    static func comparisonConcurrencyLimit(
+        processorCount: Int,
+        thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState,
+        scanIntensity: ScanIntensity = .balanced
+    ) -> Int {
+        scanIntensity.comparisonConcurrencyLimit(processorCount: processorCount, thermalState: thermalState)
     }
 
     func process(
         videos: [MediaItem],
         threshold: Double,
+        progress: @escaping @Sendable (ScanProgress) async -> Void
+    ) async throws -> PipelineResult {
+        try await process(videos: videos, threshold: threshold, scanIntensity: .balanced, progress: progress)
+    }
+
+    func process(
+        videos: [MediaItem],
+        threshold: Double,
+        scanIntensity: ScanIntensity,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> PipelineResult {
         // ---- Phase A: QuickPrehash (同步, 零成本) ----
@@ -159,6 +194,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         let perceptualHashes = try await computePerceptualHashesInParallel(
             videos: videosNeedingHash,
             prehashes: prehashes,
+            scanIntensity: scanIntensity,
             progress: progress
         )
 
@@ -380,7 +416,8 @@ struct SimilarityPipeline: SimilarityProcessing {
             ))
 
             let comparisonLimit = Self.comparisonConcurrencyLimit(
-                processorCount: ProcessInfo.processInfo.activeProcessorCount
+                processorCount: ProcessInfo.processInfo.activeProcessorCount,
+                scanIntensity: scanIntensity
             )
             var completedMisses = 0
             try await withThrowingTaskGroup(of: (VideoComparisonCandidate, SimilarityRelation?).self) { group in
@@ -410,18 +447,20 @@ struct SimilarityPipeline: SimilarityProcessing {
                     if pendingPairRelationUpserts.count >= Self.pairRelationWriteBatchSize {
                         await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
                     }
-                    await progress(ScanProgress(
-                        stage: .comparing,
-                        fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
-                        currentFile: completedCandidate.first.filename,
-                        discoveredCount: videos.count,
-                        cacheHits: 0,
-                        cacheTotal: 0,
-                        cacheKind: nil,
-                        comparisonPhase: .comparingUncached,
-                        comparisonCompleted: completedMisses,
-                        comparisonTotal: misses.count
-                    ))
+                    if ScanProgressReporting.shouldReportComparison(completed: completedMisses, total: misses.count) {
+                        await progress(ScanProgress(
+                            stage: .comparing,
+                            fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
+                            currentFile: completedCandidate.first.filename,
+                            discoveredCount: videos.count,
+                            cacheHits: 0,
+                            cacheTotal: 0,
+                            cacheKind: nil,
+                            comparisonPhase: .comparingUncached,
+                            comparisonCompleted: completedMisses,
+                            comparisonTotal: misses.count
+                        ))
+                    }
                     if let next = iterator.next() {
                         group.addTask {
                             let relation = try await compareVideoCandidate(
@@ -483,6 +522,7 @@ struct SimilarityPipeline: SimilarityProcessing {
     private func computePerceptualHashesInParallel(
         videos: [MediaItem],
         prehashes: [UUID: QuickPrehash],
+        scanIntensity: ScanIntensity,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> [UUID: VideoPerceptualHash] {
         let total = max(videos.count, 1)
@@ -541,7 +581,8 @@ struct SimilarityPipeline: SimilarityProcessing {
 
         // ---- 阶段 2: 并行计算未命中的哈希 ----
         let concurrencyCap = Self.hashConcurrencyLimit(
-            processorCount: ProcessInfo.processInfo.activeProcessorCount
+            processorCount: ProcessInfo.processInfo.activeProcessorCount,
+            scanIntensity: scanIntensity
         )
 
         let computed = try await withThrowingTaskGroup(of: (UUID, VideoPerceptualHash?).self) { group in

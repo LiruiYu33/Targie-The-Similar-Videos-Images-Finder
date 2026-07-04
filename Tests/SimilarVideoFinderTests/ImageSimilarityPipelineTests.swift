@@ -8,6 +8,21 @@ import XCTest
 @testable import SimilarVideoFinder
 
 final class ImageSimilarityPipelineTests: XCTestCase {
+    func testImageComparisonConcurrencyDropsWhenThermalStateIsHigh() {
+        XCTAssertEqual(
+            ImageSimilarityPipeline.comparisonConcurrencyLimit(processorCount: 12, thermalState: .nominal),
+            6
+        )
+        XCTAssertEqual(
+            ImageSimilarityPipeline.comparisonConcurrencyLimit(processorCount: 12, thermalState: .serious),
+            2
+        )
+        XCTAssertEqual(
+            ImageSimilarityPipeline.comparisonConcurrencyLimit(processorCount: 12, thermalState: .critical),
+            1
+        )
+    }
+
     func testExactDuplicateImagesFormAGroup() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ImagePipeline-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -105,6 +120,34 @@ final class ImageSimilarityPipelineTests: XCTestCase {
             L10n.scanProgressDetail(cachedComparing, .english),
             "Checking pair cache: hits 1 of 1 - pair-cache-first.jpg"
         )
+    }
+
+    func testImageFeatureCacheCoalescesConcurrentRequestsForSameURL() async {
+        let extractor = CountingThrowingImageFeatureExtractor(delayNanoseconds: 50_000_000)
+        let cache = ImageFeatureCache(extractor: extractor)
+        let url = URL(fileURLWithPath: "/tmp/concurrent-feature.jpg")
+
+        let failures = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<6 {
+                group.addTask {
+                    do {
+                        _ = try await cache.feature(for: url)
+                        return false
+                    } catch {
+                        return true
+                    }
+                }
+            }
+
+            var values: [Bool] = []
+            for await value in group {
+                values.append(value)
+            }
+            return values
+        }
+
+        XCTAssertTrue(failures.allSatisfy { $0 })
+        XCTAssertEqual(extractor.extractionCount, 1)
     }
 
     func testCachedPairRelationUsesBatchLookupDuringComparison() async throws {
@@ -235,6 +278,32 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         XCTAssertEqual(uncached.comparisonTotal, 1)
     }
 
+    func testUncachedImageComparisonProgressIsThrottledForLargeCandidateSets() async throws {
+        let images = (0..<30).map { index in
+            image(path: "/missing/throttled-image-\(index).jpg", size: 1_000 + Int64(index))
+        }
+        let cache = InMemoryHashCache()
+        for image in images {
+            await seed(cache, image: image, hash: [UInt8](repeating: 0, count: 8))
+        }
+        let progress = ImageProgressRecorder()
+        let pipeline = ImageSimilarityPipeline(
+            cache: cache,
+            featureExtractor: CountingThrowingImageFeatureExtractor()
+        )
+
+        _ = try await pipeline.process(images: images, threshold: 0.88) {
+            await progress.append($0)
+        }
+
+        let uncachedUpdates = await progress.updates(for: .comparing)
+            .filter { $0.comparisonPhase == .comparingUncached }
+        let finalUpdate = try XCTUnwrap(uncachedUpdates.last)
+        XCTAssertGreaterThan(finalUpdate.comparisonTotal, 400)
+        XCTAssertEqual(finalUpdate.comparisonCompleted, finalUpdate.comparisonTotal)
+        XCTAssertLessThan(uncachedUpdates.count, finalUpdate.comparisonTotal / 2)
+    }
+
     private func writePattern(to url: URL) throws {
         guard let context = CGContext(data: nil, width: 80, height: 60, bitsPerComponent: 8, bytesPerRow: 320, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw CocoaError(.fileWriteUnknown) }
         context.setFillColor(CGColor(red: 0.1, green: 0.3, blue: 0.8, alpha: 1))
@@ -295,7 +364,12 @@ private actor ImageProgressRecorder {
 
 private final class CountingThrowingImageFeatureExtractor: @unchecked Sendable, ImageFeatureExtracting {
     private let lock = NSLock()
+    private let delayNanoseconds: UInt64
     private var count = 0
+
+    init(delayNanoseconds: UInt64 = 0) {
+        self.delayNanoseconds = delayNanoseconds
+    }
 
     var extractionCount: Int {
         lock.withLock { count }
@@ -303,6 +377,9 @@ private final class CountingThrowingImageFeatureExtractor: @unchecked Sendable, 
 
     func feature(for url: URL) async throws -> ImageFeature {
         lock.withLock { count += 1 }
+        if delayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: delayNanoseconds)
+        }
         throw CocoaError(.fileReadCorruptFile)
     }
 

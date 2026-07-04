@@ -82,6 +82,17 @@ enum L10n {
     static func startScan(_ l: AppLanguage) -> String { text(l, "Start Scan", "开始扫描", "開始掃描", "Iniciar análisis", "Lancer l’analyse") }
     static func cancelScan(_ l: AppLanguage) -> String { text(l, "Cancel Scan", "取消扫描", "取消掃描", "Cancelar análisis", "Annuler l’analyse") }
     static func language(_ l: AppLanguage) -> String { text(l, "Language", "语言", "語言", "Idioma", "Langue") }
+    static func scanIntensity(_ l: AppLanguage) -> String { text(l, "Intensity", "强度", "強度", "Intensidad", "Intensité") }
+    static func scanIntensityName(_ intensity: ScanIntensity, _ l: AppLanguage) -> String {
+        switch intensity {
+        case .cool:
+            text(l, "Cool", "低温", "低溫", "Fresco", "Tempéré")
+        case .balanced:
+            text(l, "Balanced", "平衡", "平衡", "Equilibrado", "Équilibré")
+        case .fast:
+            text(l, "Fast", "快速", "快速", "Rápido", "Rapide")
+        }
+    }
     static func videos(_ l: AppLanguage) -> String { text(l, "Videos", "视频", "影片", "Vídeos", "Vidéos") }
     static func images(_ l: AppLanguage) -> String { text(l, "Images", "图片", "圖片", "Imágenes", "Images") }
     static func allMedia(_ l: AppLanguage) -> String { text(l, "All", "全部", "全部", "Todo", "Tout") }

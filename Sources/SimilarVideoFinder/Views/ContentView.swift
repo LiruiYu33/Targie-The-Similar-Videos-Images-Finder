@@ -25,6 +25,7 @@ struct ContentView: View {
     @ObservedObject var model: ScanViewModel
     @AppStorage("appLanguage") private var languageRawValue = AppLanguage.defaultLanguage.rawValue
     @AppStorage("scanMode") private var scanModeRawValue = ScanMode.all.rawValue
+    @AppStorage("scanIntensity") private var scanIntensityRawValue = ScanIntensity.defaultIntensity.rawValue
 
     @State private var appMode: AppMode = .scan
     @StateObject private var browseSession = BrowseSessionCoordinator()
@@ -33,6 +34,10 @@ struct ContentView: View {
 
     private var language: AppLanguage {
         AppLanguage(rawValue: languageRawValue) ?? .defaultLanguage
+    }
+
+    private var scanIntensity: ScanIntensity {
+        ScanIntensity(rawValue: scanIntensityRawValue) ?? .defaultIntensity
     }
 
     var body: some View {
@@ -74,7 +79,11 @@ struct ContentView: View {
         .environment(\.appLanguage, language)
         .onAppear {
             model.setScanMode(ScanMode(rawValue: scanModeRawValue) ?? .all)
+            model.setScanIntensity(scanIntensity)
             browseSession.prepareIfPossible(scanModel: model)
+        }
+        .onChange(of: scanIntensityRawValue) { _, _ in
+            model.setScanIntensity(scanIntensity)
         }
         .onChange(of: model.items.count) { _, _ in
             browseSession.prepareIfPossible(scanModel: model)
@@ -150,6 +159,35 @@ struct ContentView: View {
                     Task {
                         cacheMB = await model.cacheStats()
                         isClearCacheConfirmPresented = true
+                    }
+                }
+                .disabled(model.isScanning)
+
+                ToolbarLabeledPopover(
+                    title: L10n.scanIntensity(language),
+                    systemImage: "speedometer"
+                ) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(ScanIntensity.allCases) { option in
+                            Button {
+                                scanIntensityRawValue = option.rawValue
+                                model.setScanIntensity(option)
+                            } label: {
+                                HStack {
+                                    Text(L10n.scanIntensityName(option, language))
+                                    Spacer(minLength: 16)
+                                    if option == scanIntensity {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .frame(minWidth: 140, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
                 .disabled(model.isScanning)
