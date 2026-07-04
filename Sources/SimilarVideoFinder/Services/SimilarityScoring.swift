@@ -42,21 +42,21 @@ struct SimilarityScore: Equatable, Sendable {
 }
 
 enum SimilarityScorer {
-    /// 评分整合三层证据:
-    /// - SHA-256 字节级一致 → 1.0
-    /// - 感知哈希 (DCT-3D Hamming 距离): 主信号, 0..1
-    /// - Vision FeaturePrint (帧级 CNN 特征): 精确认证层 (可选)
-    /// - 元数据 (时长/尺寸/大小/文件名): 辅助证据
+    /// Combines three evidence layers into one score:
+    /// - SHA-256 byte-level identity -> 1.0
+    /// - Perceptual hash (DCT-3D Hamming distance): primary signal, 0...1.
+    /// - Vision FeaturePrint (frame-level CNN feature): optional verification layer.
+    /// - Metadata (duration, dimensions, size, filename): supporting evidence.
     ///
-    /// `perceptualSimilarity` 取值 [0, 1]:
-    ///   - 1.0 = Hamming 距离 0 (完全相同的指纹)
-    ///   - 0.0 = 全比特不同
-    ///   - 由 BK-Tree 候选筛选后, 通常 >= 1 - 24/64 ≈ 0.625
+    /// `perceptualSimilarity` is in [0, 1]:
+    ///   - 1.0 = Hamming distance 0 (identical fingerprints).
+    ///   - 0.0 = every bit differs.
+    ///   - After BK-Tree candidate filtering, it is usually >= 1 - 24/64 ~= 0.625.
     ///
-    /// 评分公式:
-    ///   - 三层都有时:   score = 0.45·perc + 0.35·frames + 0.20·metadata
-    ///   - 仅哈希+元数据: score = 0.65·perc + 0.35·metadata, 上限 0.95 (无 Vision 不能确信完全一致)
-    ///   - 仅元数据:     score = 0.78·metadata, 上限 0.78 (不能高过视觉信号)
+    /// Scoring formula:
+    ///   - All three layers: score = 0.45*perc + 0.35*frames + 0.20*metadata.
+    ///   - Hash + metadata only: score = 0.65*perc + 0.35*metadata, capped at 0.95.
+    ///   - Metadata only: score = 0.78*metadata, capped at 0.78.
     static func score(
         _ first: MediaItem,
         _ second: MediaItem,
@@ -90,7 +90,7 @@ enum SimilarityScorer {
         let perc = perceptualSimilarity.map { min(max($0, 0), 1) }
         if let perc, perc >= 0.78 { evidence.insert(.similarPerceptualHash) }
 
-        // 三种组合分支
+        // Branch by available evidence combination.
         if let perc, let frame = frameSimilarity {
             let frames = min(max(frame, 0), 1)
             if frames >= 0.82 { evidence.insert(.similarFrames) }

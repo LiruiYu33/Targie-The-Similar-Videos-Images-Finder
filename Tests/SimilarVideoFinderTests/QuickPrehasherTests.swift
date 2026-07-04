@@ -31,7 +31,7 @@ final class QuickPrehasherTests: XCTestCase {
     }
 
     func testDurationBucketsForCloseDurationsMatch() {
-        // 60s 和 63s 应在同一/相邻桶 (5% 容差)
+        // 60s and 63s should be in the same or adjacent buckets with 5% tolerance.
         let b60 = QuickPrehasher.durationBucket(60)
         let b63 = QuickPrehasher.durationBucket(63)
         XCTAssertLessThanOrEqual(abs(b60 - b63), 1)
@@ -48,7 +48,7 @@ final class QuickPrehasherTests: XCTestCase {
     }
 
     func testSizeBucketsForCloseSizesMatch() {
-        // 10MB 和 11MB 应在同/相邻桶
+        // 10 MB and 11 MB should be in the same or adjacent buckets.
         let b10mb = QuickPrehasher.sizeBucket(10 * 1024 * 1024)
         let b11mb = QuickPrehasher.sizeBucket(11 * 1024 * 1024)
         XCTAssertLessThanOrEqual(abs(b10mb - b11mb), 1)
@@ -138,10 +138,10 @@ final class QuickPrehasherTests: XCTestCase {
             thumbnailData: nil
         )
         let pre = QuickPrehasher.prehash(for: video)
-        // 没有缩略图时使用中性值
+        // Missing thumbnails use neutral values.
         XCTAssertEqual(pre.thumbnailMean, 128)
         XCTAssertEqual(pre.thumbnailVariance, 0)
-        // 元数据桶应正常计算
+        // Metadata buckets should still be computed.
         XCTAssertGreaterThan(pre.durationBucket, 0)
         XCTAssertGreaterThan(pre.sizeBucket, 0)
         XCTAssertGreaterThan(pre.aspectBucket, 0)

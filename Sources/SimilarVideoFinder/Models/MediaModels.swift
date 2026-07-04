@@ -23,13 +23,13 @@ import Foundation
 
 // MARK: - Media Kind & Scan Mode
 
-/// 媒介种类: 视频或图片。SimilarityGroup 只允许同种媒介聚合。
+/// Media kind: video or image. `SimilarityGroup` only allows same-kind media.
 enum MediaKind: String, Codable, Sendable, Hashable {
     case video
     case image
 }
 
-/// 扫描模式: 用户可选仅视频、仅图片、或全部。持久化到 UserDefaults 时使用 rawValue。
+/// Scan mode: videos only, images only, or all. Uses `rawValue` for UserDefaults persistence.
 enum ScanMode: String, CaseIterable, Identifiable, Codable, Sendable, Hashable {
     case videos
     case images
@@ -38,10 +38,10 @@ enum ScanMode: String, CaseIterable, Identifiable, Codable, Sendable, Hashable {
     var id: String { rawValue }
 }
 
-// MARK: - MediaItem (统一视频与图片)
+// MARK: - MediaItem (Unified Video and Image Model)
 
-/// 媒介中立的扫描条目。视频用 `duration: Double?`, 图片用 `duration: nil`。
-/// `kind` 是不可变标签, 用于禁止跨媒介相似度匹配。
+/// Media-neutral scan item. Videos use `duration: Double?`; images use `duration: nil`.
+/// `kind` is an immutable tag that prevents cross-media similarity matching.
 struct MediaItem: Identifiable, Hashable, Sendable {
     let id: UUID
     let kind: MediaKind
@@ -123,9 +123,9 @@ struct SimilarityRelation: Hashable, Sendable {
 
 // MARK: - SimilarityGroup
 
-/// 同一组的所有 `items` 必须有相同 `MediaKind`。
-/// 直接初始化器假设调用方已确保同质性 (供 grouping 算法内部使用);
-/// 外部代码应使用 `SimilarityGroup.make(items:relations:)` 来安全构造。
+/// Every item in a group must have the same `MediaKind`.
+/// The direct initializer assumes callers already enforced homogeneity for grouping internals.
+/// External code should use `SimilarityGroup.make(items:relations:)` for safe construction.
 struct SimilarityGroup: Identifiable, Hashable, Sendable {
     let id: UUID
     let items: [MediaItem]
@@ -137,15 +137,15 @@ struct SimilarityGroup: Identifiable, Hashable, Sendable {
         self.relations = relations
     }
 
-    /// 工厂方法: 拒绝混合媒介组, 返回 nil 表示拒绝。
-    /// 空列表也拒绝, 因为没有 kind 可推断。
+    /// Factory method: rejects mixed-media groups by returning nil.
+    /// Empty groups are also rejected because there is no kind to infer.
     static func make(id: UUID = UUID(), items: [MediaItem], relations: [SimilarityRelation]) -> SimilarityGroup? {
         guard let firstKind = items.first?.kind else { return nil }
         guard items.allSatisfy({ $0.kind == firstKind }) else { return nil }
         return SimilarityGroup(id: id, items: items, relations: relations)
     }
 
-    /// 组的媒介种类 (从首个条目推断; 直接初始化器调用方需确保同质)。
+    /// Group media kind, inferred from the first item; direct-initializer callers must enforce homogeneity.
     var kind: MediaKind? { items.first?.kind }
 
     var maximumScore: Double { relations.map(\.score).max() ?? 0 }

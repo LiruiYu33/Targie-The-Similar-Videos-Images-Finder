@@ -48,8 +48,8 @@ enum SimilarityGrouper {
             }
             let groupItems = component.compactMap { byID[$0] }.sorted { $0.filename < $1.filename }
             guard groupItems.count >= 2 else { continue }
-            // 同质性保险: grouping 来源 (相似度流水线) 已确保不会跨媒介产生 relation,
-            // 但作为防御层, 这里再用 SimilarityGroup.make 校验, 拒绝混合组。
+            // Homogeneity guard: the similarity pipelines should never produce cross-media relations,
+            // but this defensive layer validates with `SimilarityGroup.make` and rejects mixed groups.
             let componentRelations = accepted.filter {
                 component.contains($0.firstID) && component.contains($0.secondID)
             }

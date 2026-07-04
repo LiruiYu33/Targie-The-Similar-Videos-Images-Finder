@@ -69,7 +69,7 @@ final class SimilarityScoringTests: XCTestCase {
             perceptualSimilarity: 0.95,
             frameSimilarity: nil
         )
-        // 仅哈希 + 元数据时上限 0.95
+        // Hash + metadata only is capped at 0.95.
         XCTAssertGreaterThan(result.score, 0.78)
         XCTAssertLessThanOrEqual(result.score, 0.95)
     }
@@ -77,7 +77,7 @@ final class SimilarityScoringTests: XCTestCase {
     func testWeakPerceptualHashKeepsScoreLow() {
         let result = SimilarityScorer.score(
             Self.video(name: "a.mov"),
-            Self.video(name: "b.mov", size: 5_000_000, duration: 30),  // 不同元数据
+            Self.video(name: "b.mov", size: 5_000_000, duration: 30),  // Different metadata.
             hashesMatch: false,
             perceptualSimilarity: 0.4,
             frameSimilarity: nil
@@ -87,7 +87,7 @@ final class SimilarityScoringTests: XCTestCase {
     }
 
     func testThreeLayerScoreCombinesWeights() {
-        // 三层都强 → 应接近 1.0
+        // All three layers are strong, so the score should be close to 1.0.
         let result = SimilarityScorer.score(
             Self.video(name: "trip.mov"),
             Self.video(name: "trip copy.mov"),
@@ -95,7 +95,7 @@ final class SimilarityScoringTests: XCTestCase {
             perceptualSimilarity: 0.95,
             frameSimilarity: 0.92
         )
-        // 0.45·0.95 + 0.35·0.92 + 0.20·meta(高) → ~0.92+
+        // 0.45*0.95 + 0.35*0.92 + 0.20*high metadata -> about 0.92+.
         XCTAssertGreaterThan(result.score, 0.88)
         XCTAssertTrue(result.evidence.contains(.similarPerceptualHash))
         XCTAssertTrue(result.evidence.contains(.similarFrames))

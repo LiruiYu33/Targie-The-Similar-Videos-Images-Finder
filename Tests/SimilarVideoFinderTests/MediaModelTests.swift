@@ -20,7 +20,7 @@ import XCTest
 @testable import SimilarVideoFinder
 
 /// Task 1: Media-Neutral Domain Types
-/// 验证 `MediaKind`, `ScanMode`, `MediaItem`, 以及 `SimilarityGroup` 拒绝混合媒介。
+/// Verifies that `MediaKind`, `ScanMode`, `MediaItem`, and `SimilarityGroup` reject mixed media.
 final class MediaModelTests: XCTestCase {
 
     // MARK: - MediaKind
@@ -113,7 +113,7 @@ final class MediaModelTests: XCTestCase {
         XCTAssertEqual(group.kind, .video)
     }
 
-    /// 关键约束: Images and videos must never appear in the same `SimilarityGroup`.
+    /// Key invariant: images and videos must never appear in the same `SimilarityGroup`.
     func testMakeRejectsMixedKinds() {
         let v = makeItem(kind: .video)
         let i = makeItem(kind: .image)

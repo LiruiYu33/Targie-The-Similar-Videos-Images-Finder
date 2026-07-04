@@ -35,14 +35,14 @@ struct BKNode<T> {
 
 // MARK: - BK-Tree
 
-/// BK-Tree (Burkhard-Keller Tree): 基于 Hamming 距离等离散距离度量的近似匹配树结构。
-/// 搜索复杂度 O(n·log n)，远优于 O(n²) 全量遍历。
-/// 核心原理: 利用三角不等式, 如果 dist(query, root) = d，
-/// 则距离 query <= maxDistance 的节点只可能在 children[d-maxDist..d+maxDist] 子树中。
+/// BK-Tree (Burkhard-Keller Tree): an approximate matching tree for discrete metrics such as Hamming distance.
+/// Search complexity is O(n log n), much better than an O(n^2) full scan.
+/// Core idea: using the triangle inequality, if dist(query, root) = d,
+/// nodes within `maxDistance` of the query can only be in children[d-maxDist...d+maxDist].
 struct BKTree<T> {
     private var root: BKNode<T>?
 
-    /// 插入一个元素到树中
+    /// Inserts an item into the tree.
     mutating func insert(_ item: T, distance: (T, T) -> Int) {
         if root == nil {
             root = BKNode(item: item)
@@ -60,7 +60,7 @@ struct BKTree<T> {
         }
     }
 
-    /// 搜索所有与 query 的距离 <= maxDistance 的元素
+    /// Searches for all items whose distance from `query` is at most `maxDistance`.
     func search(_ query: T, maxDistance: Int, distance: (T, T) -> Int) -> [(item: T, dist: Int)] {
         guard let rootNode = root else { return [] }
         var results: [(item: T, dist: Int)] = []
@@ -80,7 +80,7 @@ struct BKTree<T> {
             results.append((node.item, d))
         }
 
-        // 利用三角不等式: 只搜索 [d-maxDistance, d+maxDistance] 范围的子树
+        // Use the triangle inequality to only search children in [d-maxDistance, d+maxDistance].
         let lowerBound = max(0, d - maxDistance)
         let upperBound = d + maxDistance
 
@@ -89,12 +89,12 @@ struct BKTree<T> {
         }
     }
 
-    /// 搜索所有与 query 的距离 <= maxDistance 的元素 (仅返回 items, 不含距离)
+    /// Searches for all items whose distance from `query` is at most `maxDistance`, returning only items.
     func searchItems(_ query: T, maxDistance: Int, distance: (T, T) -> Int) -> [T] {
         search(query, maxDistance: maxDistance, distance: distance).map { $0.item }
     }
 
-    /// 树中元素总数
+    /// Total number of items in the tree.
     var count: Int {
         countIn(node: root)
     }

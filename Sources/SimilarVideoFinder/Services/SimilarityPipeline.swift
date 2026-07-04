@@ -78,21 +78,22 @@ enum ScanRelationSignatureBuilder {
     }
 }
 
-/// 三阶段相似度流水线:
-/// 1. **Prehash 阶段**: 基于已有元数据/缩略图同步计算 QuickPrehash, 按桶分组得到候选对
-/// 2. **Hash 阶段**: 并行计算所有视频的 DCT-3D 感知哈希, 装入 BK-Tree
-/// 3. **比较阶段**: 对 prehash 候选对使用 BK-Tree 搜索 + Vision 精确认证
+/// Three-stage similarity pipeline:
+/// 1. **Prehash phase**: computes QuickPrehash from existing metadata and thumbnails, then buckets candidate pairs.
+/// 2. **Hash phase**: computes DCT-3D perceptual hashes in parallel and inserts them into a BK-Tree.
+/// 3. **Comparison phase**: searches prehash candidates with the BK-Tree and optionally verifies them with Vision.
 ///
-/// 关键性能优化:
-/// - QuickPrehash 零成本预筛, 避免对所有 O(n²) 对做昂贵操作
-/// - PerceptualHash 并行计算 (TaskGroup), 充分利用多核
-/// - BK-Tree 搜索 O(n·log n), 替代 O(n²) 全比较
-/// - Vision FeaturePrint 仅作精确认证层, 调用次数大幅减少
+/// Key performance optimizations:
+/// - QuickPrehash is a low-cost prefilter that avoids expensive work across all O(n^2) pairs.
+/// - PerceptualHash computation runs in parallel with TaskGroup to use multiple cores.
+/// - BK-Tree search is O(n log n), replacing an O(n^2) full comparison.
+/// - Vision FeaturePrint is only used as a final verification layer, greatly reducing calls.
 struct SimilarityPipeline: SimilarityProcessing {
     private let extractor: any FrameFeatureExtracting
     private let cache: (any HashCaching)?
     private let usesFrameVerification: Bool
-    /// 感知哈希之间被视为"潜在相似"的最大 Hamming 距离 (64-bit 哈希中允许多达 24 bits 不同)
+    /// Maximum Hamming distance for two perceptual hashes to be considered potentially similar.
+    /// For 64-bit hashes, this allows up to 24 different bits.
     static let perceptualMaxDistance = 24
     fileprivate static let relationStorageFloor = 0.60
     fileprivate static let pairRelationWriteBatchSize = 512
@@ -153,7 +154,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         scanIntensity: ScanIntensity,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> PipelineResult {
-        // ---- Phase A: QuickPrehash (同步, 零成本) ----
+        // ---- Phase A: QuickPrehash (synchronous and low-cost) ----
         await progress(ScanProgress(
             stage: .prehashing,
             fraction: 0,
@@ -165,7 +166,7 @@ struct SimilarityPipeline: SimilarityProcessing {
             acc[video.id] = QuickPrehasher.prehash(for: video)
         }
 
-        // 通过 QuickPrehash 筛选候选对
+        // Filter candidate pairs through QuickPrehash.
         let prehashCandidates = PrehashCandidateFinder.find(
             videos: videos,
             prehashes: prehashes
@@ -180,8 +181,8 @@ struct SimilarityPipeline: SimilarityProcessing {
 
         try Task.checkCancellation()
 
-        // ---- Phase B: 感知哈希 (并行) ----
-        // 只对至少出现在一个候选对中的视频计算感知哈希
+        // ---- Phase B: Perceptual hashes (parallel) ----
+        // Only compute perceptual hashes for videos that appear in at least one candidate pair.
         let videosNeedingHash = uniqueVideos(in: prehashCandidates)
 
         await progress(ScanProgress(
@@ -241,13 +242,13 @@ struct SimilarityPipeline: SimilarityProcessing {
             )
         }
 
-        // 构建 BK-Tree 用于近邻搜索
+        // Build a BK-Tree for nearest-neighbor search.
         var bkTree = BKTree<VideoPerceptualHash>()
         for hash in perceptualHashes.values {
             bkTree.insert(hash, distance: { $0.hammingDistance(to: $1) })
         }
 
-        // ---- Phase C: 候选对比较 (BK-Tree + Vision) ----
+        // ---- Phase C: Candidate-pair comparison (BK-Tree + Vision) ----
         await progress(ScanProgress(
             stage: .comparing,
             fraction: 0,
@@ -319,7 +320,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         }
         await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
 
-        // 对每个有感知哈希的视频, 用 BK-Tree 搜索它的近邻
+        // For each video with a perceptual hash, search for nearby hashes in the BK-Tree.
         let videosByID = Dictionary(uniqueKeysWithValues: videos.map { ($0.id, $0) })
         let queryVideos = videosNeedingHash
         let totalQueries = max(queryVideos.count, 1)
@@ -505,7 +506,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         )
     }
 
-    /// 从候选对中提取所有需要计算感知哈希的视频 (去重)。
+    /// Extracts every video that needs perceptual hashing from candidate pairs, removing duplicates.
     private func uniqueVideos(in pairs: [(MediaItem, MediaItem)]) -> [MediaItem] {
         var seen = Set<UUID>()
         var result: [MediaItem] = []
@@ -518,7 +519,8 @@ struct SimilarityPipeline: SimilarityProcessing {
 
     // MARK: - Phase B helpers
 
-    /// 并行计算多个视频的 PerceptualHash, 进度上报。命中缓存的视频跳过哈希计算。
+    /// Computes `PerceptualHash` values in parallel and reports progress.
+    /// Videos that hit the cache skip hash computation.
     private func computePerceptualHashesInParallel(
         videos: [MediaItem],
         prehashes: [UUID: QuickPrehash],
@@ -529,7 +531,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         let cacheTotal = videos.count
         let counter = ProgressCounter()
 
-        // ---- 阶段 1: 缓存命中过滤 ----
+        // ---- Stage 1: filter cache hits ----
         var cached: [UUID: VideoPerceptualHash] = [:]
         var needsHashing: [MediaItem] = []
         if let cache {
@@ -563,7 +565,7 @@ struct SimilarityPipeline: SimilarityProcessing {
             needsHashing = videos
         }
 
-        // 缓存命中也要计入进度
+        // Cache hits still count toward progress.
         for _ in cached.indices {
             _ = await counter.increment()
         }
@@ -579,7 +581,7 @@ struct SimilarityPipeline: SimilarityProcessing {
             ))
         }
 
-        // ---- 阶段 2: 并行计算未命中的哈希 ----
+        // ---- Stage 2: compute missing hashes in parallel ----
         let concurrencyCap = Self.hashConcurrencyLimit(
             processorCount: ProcessInfo.processInfo.activeProcessorCount,
             scanIntensity: scanIntensity
@@ -624,7 +626,7 @@ struct SimilarityPipeline: SimilarityProcessing {
             return results
         }
 
-        // ---- 阶段 3: 写回缓存 ----
+        // ---- Stage 3: write computed hashes back to the cache ----
         if let cache {
             for video in needsHashing {
                 guard let hash = computed[video.id], let prehash = prehashes[video.id] else { continue }
@@ -633,7 +635,7 @@ struct SimilarityPipeline: SimilarityProcessing {
             }
         }
 
-        // 合并缓存命中与新计算结果
+        // Merge cache hits and newly computed hashes.
         var all = cached
         for (id, hash) in computed { all[id] = hash }
         return all
@@ -718,7 +720,7 @@ private struct VideoComparisonCandidate: Sendable {
 
 // MARK: - PairKey
 
-/// 无序对的唯一键 (a, b) == (b, a)
+/// Unique key for an unordered pair: (a, b) == (b, a).
 private struct PairKey: Hashable {
     let lo: UUID
     let hi: UUID
@@ -736,7 +738,7 @@ private struct PairKey: Hashable {
 
 // MARK: - ProgressCounter
 
-/// 用于跨 TaskGroup 任务的并发安全进度计数。
+/// Concurrency-safe progress counter shared across TaskGroup tasks.
 private actor ProgressCounter {
     private var value = 0
 

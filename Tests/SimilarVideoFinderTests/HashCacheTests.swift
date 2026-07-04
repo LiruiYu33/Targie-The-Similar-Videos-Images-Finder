@@ -89,7 +89,7 @@ final class HashCacheTests: XCTestCase {
         let record = makeRecord(path: "/tmp/foo.mp4", size: 100, date: Date(timeIntervalSince1970: 1000))
         await cache.upsert(record)
 
-        // 文件大小变了 → 缓存失效
+        // Changed file size invalidates the cache.
         let result = await cache.lookup(
             filePath: "/tmp/foo.mp4",
             fileSize: 200,
@@ -125,7 +125,7 @@ final class HashCacheTests: XCTestCase {
         let record = makeRecord(path: "/tmp/foo.mp4", size: 100, date: Date(timeIntervalSince1970: 1000))
         await cache.upsert(record)
 
-        // 修改时间变了 → 缓存失效
+        // Changed modification date invalidates the cache.
         let result = await cache.lookup(
             filePath: "/tmp/foo.mp4",
             fileSize: 100,
@@ -138,7 +138,7 @@ final class HashCacheTests: XCTestCase {
         let record = makeRecord(path: "/tmp/foo.mp4", size: 100, date: Date(timeIntervalSince1970: 1000))
         await cache.upsert(record)
 
-        // 时间差 < 1秒 → 视为有效
+        // Differences under one second are accepted.
         let result = await cache.lookup(
             filePath: "/tmp/foo.mp4",
             fileSize: 100,
@@ -645,7 +645,7 @@ final class HashCacheTests: XCTestCase {
         let record = makeRecord(path: "/tmp/foo.mp4", size: 100, date: Date(timeIntervalSince1970: 1000))
         await cache.upsert(record)
 
-        // 重新打开同一数据库
+        // Reopen the same database.
         cache = nil
         cache = try HashCache(databaseURL: dbURL)
 

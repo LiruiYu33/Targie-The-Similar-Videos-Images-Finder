@@ -57,7 +57,7 @@ final class BKTreeTests: XCTestCase {
         tree.insert("hella", distance: hammingStringDistance)  // 1 char diff
         tree.insert("world", distance: hammingStringDistance)  // 5 char diff
 
-        // 搜索与 "hello" Hamming 距离 <= 1 的字符串
+        // Search for strings within Hamming distance <= 1 from "hello".
         let results = tree.search("hello", maxDistance: 1, distance: hammingStringDistance)
         XCTAssertEqual(results.count, 3)  // hello (0), hallo (1), hella (1)
 
@@ -115,7 +115,7 @@ final class BKTreeTests: XCTestCase {
     }
 
     func testBKTreeSearchDoesNotMissMatches() {
-        // 确保三角不等式剪枝不会漏掉真实匹配
+        // Ensure triangle-inequality pruning does not miss real matches.
         let hashes = (0..<20).map { i in
             VideoPerceptualHash(
                 videoID: UUID(),
@@ -128,7 +128,7 @@ final class BKTreeTests: XCTestCase {
             tree.insert(hash, distance: { $0.hammingDistance(to: $1) })
         }
 
-        // 用暴力搜索验证 BK-Tree 不漏结果
+        // Validate the BK-Tree results against brute-force search.
         let query = hashes[0]
         let maxDist = 5
 
@@ -143,7 +143,7 @@ final class BKTreeTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// 简单字符 Hamming 距离 (逐字符比较)
+    /// Simple character-level Hamming distance.
     private func hammingStringDistance(_ a: String, _ b: String) -> Int {
         let charsA = Array(a)
         let charsB = Array(b)
