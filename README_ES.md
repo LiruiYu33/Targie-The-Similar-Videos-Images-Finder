@@ -1,6 +1,6 @@
 # <img src="asset/icon_white.png" width="28" alt="" /> Targie
 
-[English](README.md) | [简体中文](README_ZH.md) | [繁體中文](README_ZH_HANT.md) | [Français](README_FR.md)
+[English](README.md) | [简体中文](README_ZH.md) | [繁體中文](README_ZH_HANT.md) | [Français](README_FR.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
 
 > **Solo macOS.** Targie es una aplicación nativa para macOS 14+. No hay versión para Windows ni Linux, y no está prevista.
 
@@ -16,7 +16,7 @@ Targie encuentra vídeos e imágenes similares en las carpetas seleccionadas com
 - Abre vídeos en el reproductor predeterminado y muestra cualquier archivo multimedia en Finder.
 - Permite la selección múltiple explícita y la eliminación por lotes con éxito parcial.
 - Requiere elegir explícitamente entre mover a la Papelera o eliminar permanentemente, con una segunda confirmación para la eliminación permanente.
-- Compatible con inglés, chino simplificado, chino tradicional, español y francés, con cambio instantáneo y preferencia recordada.
+- Compatible con inglés, chino simplificado, chino tradicional, español, francés, japonés y coreano, con cambio instantáneo y preferencia recordada.
 - **Modo exploración**: visualiza todos los archivos de las carpetas seleccionadas en una tabla ordenable y filtrable, con columnas redimensionables arrastrando, selección por lotes y título de ventana actualizado en tiempo real.
 
 ![Comparación de similitud de imágenes](asset/Screenshot1.png)

@@ -1,6 +1,6 @@
 # <img src="asset/icon_white.png" width="28" alt="" /> Targie
 
-[English](README.md) | [繁體中文](README_ZH_HANT.md) | [Español](README_ES.md) | [Français](README_FR.md)
+[English](README.md) | [繁體中文](README_ZH_HANT.md) | [Español](README_ES.md) | [Français](README_FR.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
 
 > **仅支持 macOS。** Targie 是一款原生 macOS 14+ 应用，没有 Windows 或 Linux 版本，也不计划提供。
 
@@ -16,7 +16,7 @@ Targie 通过结合元数据、内容哈希、感知指纹和视觉特征，在�
 - 可用默认播放器打开视频，并可在 Finder 中显示任意媒体文件。
 - 支持明确勾选多个文件后批量删除，部分失败时保留失败项并显示错误。
 - 删除时必须选择移到废纸篓或永久删除，永久删除会再次确认。
-- 支持英文、简体中文、繁体中文、西班牙语和法语即时切换，并记住上次选择的语言。
+- 支持英文、简体中文、繁体中文、西班牙语、法语、日语和韩语即时切换，并记住上次选择的语言。
 - **浏览模式**：以可排序、可筛选的表格浏览所选文件夹中所有文件，支持拖拽调整列宽、批量选择，窗口标题实时显示筛选后的文件数量。
 
 ![图片相似比较](asset/Screenshot1.png)
