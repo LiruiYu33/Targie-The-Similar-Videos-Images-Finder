@@ -57,7 +57,7 @@ enum ImageFeatureSerializer {
 
 actor ImageFeatureCache {
     private let extractor: any ImageFeatureExtracting
-    private var storage: [URL: Result<ImageFeature, Error>] = [:]
+    private var storage: [URL: Task<ImageFeature, Error>] = [:]
     private let persistentCache: (any HashCaching)?
 
     init(
@@ -69,8 +69,26 @@ actor ImageFeatureCache {
     }
 
     func feature(for url: URL) async throws -> ImageFeature {
-        if let cached = storage[url] { return try cached.get() }
+        if let cached = storage[url] { return try await cached.value }
 
+        let extractor = self.extractor
+        let persistentCache = self.persistentCache
+        let task = Task<ImageFeature, Error>(priority: .utility) {
+            try await Self.loadFeature(
+                for: url,
+                extractor: extractor,
+                persistentCache: persistentCache
+            )
+        }
+        storage[url] = task
+        return try await task.value
+    }
+
+    private static func loadFeature(
+        for url: URL,
+        extractor: any ImageFeatureExtracting,
+        persistentCache: (any HashCaching)?
+    ) async throws -> ImageFeature {
         // Check persistent SQLite cache — avoids Vision neural-network inference
         // on re-scan when the image file hasn't changed.
         if let pc = persistentCache,
@@ -81,30 +99,22 @@ actor ImageFeatureCache {
                modifiedAt: values.contentModificationDate
            ),
            let observation = try? ImageFeatureSerializer.deserialize(data) {
-            let feature = ImageFeature(observation: observation)
-            storage[url] = .success(feature)
-            return feature
+            return ImageFeature(observation: observation)
         }
 
-        do {
-            let feature = try await extractor.feature(for: url)
-            storage[url] = .success(feature)
-            // Persist to SQLite for next launch.
-            if let pc = persistentCache,
-               let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
-               let data = try? ImageFeatureSerializer.serialize(feature.observation) {
-                await pc.upsertImageFeature(
-                    filePath: url.path,
-                    fileSize: Int64(values.fileSize ?? 0),
-                    modifiedAt: values.contentModificationDate,
-                    featureData: data
-                )
-            }
-            return feature
-        } catch {
-            storage[url] = .failure(error)
-            throw error
+        let feature = try await extractor.feature(for: url)
+        // Persist to SQLite for next launch.
+        if let pc = persistentCache,
+           let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+           let data = try? ImageFeatureSerializer.serialize(feature.observation) {
+            await pc.upsertImageFeature(
+                filePath: url.path,
+                fileSize: Int64(values.fileSize ?? 0),
+                modifiedAt: values.contentModificationDate,
+                featureData: data
+            )
         }
+        return feature
     }
 
     func similarity(between first: URL, and second: URL) async -> Double? {

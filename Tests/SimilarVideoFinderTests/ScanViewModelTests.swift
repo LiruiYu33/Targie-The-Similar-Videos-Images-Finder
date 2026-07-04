@@ -346,6 +346,36 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertNil(aggregate.comparisonPhase)
     }
 
+    func testProgressAggregationKeepsCompletedUncachedPairCountsWhenAnotherLaneContinues() async {
+        let aggregator = ScanProgressAggregator(workflow: .fullScan)
+        _ = await aggregator.update(.image, with: ScanProgress(
+            stage: .comparing,
+            fraction: 1,
+            currentFile: "photo.jpg",
+            discoveredCount: 20,
+            comparisonPhase: .comparingUncached,
+            comparisonCompleted: 100,
+            comparisonTotal: 100
+        ))
+        _ = await aggregator.complete(.image, discoveredCount: 20)
+
+        let aggregate = await aggregator.update(.video, with: ScanProgress(
+            stage: .comparing,
+            fraction: 0.25,
+            currentFile: "clip.mp4",
+            discoveredCount: 10,
+            comparisonPhase: .comparingUncached,
+            comparisonCompleted: 1,
+            comparisonTotal: 20
+        ))
+
+        XCTAssertEqual(aggregate.stage, .comparing)
+        XCTAssertEqual(aggregate.currentFile, "clip.mp4")
+        XCTAssertEqual(aggregate.comparisonPhase, .comparingUncached)
+        XCTAssertEqual(aggregate.comparisonCompleted, 101)
+        XCTAssertEqual(aggregate.comparisonTotal, 120)
+    }
+
     func testConcurrentKindProgressDoesNotMoveBackward() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ParallelProgress-\(UUID().uuidString)", isDirectory: true)

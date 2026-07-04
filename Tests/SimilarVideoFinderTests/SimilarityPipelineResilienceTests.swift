@@ -35,8 +35,23 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
     }
 
     func testHashConcurrencyIsCappedForLargeProcessorCounts() {
-        XCTAssertEqual(SimilarityPipeline.hashConcurrencyLimit(processorCount: 2), 2)
-        XCTAssertEqual(SimilarityPipeline.hashConcurrencyLimit(processorCount: 12), 4)
+        XCTAssertEqual(SimilarityPipeline.hashConcurrencyLimit(processorCount: 2, thermalState: .nominal), 2)
+        XCTAssertEqual(SimilarityPipeline.hashConcurrencyLimit(processorCount: 12, thermalState: .nominal), 4)
+    }
+
+    func testVideoComparisonConcurrencyDropsWhenThermalStateIsHigh() {
+        XCTAssertEqual(
+            SimilarityPipeline.comparisonConcurrencyLimit(processorCount: 12, thermalState: .nominal),
+            6
+        )
+        XCTAssertEqual(
+            SimilarityPipeline.comparisonConcurrencyLimit(processorCount: 12, thermalState: .serious),
+            2
+        )
+        XCTAssertEqual(
+            SimilarityPipeline.comparisonConcurrencyLimit(processorCount: 12, thermalState: .critical),
+            1
+        )
     }
 
     func testScanRelationSignatureChangesWhenFileIdentityChanges() {
@@ -321,6 +336,46 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(pairBatchLookupCount, 0)
     }
 
+    func testCompletedVideoScanPersistsScanRelationIndexInSQLiteCache() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VideoScanIndex-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = try HashCache(databaseURL: root.appendingPathComponent("cache.sqlite"))
+        let videos = [
+            video(path: root.appendingPathComponent("index-a.mp4").path, size: 1_000),
+            video(path: root.appendingPathComponent("index-b.mp4").path, size: 1_100),
+            video(path: root.appendingPathComponent("index-c.mp4").path, size: 1_200)
+        ]
+        let hashBits = [UInt8](repeating: 0, count: 8)
+        for video in videos {
+            await cache.upsert(CacheRecord.make(
+                video: video,
+                perceptualHash: VideoPerceptualHash(videoID: video.id, hashBits: hashBits),
+                quickPrehash: QuickPrehasher.prehash(for: video)
+            ))
+        }
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        let result = try await pipeline.process(videos: videos, threshold: 0.88) { _ in }
+
+        XCTAssertEqual(result.relations.count, 3)
+        let algorithmVersion = SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        let signature = SimilarityPipeline.scanRelationSignature(
+            items: videos,
+            hashes: Dictionary(uniqueKeysWithValues: videos.map { ($0.id, Data(hashBits)) }),
+            algorithmVersion: algorithmVersion
+        )
+        let cached = await cache.lookupScanRelationIndex(
+            signature: signature,
+            mediaKind: .video,
+            algorithmVersion: algorithmVersion
+        )
+        XCTAssertEqual(cached?.fileCount, 3)
+        XCTAssertEqual(cached?.candidateCount, 3)
+        XCTAssertEqual(cached?.relations.count, 3)
+    }
+
     func testUncachedPairComparisonProgressDoesNotRepeatStaleRelationCacheStats() async throws {
         let first = video(path: "/missing/miss-progress-first.mp4", size: 1_000)
         let second = video(path: "/missing/miss-progress-second.mp4", size: 1_100)
@@ -344,6 +399,29 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(finalComparing.comparisonPhase, .comparingUncached)
         XCTAssertEqual(finalComparing.comparisonCompleted, 1)
         XCTAssertEqual(finalComparing.comparisonTotal, 1)
+    }
+
+    func testUncachedVideoComparisonProgressIsThrottledForLargeCandidateSets() async throws {
+        let videos = (0..<30).map { index in
+            video(path: "/missing/throttled-video-\(index).mp4", size: 1_000 + Int64(index))
+        }
+        let cache = InMemoryHashCache()
+        for video in videos {
+            await seed(cache, video: video, hash: [UInt8](repeating: 0, count: 8))
+        }
+        let progress = VideoProgressRecorder()
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        _ = try await pipeline.process(videos: videos, threshold: 0.88) {
+            await progress.append($0)
+        }
+
+        let uncachedUpdates = await progress.updates(for: .comparing)
+            .filter { $0.comparisonPhase == .comparingUncached }
+        let finalUpdate = try XCTUnwrap(uncachedUpdates.last)
+        XCTAssertGreaterThan(finalUpdate.comparisonTotal, 400)
+        XCTAssertEqual(finalUpdate.comparisonCompleted, finalUpdate.comparisonTotal)
+        XCTAssertLessThan(uncachedUpdates.count, finalUpdate.comparisonTotal / 2)
     }
 
     func testVideoComparisonProgressReportsCandidateCacheAndUncachedPhases() async throws {

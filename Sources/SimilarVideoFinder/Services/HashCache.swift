@@ -274,6 +274,25 @@ private enum PairRelationCacheCodec {
 }
 
 private enum ScanRelationIndexCodec {
+    static func storedRelations(_ relations: [CachedScanRelation]) -> [CachedScanRelation] {
+        let storedRelationsByPair = relations
+            .map { storedRelation($0) }
+            .reduce(into: [String: CachedScanRelation]()) { result, relation in
+                let key = "\(relation.firstPath)\u{0}\(relation.secondPath)"
+                guard let existing = result[key] else {
+                    result[key] = relation
+                    return
+                }
+                result[key] = relation.score > existing.score ? relation : existing
+            }
+        return storedRelationsByPair.values.sorted { lhs, rhs in
+            if lhs.firstPath == rhs.firstPath {
+                return lhs.secondPath < rhs.secondPath
+            }
+            return lhs.firstPath < rhs.firstPath
+        }
+    }
+
     static func storedRelation(_ relation: CachedScanRelation) -> CachedScanRelation {
         let ordered = relation.firstPath < relation.secondPath
             ? (relation.firstPath, relation.secondPath)
@@ -1098,13 +1117,7 @@ actor HashCache: HashCaching {
         candidateCount: Int,
         relations: [CachedScanRelation]
     ) async {
-        let normalizedRelations = relations.map { ScanRelationIndexCodec.storedRelation($0) }
-        let storedRelations = normalizedRelations.sorted { lhs, rhs in
-            if lhs.firstPath == rhs.firstPath {
-                return lhs.secondPath < rhs.secondPath
-            }
-            return lhs.firstPath < rhs.firstPath
-        }
+        let storedRelations = ScanRelationIndexCodec.storedRelations(relations)
         try? await dbQueue.write { db in
             try db.execute(sql: """
                 INSERT INTO scan_relation_indexes (
@@ -1548,13 +1561,7 @@ actor InMemoryHashCache: HashCaching {
         candidateCount: Int,
         relations: [CachedScanRelation]
     ) {
-        let normalizedRelations = relations.map { ScanRelationIndexCodec.storedRelation($0) }
-        let storedRelations = normalizedRelations.sorted { lhs, rhs in
-            if lhs.firstPath == rhs.firstPath {
-                return lhs.secondPath < rhs.secondPath
-            }
-            return lhs.firstPath < rhs.firstPath
-        }
+        let storedRelations = ScanRelationIndexCodec.storedRelations(relations)
         let index = CachedScanRelationIndex(
             signature: signature,
             mediaKind: mediaKind,

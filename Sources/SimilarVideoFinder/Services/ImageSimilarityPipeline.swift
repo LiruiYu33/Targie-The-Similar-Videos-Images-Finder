@@ -23,8 +23,20 @@ struct ImageSimilarityPipeline: Sendable {
         self.featureExtractor = featureExtractor
     }
 
-    static func comparisonConcurrencyLimit(processorCount: Int) -> Int {
-        min(6, max(2, processorCount / 2))
+    static func comparisonConcurrencyLimit(
+        processorCount: Int,
+        thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState,
+        scanIntensity: ScanIntensity = .balanced
+    ) -> Int {
+        scanIntensity.comparisonConcurrencyLimit(processorCount: processorCount, thermalState: thermalState)
+    }
+
+    static func hashConcurrencyLimit(
+        processorCount: Int,
+        thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState,
+        scanIntensity: ScanIntensity = .balanced
+    ) -> Int {
+        scanIntensity.hashConcurrencyLimit(processorCount: processorCount, thermalState: thermalState)
     }
 
     static func scanRelationSignature(
@@ -44,9 +56,18 @@ struct ImageSimilarityPipeline: Sendable {
         threshold: Double,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> ImagePipelineResult {
+        try await process(images: images, threshold: threshold, scanIntensity: .balanced, progress: progress)
+    }
+
+    func process(
+        images: [MediaItem],
+        threshold: Double,
+        scanIntensity: ScanIntensity,
+        progress: @escaping @Sendable (ScanProgress) async -> Void
+    ) async throws -> ImagePipelineResult {
         let images = images.filter { $0.kind == .image }
         await progress(ScanProgress(stage: .hashing, fraction: 0, discoveredCount: images.count))
-        let hashes = try await computeHashes(images: images, progress: progress)
+        let hashes = try await computeHashes(images: images, scanIntensity: scanIntensity, progress: progress)
         let hashDataByID = hashes.mapValues { Data($0.hashBits) }
         let indexSignature = Self.scanRelationSignature(
             items: images,
@@ -186,7 +207,8 @@ struct ImageSimilarityPipeline: Sendable {
             ))
 
             let comparisonLimit = Self.comparisonConcurrencyLimit(
-                processorCount: ProcessInfo.processInfo.activeProcessorCount
+                processorCount: ProcessInfo.processInfo.activeProcessorCount,
+                scanIntensity: scanIntensity
             )
             var completedMisses = 0
             try await withThrowingTaskGroup(of: (ImageComparisonCandidate, SimilarityRelation?).self) { group in
@@ -211,18 +233,20 @@ struct ImageSimilarityPipeline: Sendable {
                     if pendingPairRelationUpserts.count >= Self.pairRelationWriteBatchSize {
                         await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
                     }
-                    await progress(ScanProgress(
-                        stage: .comparing,
-                        fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
-                        currentFile: completedCandidate.first.filename,
-                        discoveredCount: images.count,
-                        cacheHits: 0,
-                        cacheTotal: 0,
-                        cacheKind: nil,
-                        comparisonPhase: .comparingUncached,
-                        comparisonCompleted: completedMisses,
-                        comparisonTotal: misses.count
-                    ))
+                    if ScanProgressReporting.shouldReportComparison(completed: completedMisses, total: misses.count) {
+                        await progress(ScanProgress(
+                            stage: .comparing,
+                            fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
+                            currentFile: completedCandidate.first.filename,
+                            discoveredCount: images.count,
+                            cacheHits: 0,
+                            cacheTotal: 0,
+                            cacheKind: nil,
+                            comparisonPhase: .comparingUncached,
+                            comparisonCompleted: completedMisses,
+                            comparisonTotal: misses.count
+                        ))
+                    }
                     if let next = iterator.next() {
                         group.addTask {
                             let relation = try await compareImageCandidate(next, cache: cache, featureCache: featureCache)
@@ -256,7 +280,11 @@ struct ImageSimilarityPipeline: Sendable {
         return ImagePipelineResult(images: images, relations: relations, groups: SimilarityGrouper.groups(items: images, relations: relations, threshold: threshold))
     }
 
-    private func computeHashes(images: [MediaItem], progress: @escaping @Sendable (ScanProgress) async -> Void) async throws -> [UUID: ImagePerceptualHash] {
+    private func computeHashes(
+        images: [MediaItem],
+        scanIntensity: ScanIntensity,
+        progress: @escaping @Sendable (ScanProgress) async -> Void
+    ) async throws -> [UUID: ImagePerceptualHash] {
         var hashes: [UUID: ImagePerceptualHash] = [:]
         var missing: [MediaItem] = []
         let keysByID = Dictionary(uniqueKeysWithValues: images.map {
@@ -292,9 +320,13 @@ struct ImageSimilarityPipeline: Sendable {
                 cacheKind: .fingerprint
             ))
         }
+        let concurrencyLimit = Self.hashConcurrencyLimit(
+            processorCount: ProcessInfo.processInfo.activeProcessorCount,
+            scanIntensity: scanIntensity
+        )
         try await withThrowingTaskGroup(of: (MediaItem, ImagePerceptualHash?).self) { group in
             var iterator = missing.makeIterator()
-            for _ in 0..<min(4, missing.count) {
+            for _ in 0..<min(concurrencyLimit, missing.count) {
                 if let item = iterator.next() { group.addTask { (item, try? ImagePerceptualHasher.hash(for: item.url, id: item.id)) } }
             }
             var completed = hashes.count

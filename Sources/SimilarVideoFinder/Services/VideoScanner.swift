@@ -68,6 +68,15 @@ struct VideoScanner {
         }
     }
 
+    func withMaxConcurrentLoads(_ limit: Int) -> VideoScanner {
+        VideoScanner(
+            maxConcurrentLoads: limit,
+            thumbnailStore: thumbnailStore,
+            metadataCache: metadataCache,
+            loader: usesDefaultLoader ? nil : loader
+        )
+    }
+
     static func discoverVideoURLs(in folder: URL) throws -> [URL] {
         guard let enumerator = FileManager.default.enumerator(
             at: folder,

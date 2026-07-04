@@ -74,6 +74,15 @@ enum ScanProgressWorkflow: Sendable {
 }
 
 actor ScanProgressAggregator {
+    private struct AggregatedComparisonDetails {
+        let phase: ScanComparisonPhase
+        let completed: Int
+        let total: Int
+        let cacheHits: Int
+        let cacheTotal: Int
+        let cacheKind: ScanProgressCacheKind?
+    }
+
     private let workflow: ScanProgressWorkflow
     private var updates: [ScanProgressLane: ScanProgress] = [:]
     private var completedLanes = Set<ScanProgressLane>()
@@ -126,21 +135,26 @@ actor ScanProgressAggregator {
         let displayProgress = progressForDisplay(preferredLane: preferredLane, stage: currentStage)
             ?? fallbackProgressForDisplay(preferredLane: preferredLane)
         let displayStage = allCompleted ? .completed : displayProgress?.stage ?? currentStage
+        let comparisonDetails = displayStage == .comparing
+            ? aggregatedComparisonDetails(preferredPhase: displayProgress?.comparisonPhase)
+            : nil
         let expectedCacheKind = cacheKind(for: displayStage)
-        let displayedCacheKind = displayProgress?.cacheKind == expectedCacheKind ? expectedCacheKind : nil
-        let displayedComparisonPhase = displayProgress?.stage == displayStage ? displayProgress?.comparisonPhase : nil
+        let displayedCacheKind = comparisonDetails?.cacheKind
+            ?? (displayProgress?.cacheKind == expectedCacheKind ? expectedCacheKind : nil)
+        let displayedComparisonPhase = comparisonDetails?.phase
+            ?? (displayProgress?.stage == displayStage ? displayProgress?.comparisonPhase : nil)
 
         return ScanProgress(
             stage: displayStage,
             fraction: emittedFraction,
             currentFile: displayProgress?.currentFile ?? "",
             discoveredCount: updates.values.reduce(0) { $0 + $1.discoveredCount },
-            cacheHits: displayedCacheKind == nil ? 0 : displayProgress?.cacheHits ?? 0,
-            cacheTotal: displayedCacheKind == nil ? 0 : displayProgress?.cacheTotal ?? 0,
-            cacheKind: displayedCacheKind != nil && (displayProgress?.cacheTotal ?? 0) > 0 ? displayedCacheKind : nil,
+            cacheHits: comparisonDetails?.cacheHits ?? (displayedCacheKind == nil ? 0 : displayProgress?.cacheHits ?? 0),
+            cacheTotal: comparisonDetails?.cacheTotal ?? (displayedCacheKind == nil ? 0 : displayProgress?.cacheTotal ?? 0),
+            cacheKind: displayedCacheKind != nil && (comparisonDetails?.cacheTotal ?? displayProgress?.cacheTotal ?? 0) > 0 ? displayedCacheKind : nil,
             comparisonPhase: displayedComparisonPhase,
-            comparisonCompleted: displayedComparisonPhase == nil ? 0 : (displayProgress?.comparisonCompleted ?? 0),
-            comparisonTotal: displayedComparisonPhase == nil ? 0 : (displayProgress?.comparisonTotal ?? 0)
+            comparisonCompleted: displayedComparisonPhase == nil ? 0 : (comparisonDetails?.completed ?? displayProgress?.comparisonCompleted ?? 0),
+            comparisonTotal: displayedComparisonPhase == nil ? 0 : (comparisonDetails?.total ?? displayProgress?.comparisonTotal ?? 0)
         )
     }
 
@@ -204,6 +218,45 @@ actor ScanProgressAggregator {
             }
         }
         return nil
+    }
+
+    private func aggregatedComparisonDetails(preferredPhase: ScanComparisonPhase?) -> AggregatedComparisonDetails? {
+        guard let phase = preferredPhase ?? activeComparisonPhase() else { return nil }
+        let matching = ScanProgressLane.allCases
+            .compactMap { updates[$0] }
+            .filter { progress in
+                progress.comparisonPhase == phase
+                    && (progress.stage == .comparing || progress.stage == .completed)
+            }
+        guard !matching.isEmpty else { return nil }
+
+        let completed = matching.reduce(0) { partial, progress in
+            let total = max(progress.comparisonTotal, 0)
+            return partial + max(0, min(progress.comparisonCompleted, total))
+        }
+        let total = matching.reduce(0) { $0 + max($1.comparisonTotal, 0) }
+        let cacheTotal = matching.reduce(0) { $0 + max($1.cacheTotal, 0) }
+        let cacheHits = matching.reduce(0) { partial, progress in
+            partial + max(0, min(progress.cacheHits, progress.cacheTotal))
+        }
+        let cacheKind: ScanProgressCacheKind? = matching.contains { $0.cacheKind == .relation } && cacheTotal > 0
+            ? .relation
+            : nil
+        return AggregatedComparisonDetails(
+            phase: phase,
+            completed: completed,
+            total: total,
+            cacheHits: cacheHits,
+            cacheTotal: cacheTotal,
+            cacheKind: cacheKind
+        )
+    }
+
+    private func activeComparisonPhase() -> ScanComparisonPhase? {
+        ScanProgressLane.allCases
+            .compactMap { updates[$0] }
+            .first { $0.stage == .comparing }?
+            .comparisonPhase
     }
 
     private func fallbackProgressForDisplay(preferredLane: ScanProgressLane) -> ScanProgress? {
@@ -297,6 +350,7 @@ final class ScanViewModel: ObservableObject {
     @Published var presentedError: PresentedError?
     @Published var deletePrompt: DeletePrompt?
     @Published var scanMode: ScanMode = .all
+    @Published var scanIntensity: ScanIntensity
     @Published var checkedMediaIDs = Set<UUID>()
 
     private var allItems: [MediaItem] = []
@@ -320,12 +374,14 @@ final class ScanViewModel: ObservableObject {
         deletionService: any DeletionServicing = DeletionService(),
         hashCache: (any HashCaching)? = ScanViewModel.makeDefaultHashCache(),
         thumbnailStore: ThumbnailStore = .shared,
-        activityManager: ScanActivityManaging = ProcessInfoScanActivityManager()
+        activityManager: ScanActivityManaging = ProcessInfoScanActivityManager(),
+        scanIntensity: ScanIntensity = .defaultIntensity
     ) {
         self.deletionService = deletionService
         self.hashCache = hashCache
         self.thumbnailStore = thumbnailStore
         self.activityManager = activityManager
+        self.scanIntensity = scanIntensity
         self.pipeline = pipeline ?? SimilarityPipeline(cache: hashCache)
         self.imagePipeline = ImageSimilarityPipeline(cache: hashCache)
         // Use caller-provided scanners, but if they used the default loader,
@@ -438,8 +494,12 @@ final class ScanViewModel: ObservableObject {
                 // Always scan both kinds so the user can switch All / Images /
                 // Videos after scanning without re-scanning; `scanMode` only
                 // filters the sidebar display.
-                let scanner = self.scanner
-                let imageScanner = self.imageScanner
+                let scanIntensity = self.scanIntensity
+                let metadataLimit = scanIntensity.metadataConcurrencyLimit(
+                    processorCount: ProcessInfo.processInfo.activeProcessorCount
+                )
+                let scanner = self.scanner.withMaxConcurrentLoads(metadataLimit)
+                let imageScanner = self.imageScanner.withMaxConcurrentLoads(metadataLimit)
                 let pipeline = self.pipeline
                 let imagePipeline = self.imagePipeline
                 let threshold = self.threshold
@@ -449,7 +509,8 @@ final class ScanViewModel: ObservableObject {
                         folders: folders,
                         scanner: scanner,
                         pipeline: pipeline,
-                        threshold: threshold
+                        threshold: threshold,
+                        scanIntensity: scanIntensity
                     ) { [weak self] update in
                         let aggregate = await progressAggregator.update(.video, with: update)
                         await MainActor.run { self?.progress = aggregate }
@@ -463,7 +524,8 @@ final class ScanViewModel: ObservableObject {
                         folders: folders,
                         imageScanner: imageScanner,
                         imagePipeline: imagePipeline,
-                        threshold: threshold
+                        threshold: threshold,
+                        scanIntensity: scanIntensity
                     ) { [weak self] update in
                         let aggregate = await progressAggregator.update(.image, with: update)
                         await MainActor.run { self?.progress = aggregate }
@@ -518,6 +580,7 @@ final class ScanViewModel: ObservableObject {
         scanner: VideoScanner,
         pipeline: any SimilarityProcessing,
         threshold: Double,
+        scanIntensity: ScanIntensity,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> ScanSideResult {
         let scanned = try await scanFolders(folders) { folder in
@@ -525,7 +588,12 @@ final class ScanViewModel: ObservableObject {
             return (result.videos, result.issues)
         }
         try Task.checkCancellation()
-        let result = try await pipeline.process(videos: scanned.items, threshold: threshold, progress: progress)
+        let result = try await pipeline.process(
+            videos: scanned.items,
+            threshold: threshold,
+            scanIntensity: scanIntensity,
+            progress: progress
+        )
         return ScanSideResult(items: result.videos, relations: result.relations, issues: scanned.issues)
     }
 
@@ -534,6 +602,7 @@ final class ScanViewModel: ObservableObject {
         imageScanner: ImageScanner,
         imagePipeline: ImageSimilarityPipeline,
         threshold: Double,
+        scanIntensity: ScanIntensity,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> ScanSideResult {
         let scanned = try await scanFolders(folders) { folder in
@@ -541,7 +610,12 @@ final class ScanViewModel: ObservableObject {
             return (result.images, result.issues)
         }
         try Task.checkCancellation()
-        let result = try await imagePipeline.process(images: scanned.items, threshold: threshold, progress: progress)
+        let result = try await imagePipeline.process(
+            images: scanned.items,
+            threshold: threshold,
+            scanIntensity: scanIntensity,
+            progress: progress
+        )
         return ScanSideResult(items: result.images, relations: result.relations, issues: scanned.issues)
     }
 
@@ -594,8 +668,11 @@ final class ScanViewModel: ObservableObject {
             defer { self.endScanActivity() }
             do {
                 // Always scan both kinds (see startScan); scanMode only filters.
-                let scanner = self.scanner
-                let imageScanner = self.imageScanner
+                let metadataLimit = self.scanIntensity.metadataConcurrencyLimit(
+                    processorCount: ProcessInfo.processInfo.activeProcessorCount
+                )
+                let scanner = self.scanner.withMaxConcurrentLoads(metadataLimit)
+                let imageScanner = self.imageScanner.withMaxConcurrentLoads(metadataLimit)
                 let progressAggregator = ScanProgressAggregator(workflow: .discovery)
                 async let videoScan: (items: [MediaItem], issues: [ScanIssue]) = {
                     let result = try await Self.scanFolders(folders) { folder in
@@ -653,6 +730,11 @@ final class ScanViewModel: ObservableObject {
             groupSelectionAnchorID = nil
         }
         checkedMediaIDs.formIntersection(visibleItemIDs(for: mode))
+    }
+
+    func setScanIntensity(_ intensity: ScanIntensity) {
+        guard scanIntensity != intensity else { return }
+        scanIntensity = intensity
     }
 
     private func pruneCaches(for items: [MediaItem]) {
