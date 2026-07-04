@@ -26,19 +26,27 @@ final class LocalizationTests: XCTestCase {
     func testDefaultLanguageIsEnglishAndRawValuesRoundTrip() {
         XCTAssertEqual(AppLanguage.defaultLanguage, .english)
         XCTAssertEqual(AppLanguage(rawValue: "zh-Hans"), .simplifiedChinese)
-        XCTAssertEqual(AppLanguage.allCases.map(\.rawValue), ["en", "zh-Hans", "zh-Hant", "es", "fr"])
+        XCTAssertEqual(AppLanguage(rawValue: "ja"), .japanese)
+        XCTAssertEqual(AppLanguage(rawValue: "ko"), .korean)
+        XCTAssertEqual(AppLanguage.allCases.map(\.rawValue), ["en", "zh-Hans", "zh-Hant", "es", "fr", "ja", "ko"])
     }
 
     func testRepresentativeStringsSwitchLanguage() {
         XCTAssertEqual(L10n.chooseFolder(.english), "Choose Folder")
         XCTAssertEqual(L10n.chooseFolder(.simplifiedChinese), "选择文件夹")
+        XCTAssertEqual(L10n.chooseFolder(.japanese), "フォルダを選択")
+        XCTAssertEqual(L10n.chooseFolder(.korean), "폴더 선택")
         XCTAssertEqual(L10n.skippedFiles(3, .english), "Skipped 3 unreadable files")
         XCTAssertEqual(L10n.skippedFiles(3, .simplifiedChinese), "跳过 3 个无法读取的文件")
+        XCTAssertEqual(L10n.skippedFiles(3, .japanese), "読み取れないファイルを 3 件スキップしました")
+        XCTAssertEqual(L10n.skippedFiles(3, .korean), "읽을 수 없는 파일 3개 건너뜀")
         XCTAssertEqual(L10n.similarMedia(.english), "Similar Media")
         XCTAssertEqual(L10n.similarMedia(.simplifiedChinese), "相似媒体")
         XCTAssertEqual(L10n.similarMedia(.traditionalChinese), "相似媒體")
         XCTAssertEqual(L10n.similarMedia(.spanish), "Medios similares")
         XCTAssertEqual(L10n.similarMedia(.french), "Médias similaires")
+        XCTAssertEqual(L10n.similarMedia(.japanese), "類似メディア")
+        XCTAssertEqual(L10n.similarMedia(.korean), "유사한 미디어")
     }
 
     func testScanProgressDetailShowsCacheHitContext() {
@@ -53,6 +61,8 @@ final class LocalizationTests: XCTestCase {
         )
         XCTAssertEqual(L10n.scanProgressDetail(fingerprint, .english), "Fingerprint cache hits: 3 of 5")
         XCTAssertEqual(L10n.scanProgressDetail(fingerprint, .simplifiedChinese), "指纹缓存命中：3 / 5")
+        XCTAssertEqual(L10n.scanProgressDetail(fingerprint, .japanese), "フィンガープリントキャッシュ命中：3 / 5")
+        XCTAssertEqual(L10n.scanProgressDetail(fingerprint, .korean), "지문 캐시 적중: 3 / 5")
 
         let metadata = ScanProgress(
             stage: .readingMetadata,
@@ -133,6 +143,8 @@ final class LocalizationTests: XCTestCase {
             comparisonPhase: .findingCandidates
         )
         XCTAssertEqual(L10n.scanProgressTitle(finding, .english), "Finding candidate pairs")
+        XCTAssertEqual(L10n.scanProgressTitle(finding, .japanese), "候補ペアを検索中")
+        XCTAssertEqual(L10n.scanProgressTitle(finding, .korean), "후보 쌍 찾는 중")
 
         let checking = ScanProgress(
             stage: .comparing,
@@ -140,6 +152,8 @@ final class LocalizationTests: XCTestCase {
             comparisonPhase: .checkingPairCache
         )
         XCTAssertEqual(L10n.scanProgressTitle(checking, .english), "Checking pair cache")
+        XCTAssertEqual(L10n.scanProgressTitle(checking, .japanese), "ペアキャッシュを確認中")
+        XCTAssertEqual(L10n.scanProgressTitle(checking, .korean), "쌍 캐시 확인 중")
 
         let comparing = ScanProgress(
             stage: .comparing,
@@ -147,5 +161,7 @@ final class LocalizationTests: XCTestCase {
             comparisonPhase: .comparingUncached
         )
         XCTAssertEqual(L10n.scanProgressTitle(comparing, .english), "Comparing uncached pairs")
+        XCTAssertEqual(L10n.scanProgressTitle(comparing, .japanese), "未キャッシュのペアを比較中")
+        XCTAssertEqual(L10n.scanProgressTitle(comparing, .korean), "캐시되지 않은 쌍 비교 중")
     }
 }

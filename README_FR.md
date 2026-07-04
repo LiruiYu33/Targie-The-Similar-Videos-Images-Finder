@@ -1,6 +1,6 @@
 # <img src="asset/icon_white.png" width="28" alt="" /> Targie
 
-[English](README.md) | [简体中文](README_ZH.md) | [繁體中文](README_ZH_HANT.md) | [Español](README_ES.md)
+[English](README.md) | [简体中文](README_ZH.md) | [繁體中文](README_ZH_HANT.md) | [Español](README_ES.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
 
 > **macOS uniquement.** Targie est une application native pour macOS 14+. Il n'existe pas de version Windows ni Linux, et aucune n'est prévue.
 
@@ -16,7 +16,7 @@ Targie trouve des vidéos et des images similaires dans les dossiers sélectionn
 - Ouvre les vidéos dans le lecteur par défaut et révèle tout type de média dans le Finder.
 - Prend en charge la sélection multiple explicite et la suppression par lots avec succès partiel.
 - Exige un choix explicite entre déplacer vers la Corbeille et supprimer définitivement, avec une seconde confirmation pour la suppression permanente.
-- Prend en charge l'anglais, le chinois simplifié, le chinois traditionnel, l'espagnol et le français avec changement instantané et préférence mémorisée.
+- Prend en charge l'anglais, le chinois simplifié, le chinois traditionnel, l'espagnol, le français, le japonais et le coréen avec changement instantané et préférence mémorisée.
 - **Mode parcourir** : affiche tous les fichiers des dossiers sélectionnés dans un tableau triable et filtrable, avec colonnes redimensionnables par glissement, sélection par lots et titre de fenêtre mis à jour en temps réel.
 
 ![Comparaison de similarité d'images](asset/Screenshot1.png)

@@ -1,6 +1,6 @@
 # <img src="asset/icon_white.png" width="28" alt="" /> Targie
 
-[简体中文](README_ZH.md) | [繁體中文](README_ZH_HANT.md) | [Español](README_ES.md) | [Français](README_FR.md)
+[简体中文](README_ZH.md) | [繁體中文](README_ZH_HANT.md) | [Español](README_ES.md) | [Français](README_FR.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
 
 > **macOS only.** Targie is a native macOS 14+ application. There is no Windows or Linux build, and none is planned.
 
@@ -16,7 +16,7 @@ Targie finds similar videos and images across selected folders by combining meta
 - Opens videos in the default player and reveals either media type in Finder.
 - Supports explicit multi-selection and partial-success batch deletion.
 - Requires an explicit choice between moving files to Trash and permanent deletion, with a second confirmation for permanent deletion.
-- Supports English, Simplified Chinese, Traditional Chinese, Spanish, and French with instant switching and remembered preference.
+- Supports English, Simplified Chinese, Traditional Chinese, Spanish, French, Japanese, and Korean with instant switching and remembered preference.
 - **Browse mode**: view all files from selected folders in a sortable, filterable table with drag-to-resize columns, batch selection, and a live-updating window title.
 
 ![Image similarity comparison](asset/Screenshot1.png)
