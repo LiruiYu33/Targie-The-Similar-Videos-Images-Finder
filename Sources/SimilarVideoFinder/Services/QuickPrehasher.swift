@@ -22,28 +22,28 @@
 import AppKit
 import Foundation
 
-// MARK: - Quick Prehash (基于元数据 + 缩略图的零成本快速指纹)
+// MARK: - Quick Prehash (Low-Cost Fingerprint from Metadata and Thumbnails)
 
-/// 极轻量级签名：用于在感知哈希之前快速过滤大量明显不相似的视频对。
-/// 完全基于已有的 MediaItem 数据（缩略图 + 元数据），无需再访问视频文件。
+/// Extremely lightweight signature used before perceptual hashing to filter obviously dissimilar video pairs.
+/// It only uses existing `MediaItem` data (thumbnail and metadata), so it does not read the video file again.
 struct QuickPrehash: Hashable, Sendable {
     let videoID: UUID
-    let durationBucket: Int     // 时长分桶 (5% 步长)
-    let sizeBucket: Int         // 大小分桶 (按 log 缩放)
-    let aspectBucket: Int       // 宽高比分桶 (3% 步长)
-    let thumbnailMean: UInt8    // 缩略图灰度均值 (0-255)
-    let thumbnailVariance: UInt16  // 缩略图灰度方差近似值 (0-65535)
+    let durationBucket: Int     // Duration bucket (5% step).
+    let sizeBucket: Int         // Size bucket (log-scaled).
+    let aspectBucket: Int       // Aspect-ratio bucket (3% step).
+    let thumbnailMean: UInt8    // Grayscale thumbnail mean (0-255).
+    let thumbnailVariance: UInt16  // Approximate grayscale thumbnail variance (0-65535).
 
-    /// 检查两个 prehash 是否在容差范围内（即"潜在相似"）。
-    /// 容差宽松设计 — 仅过滤明显不可能相似的对，绝不漏掉真匹配。
+    /// Checks whether two prehashes are within tolerance and therefore potentially similar.
+    /// The tolerance is intentionally loose: it only filters impossible matches and avoids dropping true matches.
     func isCompatible(with other: QuickPrehash) -> Bool {
-        // 时长容差 ±2 桶 (≈ 10%)
+        // Duration tolerance: +/-2 buckets (about 10%).
         guard abs(durationBucket - other.durationBucket) <= 2 else { return false }
-        // 大小容差 ±3 桶 (log 域, 即文件大小可在 ~2x 范围内)
+        // Size tolerance: +/-3 buckets in log space, roughly up to a 2x size difference.
         guard abs(sizeBucket - other.sizeBucket) <= 3 else { return false }
-        // 宽高比容差 ±2 桶 (≈ 6%)
+        // Aspect-ratio tolerance: +/-2 buckets (about 6%).
         guard abs(aspectBucket - other.aspectBucket) <= 2 else { return false }
-        // 缩略图均值容差 ±40 (允许编码差异)
+        // Thumbnail mean tolerance: +/-40, allowing encoding differences.
         guard abs(Int(thumbnailMean) - Int(other.thumbnailMean)) <= 40 else { return false }
         return true
     }
@@ -53,7 +53,7 @@ struct QuickPrehash: Hashable, Sendable {
 
 enum QuickPrehasher {
 
-    /// 从 MediaItem 计算 QuickPrehash（同步，纯内存操作）。
+    /// Computes a `QuickPrehash` from a `MediaItem` synchronously using only in-memory data.
     static func prehash(for video: MediaItem) -> QuickPrehash {
         let (mean, variance) = thumbnailStats(video.thumbnailData)
         return QuickPrehash(
@@ -68,21 +68,21 @@ enum QuickPrehasher {
 
     // MARK: - Bucket Calculations
 
-    /// 时长按 5% 几何步长分桶: bucket = round(20 * log(duration))
+    /// Buckets duration by 5% geometric steps: bucket = round(20 * log(duration)).
     /// 0s → 0, 1s → ~0, 60s → ~82, 600s → ~128
     static func durationBucket(_ duration: Double) -> Int {
         guard duration > 0 else { return 0 }
         return Int((20.0 * log(duration + 1.0)).rounded())
     }
 
-    /// 文件大小按 log 缩放分桶: bucket = round(10 * log10(size))
+    /// Buckets file size with log scaling: bucket = round(10 * log10(size)).
     /// 1 KB → 30, 1 MB → 60, 1 GB → 90
     static func sizeBucket(_ size: Int64) -> Int {
         guard size > 0 else { return 0 }
         return Int((10.0 * log10(Double(size))).rounded())
     }
 
-    /// 宽高比按 3% 步长分桶: bucket = round(33 * aspect)
+    /// Buckets aspect ratio by 3% steps: bucket = round(33 * aspect).
     /// 1.0 → 33, 16/9 ≈ 1.778 → 59, 4/3 ≈ 1.333 → 44
     static func aspectBucket(width: Int, height: Int) -> Int {
         guard width > 0, height > 0 else { return 0 }
@@ -92,8 +92,8 @@ enum QuickPrehasher {
 
     // MARK: - Thumbnail Stats
 
-    /// 解码 JPEG 缩略图，计算灰度均值和方差。
-    /// 缩略图缺失或解码失败时返回 (128, 0) 作为中性值。
+    /// Decodes JPEG thumbnail data and computes grayscale mean and variance.
+    /// Returns the neutral value (128, 0) when the thumbnail is missing or cannot be decoded.
     static func thumbnailStats(_ data: Data?) -> (mean: UInt8, variance: UInt16) {
         guard let data, let image = NSImage(data: data),
               let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
@@ -103,7 +103,7 @@ enum QuickPrehasher {
         return computeStats(cgImage: cgImage)
     }
 
-    /// 在 CGImage 上计算灰度均值和方差。下采样到固定 16×16 以保证速度。
+    /// Computes grayscale mean and variance for a CGImage, downsampling to a fixed 16x16 grid for speed.
     static func computeStats(cgImage: CGImage) -> (mean: UInt8, variance: UInt16) {
         let pixels = PerceptualHasher.downsampleToGray(cgImage, size: 16)
         guard !pixels.isEmpty else { return (128, 0) }

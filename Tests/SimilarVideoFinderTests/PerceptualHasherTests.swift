@@ -27,24 +27,24 @@ final class PerceptualHasherTests: XCTestCase {
     // MARK: - 1D-DCT Tests
 
     func testDCT1DConstantInputProducesDCOnly() {
-        // 常数输入 [5, 5, 5, 5]: 只有 DC 系数(k=0)非零
+        // Constant input [5, 5, 5, 5]: only the DC coefficient (k=0) is non-zero.
         let input = [5.0, 5.0, 5.0, 5.0]
         let result = PerceptualHasher.dct1D(input)
-        // DC 系数 = Σ x[n] · cos(0) = 4 × 5 = 20
+        // DC coefficient = sum x[n] * cos(0) = 4 * 5 = 20.
         XCTAssertEqual(result[0], 20.0, accuracy: 0.01)
-        // 高频系数应接近 0
+        // High-frequency coefficients should be close to 0.
         for k in 1..<result.count {
             XCTAssertAbsLessThan(result[k], 0.01)
         }
     }
 
     func testDCT1DSingleFrequency() {
-        // 输入 [1, 0, -1, 0]: DC 应为 0, 高频应有峰值
+        // Input [1, 0, -1, 0]: DC should be 0, with a high-frequency peak.
         let input = [1.0, 0.0, -1.0, 0.0]
         let result = PerceptualHasher.dct1D(input)
-        // DC 系数 (k=0) 应该接近 0 (因为输入和为 0)
+        // DC coefficient (k=0) should be close to 0 because the input sums to 0.
         XCTAssertAbsLessThan(result[0], 0.01)
-        // 至少一个高频系数应有显著值
+        // At least one high-frequency coefficient should have a significant value.
         let maxHigh = (1..<result.count).map { abs(result[$0]) }.max() ?? 0
         XCTAssertGreaterThan(maxHigh, 0.5)
     }
@@ -57,20 +57,20 @@ final class PerceptualHasherTests: XCTestCase {
     // MARK: - 2D-DCT Tests
 
     func testDCT2DConstantImage() {
-        // 4×4 常数图像 (全为 100)
+        // 4x4 constant image, all values 100.
         let N = 4
         let input = [Double](repeating: 100.0, count: N * N)
         let result = PerceptualHasher.dct2D(input, rows: N, cols: N)
-        // DC 系数 (位置 [0,0]) 应为 4×4×100 = 1600
+        // DC coefficient at [0,0] should be 4*4*100 = 1600.
         XCTAssertEqual(result[0], 1600.0, accuracy: 1.0)
-        // 所有其他系数应接近 0
+        // All other coefficients should be close to 0.
         for i in 1..<result.count {
             XCTAssertAbsLessThan(result[i], 1.0)
         }
     }
 
     func testDCT2DWrongSizeReturnsEmpty() {
-        let input = [1.0, 2.0, 3.0]  // 3 个元素 ≠ 2×4
+        let input = [1.0, 2.0, 3.0]  // 3 elements, not 2x4.
         let result = PerceptualHasher.dct2D(input, rows: 2, cols: 4)
         XCTAssertEqual(result.count, 0)
     }
@@ -106,14 +106,14 @@ final class PerceptualHasherTests: XCTestCase {
     func testHammingDistanceUnequalLengths() {
         let a: [UInt8] = [0xFF]
         let b: [UInt8] = [0xFF, 0x00]
-        // 长度不同 → 返回最大长度 × 8 = 16
+        // Different lengths return max length * 8 = 16.
         XCTAssertEqual(PerceptualHasher.hammingDistance(a, b), 16)
     }
 
     // MARK: - Hash Computation Tests
 
     func testComputeHashProducesDeterministicResult() {
-        // 用相同的帧数据两次, 应得到相同哈希
+        // Running the same frame data twice should produce the same hash.
         let frames = makeTestFrames(seed: 42, count: 5)
         let hash1 = PerceptualHasher.computeHash(frames: frames)
         let hash2 = PerceptualHasher.computeHash(frames: frames)
@@ -132,7 +132,7 @@ final class PerceptualHasherTests: XCTestCase {
         let framesA = makeTestFrames(seed: 42, count: 5)
         let hashA = PerceptualHasher.computeHash(frames: framesA)
 
-        // 复制完全相同的帧数据
+        // Copy identical frame data.
         let framesB = framesA.map { PerceptualHasher.GrayFrame(pixels: $0.pixels) }
         let hashB = PerceptualHasher.computeHash(frames: framesB)
         XCTAssertEqual(hashA.hammingDistance(to: hashB), 0)
@@ -147,8 +147,8 @@ final class PerceptualHasherTests: XCTestCase {
     }
 
     func testHashBitCountMatchesExpected() {
-        // 每帧取 4×4=16 个系数, 5帧, 时间轴取前4 → 16×4=64 个值
-        // 二值化 → 64 bits → 8 bytes
+        // Each frame keeps 4x4 = 16 coefficients; five frames keep the first four temporal terms.
+        // Binarization gives 16x4 = 64 bits -> 8 bytes.
         let frames = makeTestFrames(seed: 42, count: 5)
         let hash = PerceptualHasher.computeHash(frames: frames)
         // 64 bits / 8 = 8 bytes
@@ -158,7 +158,7 @@ final class PerceptualHasherTests: XCTestCase {
     // MARK: - Grayscale Downsampling Tests
 
     func testDownsampleToGrayProducesCorrectCount() {
-        // 创建一个简单的 CGImage 并测试缩放
+        // Create a simple CGImage and test downsampling.
         let size = 32
         let result = PerceptualHasher.downsampleToGray(makeSolidCGImage(value: 128, width: 64, height: 64), size: size)
         XCTAssertEqual(result.count, size * size)
@@ -167,20 +167,20 @@ final class PerceptualHasherTests: XCTestCase {
     func testDownsampleToGrayConstantImage() {
         let result = PerceptualHasher.downsampleToGray(makeSolidCGImage(value: 200, width: 100, height: 100), size: 8)
         for pixel in result {
-            XCTAssertEqual(pixel, 200.0, accuracy: 2.0)  // 允许缩放误差
+            XCTAssertEqual(pixel, 200.0, accuracy: 2.0)  // Allow scaling error.
         }
     }
 
     // MARK: - Helpers
 
     private func makeTestFrames(seed: Int, count: Int) -> [PerceptualHasher.GrayFrame] {
-        // 使用简单伪随机生成 dctSize × dctSize 灰度数据
+        // Use simple pseudo-random data to generate dctSize x dctSize grayscale frames.
         let N = PerceptualHasher.dctSize
         var frames: [PerceptualHasher.GrayFrame] = []
         for i in 0..<count {
             var pixels = [Double]()
             for j in 0..<N * N {
-                // 伪随机: 使用 seed 和位置生成不同但确定性值
+                // Pseudo-random: combine seed and position to produce distinct deterministic values.
                 pixels.append(Double((seed * 31 + i * 17 + j * 7) % 256))
             }
             frames.append(PerceptualHasher.GrayFrame(pixels: pixels))

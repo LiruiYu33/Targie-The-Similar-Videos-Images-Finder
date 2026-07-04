@@ -24,13 +24,13 @@ import GRDB
 
 // MARK: - CacheRecord
 
-/// 单个视频的缓存哈希记录。filePath + fileSize + modifiedAt 三者组合确定缓存有效性,
-/// 任一不匹配则视为缓存失效, 重新计算并覆盖。
+/// Cached hash record for a single video. `filePath`, `fileSize`, and `modifiedAt`
+/// together determine cache validity; any mismatch invalidates the cache entry.
 struct CacheRecord: Codable, Sendable, FetchableRecord, PersistableRecord {
-    var filePath: String          // 视频文件绝对路径 (PRIMARY KEY)
+    var filePath: String          // Absolute video file path (PRIMARY KEY).
     var fileSize: Int64
     var modifiedAt: Date?
-    var perceptualHash: Data      // VideoPerceptualHash.hashBits 序列化为 Data
+    var perceptualHash: Data      // `VideoPerceptualHash.hashBits` serialized as Data.
     var prehashDurationBucket: Int
     var prehashSizeBucket: Int
     var prehashAspectBucket: Int
@@ -316,7 +316,7 @@ private enum ScanRelationIndexCodec {
 
 // MARK: - HashCache Protocol
 
-/// 缓存接口 — 通过协议化便于测试时注入 InMemory 替身。
+/// Cache interface; protocolization makes it easy to inject the in-memory test double.
 protocol HashCaching: Sendable {
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> CacheRecord?
     func upsert(_ record: CacheRecord) async
@@ -438,8 +438,8 @@ extension HashCaching {
 
 // MARK: - HashCache
 
-/// SQLite 持久化哈希缓存, 使用 GRDB.swift 实现。
-/// 数据库位置: ~/Library/Caches/Targie/hash_cache.sqlite
+/// SQLite-backed persistent hash cache implemented with GRDB.swift.
+/// Database location: ~/Library/Caches/Targie/hash_cache.sqlite
 actor HashCache: HashCaching {
     private static let stalePruneTables = ["hash_cache", "media_metadata", "image_features", "frame_features"]
     private static let pruneInsertBatchSize = 500
@@ -452,7 +452,7 @@ actor HashCache: HashCaching {
         let url = try databaseURL ?? Self.defaultDatabaseURL()
         self.databaseURL = url
 
-        // 确保目录存在
+        // Ensure the directory exists.
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
@@ -1358,12 +1358,12 @@ private extension Array {
 // MARK: - Conversion Helpers
 
 extension CacheRecord {
-    /// 将 CacheRecord 还原为 VideoPerceptualHash (与 ID 关联)
+    /// Restores a `CacheRecord` as a `VideoPerceptualHash` associated with an ID.
     func toPerceptualHash(videoID: UUID) -> VideoPerceptualHash {
         VideoPerceptualHash(videoID: videoID, hashBits: Array(perceptualHash))
     }
 
-    /// 还原为 QuickPrehash (与 ID 关联)
+    /// Restores a `QuickPrehash` associated with an ID.
     func toQuickPrehash(videoID: UUID) -> QuickPrehash {
         QuickPrehash(
             videoID: videoID,
@@ -1375,7 +1375,7 @@ extension CacheRecord {
         )
     }
 
-    /// 从一组数据构造 CacheRecord
+    /// Constructs a `CacheRecord` from computed cache data.
     static func make(
         video: MediaItem,
         perceptualHash: VideoPerceptualHash,
@@ -1397,7 +1397,7 @@ extension CacheRecord {
 
 // MARK: - In-Memory Cache (for tests)
 
-/// 测试用纯内存缓存替身, 与 SQLite 缓存接口一致。
+/// In-memory cache test double matching the SQLite cache interface.
 actor InMemoryHashCache: HashCaching {
     private var storage: [String: CacheRecord] = [:]
     private var metadata: [String: (key: MediaMetadataCacheKey, entry: MediaMetadataCacheEntry)] = [:]

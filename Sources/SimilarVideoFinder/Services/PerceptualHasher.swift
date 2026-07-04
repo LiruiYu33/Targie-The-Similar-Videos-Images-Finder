@@ -26,14 +26,14 @@ import Foundation
 
 struct VideoPerceptualHash: Hashable, Sendable {
     let videoID: UUID
-    let hashBits: [UInt8]  // 紧凑字节向量 (DCT-3D 二值化指纹)
+    let hashBits: [UInt8]  // Compact byte vector for the binarized DCT-3D fingerprint.
 
-    /// 计算与另一个哈希的 Hamming 距离 (不同 bit 数)
+    /// Computes the Hamming distance to another hash, measured as differing bit count.
     func hammingDistance(to other: VideoPerceptualHash) -> Int {
         PerceptualHasher.hammingDistance(hashBits, other.hashBits)
     }
 
-    /// Hamming 距离转为 0-1 相似度分数 (0 = 完全不同, 1 = 完全相同)
+    /// Converts Hamming distance to a 0...1 similarity score (0 = entirely different, 1 = identical).
     func similarity(to other: VideoPerceptualHash) -> Double {
         let distance = hammingDistance(to: other)
         let maxBits = hashBits.count * 8
@@ -45,7 +45,7 @@ struct VideoPerceptualHash: Hashable, Sendable {
 // MARK: - Perceptual Hasher
 
 enum PerceptualHasher {
-    // 从视频提取帧 → 缩放灰度 → DCT-3D → 二值化 → 字节向量
+    // Extract frames -> downsample to grayscale -> DCT-3D -> binarize -> byte vector.
     static func hash(for url: URL, id: UUID = UUID()) async throws -> VideoPerceptualHash? {
         let frames = try await extractGrayFrames(from: url)
         guard frames.count >= 2 else { return nil }
@@ -59,7 +59,7 @@ enum PerceptualHasher {
         var count = 0
         for i in a.indices {
             let xor = a[i] ^ b[i]
-            // popcount: 统计 xor 中 1-bit 的个数
+            // popcount: count the 1 bits in the xor value.
             count += xor.nonzeroBitCount
         }
         return count
@@ -91,23 +91,23 @@ enum PerceptualHasher {
 
     // MARK: - Grayscale Downsampling
 
-    /// DCT 输入尺寸: 8×8 灰度像素
+    /// DCT input size: 8x8 grayscale pixels.
     static let dctSize = 8
 
-    /// 将 CGImage 缩放为 dctSize × dctSize 灰度像素数组
+    /// Downsamples a CGImage into a dctSize x dctSize grayscale pixel array.
     static func downsampleToGray(_ image: CGImage, size: Int) -> [Double] {
         let width = image.width
         let height = image.height
         guard width > 0, height > 0 else { return [] }
 
-        // 简单区域均值缩放: 每个输出像素 = 对应输入区域的平均亮度
+        // Simple area-mean scaling: each output pixel is the average brightness of the corresponding input region.
         var result = [Double]()
         result.reserveCapacity(size * size)
 
         let blockW = Double(width) / Double(size)
         let blockH = Double(height) / Double(size)
 
-        // 先提取完整灰度像素
+        // Extract full-resolution grayscale pixels first.
         let fullGray = fullGrayPixels(image)
         guard fullGray.count == width * height else { return [] }
 
@@ -132,12 +132,12 @@ enum PerceptualHasher {
         return result
     }
 
-    /// 提取 CGImage 全尺寸灰度像素 (0-255 → 0.0-255.0)
+    /// Extracts full-resolution grayscale pixels from a CGImage (0-255 -> 0.0-255.0).
     private static func fullGrayPixels(_ image: CGImage) -> [Double] {
         let width = image.width
         let height = image.height
 
-        // 使用 RGB 渲染后取灰度分量 (更兼容, 不依赖灰度色彩空间)
+        // Render through RGB and derive grayscale values for better compatibility without relying on a grayscale color space.
         let bytesPerPixel = 4
         let bytesPerRow = width * bytesPerPixel
 
@@ -161,7 +161,7 @@ enum PerceptualHasher {
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         // BGRA32Little: B=idx+0, G=idx+1, R=idx+2, A=idx+3
-        // 灰度 = 0.299*R + 0.587*G + 0.114*B
+        // Grayscale = 0.299*R + 0.587*G + 0.114*B.
         var gray = [Double]()
         gray.reserveCapacity(width * height)
         for i in 0..<width * height {
@@ -175,17 +175,17 @@ enum PerceptualHasher {
 
     // MARK: - DCT-3D Hash Computation
 
-    /// 灰度帧数据
+    /// Grayscale frame data.
     struct GrayFrame {
         let pixels: [Double]  // dctSize × dctSize
     }
 
-    /// 从多帧灰度数据计算 3D-DCT 感知哈希
+    /// Computes a 3D-DCT perceptual hash from multiple grayscale frames.
     static func computeHash(frames: [GrayFrame], id: UUID = UUID()) -> VideoPerceptualHash {
-        // Step 1: 对每帧做 2D-DCT, 取左上角低频系数
+        // Step 1: Run 2D-DCT on each frame and keep the low-frequency coefficients in the top-left corner.
         let frameCoeffs: [[Double]] = frames.map { frame in
             let dct2d = dct2D(frame.pixels, rows: dctSize, cols: dctSize)
-            // 取左上角 4×4 = 16 个低频系数
+            // Keep the top-left 4x4 = 16 low-frequency coefficients.
             var coeffs = [Double]()
             for row in 0..<4 {
                 for col in 0..<4 {
@@ -195,18 +195,18 @@ enum PerceptualHasher {
             return coeffs
         }
 
-        // Step 2: 时间轴 DCT
-        // 每帧有 16 个系数，5 帧排列为 5×16 矩阵
-        // 对每列 (16个时间序列) 做 1D-DCT
+        // Step 2: Temporal DCT.
+        // Each frame has 16 coefficients, forming a 5x16 matrix for five frames.
+        // Run 1D-DCT on each column, i.e. on 16 temporal series.
         let numFrames = frameCoeffs.count
         let numCoeffs = frameCoeffs[0].count
 
-        // 将帧系数转置为 (numCoeffs × numFrames) 的列向量
+        // Store temporal coefficients as (numCoeffs x numFrames) column vectors.
         var temporalCoeffs = [Double]()
         temporalCoeffs.reserveCapacity(numCoeffs * numFrames)
 
-        // 对每列做 1D-DCT, 取前 4 个时间低频系数
-        // 最终得到 16 × 4 = 64 个值
+        // Run 1D-DCT on each column and keep the first four temporal low-frequency coefficients.
+        // This produces 16 x 4 = 64 values.
         var finalCoeffs = [Double]()
         finalCoeffs.reserveCapacity(numCoeffs * 4)
 
@@ -216,17 +216,17 @@ enum PerceptualHasher {
                 column.append(frameCoeffs[row][col])
             }
             let dct1d = dct1D(column)
-            // 取前 4 个时间低频系数
+            // Keep the first four temporal low-frequency coefficients.
             for i in 0..<min(4, dct1d.count) {
                 finalCoeffs.append(dct1d[i])
             }
         }
 
-        // Step 3: 二值化 — 取中值阈值
+        // Step 3: Binarize using the median as threshold.
         let sorted = finalCoeffs.sorted()
         let median = sorted[sorted.count / 2]
 
-        // Step 4: 打包为字节 (每 8 个 bit → 1 byte)
+        // Step 4: Pack bits into bytes (8 bits -> 1 byte).
         let bits = finalCoeffs.map { $0 >= median ? 1 : 0 }
         var hashBytes = [UInt8]()
         for i in stride(from: 0, to: bits.count, by: 8) {
@@ -242,7 +242,7 @@ enum PerceptualHasher {
 
     // MARK: - 1D-DCT Type-II
 
-    /// 标准 DCT Type-II: X[k] = Σ x[n] · cos(π(2n+1)k / 2N)
+    /// Standard DCT Type-II: X[k] = sum x[n] * cos(pi*(2n+1)*k / 2N).
     static func dct1D(_ input: [Double]) -> [Double] {
         let N = input.count
         guard N > 0 else { return [] }
@@ -260,11 +260,11 @@ enum PerceptualHasher {
 
     // MARK: - 2D-DCT
 
-    /// 2D-DCT = 先对每行做 1D-DCT, 再对每列做 1D-DCT
+    /// 2D-DCT: run 1D-DCT on each row, then on each column.
     static func dct2D(_ input: [Double], rows: Int, cols: Int) -> [Double] {
         guard input.count == rows * cols else { return [] }
 
-        // Step 1: 对每行做 1D-DCT
+        // Step 1: Run 1D-DCT on each row.
         var intermediate = [Double]()
         intermediate.reserveCapacity(rows * cols)
         for row in 0..<rows {
@@ -273,7 +273,7 @@ enum PerceptualHasher {
             intermediate.append(contentsOf: dctRow)
         }
 
-        // Step 2: 对每列做 1D-DCT
+        // Step 2: Run 1D-DCT on each column.
         var output = [Double]()
         output.reserveCapacity(rows * cols)
         for col in 0..<cols {
@@ -282,7 +282,7 @@ enum PerceptualHasher {
             output.append(contentsOf: dctCol)
         }
 
-        // 输出是列优先 (column-major), 转为行优先
+        // The output is column-major; convert it back to row-major order.
         var rowMajor = [Double]()
         rowMajor.reserveCapacity(rows * cols)
         for row in 0..<rows {
