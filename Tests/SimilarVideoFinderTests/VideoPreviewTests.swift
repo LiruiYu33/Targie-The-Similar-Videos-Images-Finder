@@ -20,42 +20,42 @@
 // and credit the original author (Lirui Yu).
 
 import AVFoundation
-import AppKit
+import AVKit
 import XCTest
 @testable import SimilarVideoFinder
 
 @MainActor
 final class VideoPreviewTests: XCTestCase {
-    func testNativePlayerContainerUsesOnlyPlayerLayer() {
-        let playerView = NativeVideoPlayerContainerView()
+    func testNativePlayerViewConfiguredWithInlineControlsAndFullScreen() {
+        let playerView = AVPlayerView()
 
         NativeVideoPlayerConfigurator.configure(playerView)
 
-        XCTAssertTrue(playerView.playerLayer.superlayer === playerView.layer)
-        XCTAssertTrue(playerView.subviews.isEmpty)
-        XCTAssertFalse(playerView.acceptsFirstResponder)
+        XCTAssertEqual(playerView.controlsStyle, .inline)
+        XCTAssertTrue(playerView.allowsPictureInPicturePlayback)
+        XCTAssertTrue(playerView.showsFullScreenToggleButton)
     }
 
     func testCoordinatorKeepsPlayerAttachedWhenReleasingCurrentPlayer() {
-        let playerView = NativeVideoPlayerContainerView()
+        let playerView = AVPlayerView()
         let player = AVPlayer()
-        playerView.playerLayer.player = player
+        playerView.player = player
         let coordinator = NativeVideoPlayerView.Coordinator(volume: .constant(0.5))
 
         coordinator.releaseCurrentPlayer(from: playerView)
 
-        XCTAssertTrue(playerView.playerLayer.player === player)
+        XCTAssertTrue(playerView.player === player)
         XCTAssertNil(player.currentItem)
     }
 
     func testCoordinatorKeepsPlayerAttachedBeforeTeardownRuns() {
-        let playerView = NativeVideoPlayerContainerView()
+        let playerView = AVPlayerView()
         let player = AVPlayer()
-        playerView.playerLayer.player = player
+        playerView.player = player
         var playerInViewDuringTeardown: AVPlayer?
         var tornDownPlayer: AVPlayer?
         let coordinator = NativeVideoPlayerView.Coordinator(volume: .constant(0.5)) { player in
-            playerInViewDuringTeardown = playerView.playerLayer.player
+            playerInViewDuringTeardown = playerView.player
             tornDownPlayer = player
         }
 
@@ -64,7 +64,7 @@ final class VideoPreviewTests: XCTestCase {
 
         XCTAssertTrue(playerInViewDuringTeardown === player)
         XCTAssertTrue(tornDownPlayer === player)
-        XCTAssertTrue(playerView.playerLayer.player === player)
+        XCTAssertTrue(playerView.player === player)
         XCTAssertNil(coordinator.currentURL)
     }
 
@@ -79,15 +79,15 @@ final class VideoPreviewTests: XCTestCase {
             try? FileManager.default.removeItem(at: firstURL)
             try? FileManager.default.removeItem(at: secondURL)
         }
-        let playerView = NativeVideoPlayerContainerView()
+        let playerView = AVPlayerView()
         let player = AVPlayer()
-        playerView.playerLayer.player = player
+        playerView.player = player
         let coordinator = NativeVideoPlayerView.Coordinator(volume: .constant(0.5))
 
         coordinator.updatePlayer(in: playerView, url: firstURL, volume: 0.5, isPlaying: false)
         coordinator.updatePlayer(in: playerView, url: secondURL, volume: 0.5, isPlaying: false)
 
-        XCTAssertTrue(playerView.playerLayer.player === player)
+        XCTAssertTrue(playerView.player === player)
         XCTAssertNil(player.currentItem)
         XCTAssertNil(coordinator.currentURL)
     }
@@ -103,15 +103,15 @@ final class VideoPreviewTests: XCTestCase {
             try? FileManager.default.removeItem(at: firstURL)
             try? FileManager.default.removeItem(at: secondURL)
         }
-        let playerView = NativeVideoPlayerContainerView()
+        let playerView = AVPlayerView()
         let player = AVPlayer()
-        playerView.playerLayer.player = player
+        playerView.player = player
         let coordinator = NativeVideoPlayerView.Coordinator(volume: .constant(0.5))
 
         coordinator.updatePlayer(in: playerView, url: firstURL, volume: 0.5, isPlaying: true)
         coordinator.updatePlayer(in: playerView, url: secondURL, volume: 0.5, isPlaying: true)
 
-        XCTAssertTrue(playerView.playerLayer.player === player)
+        XCTAssertTrue(playerView.player === player)
         XCTAssertEqual(coordinator.currentURL, secondURL)
     }
 
