@@ -166,6 +166,9 @@ enum L10n {
     static func fileMissing(_ l: AppLanguage) -> String { text(l, "The file no longer exists", "文件已不存在", "檔案已不存在", "El archivo ya no existe", "Le fichier n’existe plus", "ファイルはもう存在しません", "파일이 더 이상 존재하지 않습니다") }
     static func deletionFailed(_ message: String, _ l: AppLanguage) -> String { text(l, "Deletion failed: \(message)", "删除失败：\(message)", "刪除失敗：\(message)", "Error al eliminar: \(message)", "Échec de la suppression : \(message)", "削除に失敗しました：\(message)", "삭제 실패: \(message)") }
 
+    // Player
+    static func pictureInPicture(_ l: AppLanguage) -> String { text(l, "Picture in Picture", "画中画", "子母畫面", "Imagen en imagen", "Image dans l’image", "ピクチャ・イン・ピクチャ", "화면 속 화면") }
+
     // Browse feature
     static func browse(_ l: AppLanguage) -> String { text(l, "Browse", "浏览", "瀏覽", "Explorar", "Parcourir", "閲覧", "찾아보기") }
     static func filter(_ l: AppLanguage) -> String { text(l, "Filter", "筛选", "篩選", "Filtrar", "Filtrer", "フィルタ", "필터") }
