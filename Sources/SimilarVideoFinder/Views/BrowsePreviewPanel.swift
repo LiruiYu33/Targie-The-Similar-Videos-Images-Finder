@@ -19,7 +19,9 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
-import AVKit
+import AVFoundation
+import AppKit
+import QuartzCore
 import SwiftUI
 
 struct BrowsePreviewPanel: View {
@@ -238,16 +240,16 @@ struct BrowseStackedPreview: View {
     }
 }
 
-// MARK: - Browse Media Preview (with video playback via native AVPlayerView)
+// MARK: - Browse Media Preview (with video playback via native AVPlayerLayer)
 
 struct BrowseMediaPreview: View {
     let media: MediaItem
-    @AppStorage("browsePreviewPlayerVolume") private var playerVolume = 0.5
 
     var body: some View {
         Group {
             if media.kind == .video {
-                NativeVideoPlayerView(url: media.url, fallbackData: media.thumbnailData, volume: $playerVolume)
+                VideoPlaybackPreview(media: media)
+                    .id(media.id)
                     .aspectRatio(16 / 9, contentMode: .fit)
             } else if let image = MediaThumbnailImageCache.shared.image(for: media) {
                 Image(nsImage: image)
@@ -272,49 +274,79 @@ struct BrowseMediaPreview: View {
     }
 }
 
-// MARK: - Native AVPlayerView wrapped for SwiftUI
+struct VideoPlaybackPreview: View {
+    let media: MediaItem
+    @AppStorage(NativeVideoPlayerVolumeSync.defaultsKey) private var playerVolume = 0.5
+    @State private var isPlaying = false
 
-/// Wraps AppKit's `AVPlayerView` in an `NSViewRepresentable`.
-/// This avoids the SwiftUI `VideoPlayer` metadata-initialization crash
-/// that occurs when `VideoPlayer` is used inside a `@MainActor` view
-/// hierarchy (e.g. observing a `@MainActor` ViewModel).
+    var body: some View {
+        ZStack(alignment: isPlaying ? .bottomTrailing : .center) {
+            videoPlaceholder
+            NativeVideoPlayerView(url: media.url, volume: $playerVolume, isPlaying: $isPlaying)
+                .opacity(isPlaying ? 1 : 0)
+
+            Button {
+                isPlaying.toggle()
+            } label: {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: isPlaying ? 16 : 28, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: isPlaying ? 34 : 58, height: isPlaying ? 34 : 58)
+                    .background(.regularMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(isPlaying ? 12 : 0)
+        }
+        .background(Color.black.opacity(0.88))
+        .onChange(of: media.id) { _, _ in
+            isPlaying = false
+        }
+    }
+
+    @ViewBuilder
+    private var videoPlaceholder: some View {
+        if let image = MediaThumbnailImageCache.shared.image(for: media) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+        } else {
+            ZStack {
+                Color.secondary.opacity(0.12)
+                Image(systemName: "film")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: - Native AVPlayerLayer wrapped for SwiftUI
+
+/// Wraps an `AVPlayerLayer` in an `NSViewRepresentable`.
+/// This avoids SwiftUI `VideoPlayer` crashes and avoids `AVPlayerView`'s
+/// native controls, whose key-view updates can recurse through SwiftUI focus.
 struct NativeVideoPlayerView: NSViewRepresentable {
     let url: URL
-    let fallbackData: Data?
     @Binding var volume: Double
+    @Binding var isPlaying: Bool
 
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
+    func makeNSView(context: Context) -> NativeVideoPlayerContainerView {
+        let view = NativeVideoPlayerContainerView()
         NativeVideoPlayerConfigurator.configure(view)
-        view.player = nil
+        let player = AVPlayer()
+        player.volume = Float(volume)
+        view.playerLayer.player = player
+        context.coordinator.observeVolume(on: player)
         return view
     }
 
-    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+    func updateNSView(_ nsView: NativeVideoPlayerContainerView, context: Context) {
         context.coordinator.volume = $volume
         context.coordinator.playerView = nsView
-
-        // Only swap the player when the URL actually changes
-        let currentURL = context.coordinator.currentURL
-        guard currentURL != url else {
-            nsView.player?.volume = Float(volume)
-            return
-        }
-        context.coordinator.releaseCurrentPlayer(from: nsView)
-        context.coordinator.currentURL = url
-
-        if FileManager.default.fileExists(atPath: url.path) {
-            let item = AVPlayerItem(url: url)
-            let player = AVPlayer(playerItem: item)
-            player.volume = Float(volume)
-            nsView.player = player
-            context.coordinator.observeVolume(on: player)
-        } else {
-            nsView.player = nil
-        }
+        context.coordinator.updatePlayer(in: nsView, url: url, volume: volume, isPlaying: isPlaying)
     }
 
-    static func dismantleNSView(_ nsView: AVPlayerView, coordinator: Coordinator) {
+    static func dismantleNSView(_ nsView: NativeVideoPlayerContainerView, coordinator: Coordinator) {
         coordinator.releaseCurrentPlayer(from: nsView)
     }
 
@@ -325,42 +357,144 @@ struct NativeVideoPlayerView: NSViewRepresentable {
     class Coordinator {
         var currentURL: URL?
         var volume: Binding<Double>
-        weak var playerView: AVPlayerView?
+        weak var playerView: NativeVideoPlayerContainerView?
         private var volumeObservation: NSKeyValueObservation?
+        private weak var observedPlayer: AVPlayer?
+        private let playerTeardown: @MainActor (AVPlayer) -> Void
 
-        init(volume: Binding<Double>) {
+        init(
+            volume: Binding<Double>,
+            playerTeardown: @escaping @MainActor (AVPlayer) -> Void = NativeVideoPlayerTeardown.release
+        ) {
             self.volume = volume
+            self.playerTeardown = playerTeardown
+        }
+
+        @MainActor
+        func updatePlayer(in playerView: NativeVideoPlayerContainerView, url: URL, volume: Double, isPlaying: Bool) {
+            let player = player(for: playerView, volume: volume)
+            if NativeVideoPlayerVolumeSync.shouldApply(boundVolume: volume, toPlayerVolume: player.volume) {
+                player.volume = Float(volume)
+            }
+
+            guard isPlaying else {
+                player.pause()
+                if currentURL != nil || player.currentItem != nil {
+                    player.replaceCurrentItem(with: nil)
+                }
+                currentURL = nil
+                return
+            }
+
+            guard currentURL != url else {
+                player.play()
+                return
+            }
+
+            player.pause()
+            if FileManager.default.fileExists(atPath: url.path) {
+                player.replaceCurrentItem(with: AVPlayerItem(url: url))
+                currentURL = url
+                if isPlaying {
+                    player.play()
+                }
+            } else {
+                player.replaceCurrentItem(with: nil)
+                currentURL = nil
+            }
         }
 
         func observeVolume(on player: AVPlayer) {
+            guard observedPlayer !== player else { return }
+            removeVolumeObservation()
+            observedPlayer = player
             volumeObservation = player.observe(\.volume, options: [.new]) { player, _ in
-                UserDefaults.standard.set(Double(player.volume), forKey: "browsePreviewPlayerVolume")
+                guard NativeVideoPlayerVolumeSync.shouldPersist(
+                    playerVolume: player.volume,
+                    storedVolume: UserDefaults.standard.double(forKey: NativeVideoPlayerVolumeSync.defaultsKey)
+                ) else {
+                    return
+                }
+                UserDefaults.standard.set(Double(player.volume), forKey: NativeVideoPlayerVolumeSync.defaultsKey)
             }
         }
 
         @MainActor
-        func releaseCurrentPlayer(from playerView: AVPlayerView) {
+        func releaseCurrentPlayer(from playerView: NativeVideoPlayerContainerView) {
             removeVolumeObservation()
-            playerView.player?.pause()
-            playerView.player?.currentItem?.cancelPendingSeeks()
-            playerView.player?.currentItem?.asset.cancelLoading()
-            playerView.player?.replaceCurrentItem(with: nil)
-            playerView.player = nil
             currentURL = nil
+            if let player = playerView.playerLayer.player {
+                playerTeardown(player)
+            }
+        }
+
+        @MainActor
+        private func player(for playerView: NativeVideoPlayerContainerView, volume: Double) -> AVPlayer {
+            if let player = playerView.playerLayer.player {
+                observeVolume(on: player)
+                return player
+            }
+
+            let player = AVPlayer()
+            player.volume = Float(volume)
+            playerView.playerLayer.player = player
+            observeVolume(on: player)
+            return player
         }
 
         private func removeVolumeObservation() {
             volumeObservation?.invalidate()
             volumeObservation = nil
+            observedPlayer = nil
         }
+    }
+}
+
+final class NativeVideoPlayerContainerView: NSView {
+    let playerLayer = AVPlayerLayer()
+
+    override var acceptsFirstResponder: Bool { false }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = bounds
+        CATransaction.commit()
+    }
+}
+
+enum NativeVideoPlayerVolumeSync {
+    static let defaultsKey = "browsePreviewPlayerVolume"
+    private static let tolerance = 0.001
+
+    static func shouldApply(boundVolume: Double, toPlayerVolume playerVolume: Float) -> Bool {
+        abs(Double(playerVolume) - boundVolume) > tolerance
+    }
+
+    static func shouldPersist(playerVolume: Float, storedVolume: Double) -> Bool {
+        abs(Double(playerVolume) - storedVolume) > tolerance
+    }
+}
+
+enum NativeVideoPlayerTeardown {
+    @MainActor
+    static func release(_ player: AVPlayer) {
+        player.pause()
     }
 }
 
 @MainActor
 enum NativeVideoPlayerConfigurator {
-    static func configure(_ view: AVPlayerView) {
-        view.controlsStyle = .inline
-        view.allowsPictureInPicturePlayback = true
-        view.showsFullScreenToggleButton = true
+    static func configure(_ view: NativeVideoPlayerContainerView) {
+        view.wantsLayer = true
+        if view.layer == nil {
+            view.layer = CALayer()
+        }
+        view.layer?.backgroundColor = NSColor.black.cgColor
+        view.playerLayer.videoGravity = .resizeAspect
+        if view.playerLayer.superlayer !== view.layer {
+            view.layer?.addSublayer(view.playerLayer)
+        }
     }
 }

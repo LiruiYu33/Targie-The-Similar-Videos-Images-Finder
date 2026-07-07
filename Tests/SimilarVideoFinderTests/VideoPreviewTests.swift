@@ -19,31 +19,121 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
-import AVKit
+import AVFoundation
+import AppKit
 import XCTest
 @testable import SimilarVideoFinder
 
 @MainActor
 final class VideoPreviewTests: XCTestCase {
-    func testNativePlayerConfigurationShowsFullScreenControl() {
-        let playerView = AVPlayerView()
+    func testNativePlayerContainerUsesOnlyPlayerLayer() {
+        let playerView = NativeVideoPlayerContainerView()
 
         NativeVideoPlayerConfigurator.configure(playerView)
 
-        XCTAssertEqual(playerView.controlsStyle, .inline)
-        XCTAssertTrue(playerView.allowsPictureInPicturePlayback)
-        XCTAssertTrue(playerView.showsFullScreenToggleButton)
+        XCTAssertTrue(playerView.playerLayer.superlayer === playerView.layer)
+        XCTAssertTrue(playerView.subviews.isEmpty)
+        XCTAssertFalse(playerView.acceptsFirstResponder)
     }
 
-    func testCoordinatorReleasesCurrentPlayerFromView() {
-        let playerView = AVPlayerView()
+    func testCoordinatorKeepsPlayerAttachedWhenReleasingCurrentPlayer() {
+        let playerView = NativeVideoPlayerContainerView()
         let player = AVPlayer()
-        playerView.player = player
+        playerView.playerLayer.player = player
         let coordinator = NativeVideoPlayerView.Coordinator(volume: .constant(0.5))
 
         coordinator.releaseCurrentPlayer(from: playerView)
 
-        XCTAssertNil(playerView.player)
+        XCTAssertTrue(playerView.playerLayer.player === player)
         XCTAssertNil(player.currentItem)
+    }
+
+    func testCoordinatorKeepsPlayerAttachedBeforeTeardownRuns() {
+        let playerView = NativeVideoPlayerContainerView()
+        let player = AVPlayer()
+        playerView.playerLayer.player = player
+        var playerInViewDuringTeardown: AVPlayer?
+        var tornDownPlayer: AVPlayer?
+        let coordinator = NativeVideoPlayerView.Coordinator(volume: .constant(0.5)) { player in
+            playerInViewDuringTeardown = playerView.playerLayer.player
+            tornDownPlayer = player
+        }
+
+        coordinator.currentURL = URL(fileURLWithPath: "/tmp/current.mov")
+        coordinator.releaseCurrentPlayer(from: playerView)
+
+        XCTAssertTrue(playerInViewDuringTeardown === player)
+        XCTAssertTrue(tornDownPlayer === player)
+        XCTAssertTrue(playerView.playerLayer.player === player)
+        XCTAssertNil(coordinator.currentURL)
+    }
+
+    func testCoordinatorDoesNotLoadPlayerItemUntilPlaybackStarts() throws {
+        let firstURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreviewSwitchA-\(UUID().uuidString).mov")
+        let secondURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreviewSwitchB-\(UUID().uuidString).mov")
+        try Data([0]).write(to: firstURL)
+        try Data([1]).write(to: secondURL)
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+        let playerView = NativeVideoPlayerContainerView()
+        let player = AVPlayer()
+        playerView.playerLayer.player = player
+        let coordinator = NativeVideoPlayerView.Coordinator(volume: .constant(0.5))
+
+        coordinator.updatePlayer(in: playerView, url: firstURL, volume: 0.5, isPlaying: false)
+        coordinator.updatePlayer(in: playerView, url: secondURL, volume: 0.5, isPlaying: false)
+
+        XCTAssertTrue(playerView.playerLayer.player === player)
+        XCTAssertNil(player.currentItem)
+        XCTAssertNil(coordinator.currentURL)
+    }
+
+    func testCoordinatorReusesAttachedPlayerWhenSwitchingPlayingURLs() throws {
+        let firstURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreviewPlayingSwitchA-\(UUID().uuidString).mov")
+        let secondURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreviewPlayingSwitchB-\(UUID().uuidString).mov")
+        try Data([0]).write(to: firstURL)
+        try Data([1]).write(to: secondURL)
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+        let playerView = NativeVideoPlayerContainerView()
+        let player = AVPlayer()
+        playerView.playerLayer.player = player
+        let coordinator = NativeVideoPlayerView.Coordinator(volume: .constant(0.5))
+
+        coordinator.updatePlayer(in: playerView, url: firstURL, volume: 0.5, isPlaying: true)
+        coordinator.updatePlayer(in: playerView, url: secondURL, volume: 0.5, isPlaying: true)
+
+        XCTAssertTrue(playerView.playerLayer.player === player)
+        XCTAssertEqual(coordinator.currentURL, secondURL)
+    }
+
+    func testVolumeSyncIgnoresEffectivelyUnchangedValues() {
+        XCTAssertFalse(NativeVideoPlayerVolumeSync.shouldApply(boundVolume: 0.5, toPlayerVolume: 0.5))
+        XCTAssertFalse(NativeVideoPlayerVolumeSync.shouldPersist(playerVolume: 0.5, storedVolume: 0.5004))
+        XCTAssertTrue(NativeVideoPlayerVolumeSync.shouldApply(boundVolume: 0.7, toPlayerVolume: 0.5))
+        XCTAssertTrue(NativeVideoPlayerVolumeSync.shouldPersist(playerVolume: 0.7, storedVolume: 0.5))
+    }
+
+    func testDefaultTeardownDoesNotForceReplaceCurrentItem() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreviewTeardown-\(UUID().uuidString).mov")
+        try Data([0]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
+
+        NativeVideoPlayerTeardown.release(player)
+        try await Task.sleep(nanoseconds: 120_000_000)
+
+        XCTAssertTrue(player.currentItem === item)
+        XCTAssertEqual(player.rate, 0)
     }
 }
