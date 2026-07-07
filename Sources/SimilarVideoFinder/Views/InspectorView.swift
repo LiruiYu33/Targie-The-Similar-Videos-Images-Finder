@@ -19,7 +19,6 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
-import AVKit
 import AppKit
 import SwiftUI
 
@@ -124,12 +123,12 @@ struct InspectorView: View {
 
 struct MediaPreview: View {
     let media: MediaItem
-    @AppStorage("browsePreviewPlayerVolume") private var playerVolume = 0.5
 
     var body: some View {
         Group {
             if media.kind == .video {
-                NativeVideoPlayerView(url: media.url, fallbackData: media.thumbnailData, volume: $playerVolume)
+                VideoPlaybackPreview(media: media)
+                    .id(media.id)
             } else if let image = MediaThumbnailImageCache.shared.image(for: media) {
                 Image(nsImage: image)
                     .resizable()
