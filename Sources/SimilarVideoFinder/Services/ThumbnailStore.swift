@@ -3,6 +3,7 @@
 
 import CryptoKit
 import AppKit
+import AVFoundation
 import Foundation
 import ImageIO
 
@@ -170,6 +171,17 @@ struct ThumbnailStore: Sendable {
         return data
     }
 
+    func videoThumbnailData(for sourceURL: URL, duration: Double?, modifiedAt: Date?) async -> Data? {
+        if let existingURL = existingThumbnailURL(for: sourceURL, modifiedAt: modifiedAt),
+           let data = Self.data(at: existingURL) {
+            return data
+        }
+        guard let data = await Self.makeVideoThumbnailData(sourceURL: sourceURL, duration: duration) else {
+            return nil
+        }
+        return (try? persist(data, sourceURL: sourceURL, modifiedAt: modifiedAt)).flatMap(Self.data(at:)) ?? data
+    }
+
     private static func makeImageThumbnailData(for sourceURL: URL) -> Data? {
         guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, [
             kCGImageSourceShouldCache: false
@@ -187,6 +199,49 @@ struct ThumbnailStore: Sendable {
             using: .jpeg,
             properties: [.compressionFactor: 0.78]
         )
+    }
+
+    static func makeVideoThumbnailData(sourceURL: URL, duration: Double?) async -> Data? {
+        await Task.detached(priority: .utility) {
+            let asset = AVURLAsset(url: sourceURL)
+            let resolvedDuration: Double
+            if let duration, duration.isFinite, duration > 0 {
+                resolvedDuration = duration
+            } else {
+                resolvedDuration = (try? await asset.load(.duration).seconds) ?? 0
+            }
+
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 720, height: 405)
+            generator.requestedTimeToleranceBefore = .positiveInfinity
+            generator.requestedTimeToleranceAfter = .positiveInfinity
+
+            for time in videoThumbnailCandidateTimes(duration: resolvedDuration) {
+                guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else {
+                    continue
+                }
+                let representation = NSBitmapImageRep(cgImage: cgImage)
+                if let data = representation.representation(
+                    using: .jpeg,
+                    properties: [.compressionFactor: 0.78]
+                ) {
+                    return data
+                }
+            }
+            return nil
+        }.value
+    }
+
+    private static func videoThumbnailCandidateTimes(duration: Double) -> [CMTime] {
+        let safeDuration = duration.isFinite && duration > 0 ? duration : 0
+        let fractions = safeDuration > 0 ? [0.35, 0.10, 0.50, 0.75, 0.02, 0.0] : [0.0]
+        var seen = Set<Int64>()
+        return fractions.compactMap { fraction in
+            let time = CMTime(seconds: max(0, safeDuration * fraction), preferredTimescale: 600)
+            guard seen.insert(time.value).inserted else { return nil }
+            return time
+        }
     }
 
     private static func defaultDirectoryURL() -> URL {

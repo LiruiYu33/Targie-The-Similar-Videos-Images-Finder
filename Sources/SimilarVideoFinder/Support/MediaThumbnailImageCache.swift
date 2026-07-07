@@ -26,6 +26,24 @@ final class MediaThumbnailImageCache {
         return image
     }
 
+    func image(for item: MediaItem, repairingMissingVideoThumbnail: Bool) async -> NSImage? {
+        if let image = image(for: item) {
+            return image
+        }
+        guard repairingMissingVideoThumbnail, item.kind == .video else {
+            return nil
+        }
+        guard let data = await ThumbnailStore.shared.videoThumbnailData(
+            for: item.url,
+            duration: item.duration,
+            modifiedAt: item.modifiedAt
+        ), let image = NSImage(data: data) else {
+            return nil
+        }
+        cache.setObject(image, forKey: cacheKey(for: item), cost: data.count)
+        return image
+    }
+
     func removeAll() {
         cache.removeAllObjects()
     }
