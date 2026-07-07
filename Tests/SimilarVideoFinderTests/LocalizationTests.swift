@@ -47,6 +47,10 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.similarMedia(.french), "Médias similaires")
         XCTAssertEqual(L10n.similarMedia(.japanese), "類似メディア")
         XCTAssertEqual(L10n.similarMedia(.korean), "유사한 미디어")
+        XCTAssertEqual(L10n.pictureInPicture(.english), "Picture in Picture")
+        XCTAssertEqual(L10n.pictureInPicture(.simplifiedChinese), "画中画")
+        XCTAssertEqual(L10n.pictureInPicture(.japanese), "ピクチャ・イン・ピクチャ")
+        XCTAssertEqual(L10n.pictureInPicture(.korean), "화면 속 화면")
     }
 
     func testScanProgressDetailShowsCacheHitContext() {
