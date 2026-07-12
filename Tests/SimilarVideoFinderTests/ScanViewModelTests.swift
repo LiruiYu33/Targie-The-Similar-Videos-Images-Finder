@@ -436,6 +436,72 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertTrue(regressions.isEmpty, "Progress moved backward: \(fractions)")
     }
 
+    func testStaleThresholdRebuildCannotOverwriteNewerThreshold() async throws {
+        let controller = BlockingThresholdGroupBuilder(blockedThreshold: 0.80)
+        let model = ScanViewModel(
+            hashCache: nil,
+            groupBuilder: { items, relations, threshold in
+                await controller.build(items: items, relations: relations, threshold: threshold)
+            }
+        )
+        let first = SimilarityScoringTests.video(name: "first.mov")
+        let second = SimilarityScoringTests.video(name: "second.mov")
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.90,
+            evidence: [.similarSize]
+        )
+        model.replaceResultsForTesting(items: [first, second], relations: [relation])
+        XCTAssertEqual(model.groups.count, 1)
+
+        model.threshold = 0.80
+        try await waitUntilAsync { await controller.hasBlockedBuild }
+
+        let heartbeat = expectation(description: "main actor remains responsive")
+        Task { @MainActor in heartbeat.fulfill() }
+        await fulfillment(of: [heartbeat], timeout: 1)
+
+        model.threshold = 0.95
+        try await waitUntil { model.groups.isEmpty }
+
+        await controller.resumeBlockedBuild()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(model.groups.isEmpty)
+    }
+
+    func testAsyncThresholdRebuildPreservesStableGroupAndSelection() async throws {
+        let model = ScanViewModel(hashCache: nil)
+        let first = SimilarityScoringTests.video(name: "first.mov")
+        let second = SimilarityScoringTests.video(name: "second.mov")
+        let third = SimilarityScoringTests.video(name: "third.mov")
+        let relations = [
+            SimilarityRelation(
+                firstID: first.id,
+                secondID: second.id,
+                score: 0.95,
+                evidence: [.similarSize]
+            ),
+            SimilarityRelation(
+                firstID: second.id,
+                secondID: third.id,
+                score: 0.85,
+                evidence: [.similarDuration]
+            )
+        ]
+        model.replaceResultsForTesting(items: [first, second, third], relations: relations)
+        let originalGroupID = try XCTUnwrap(model.groups.first?.id)
+        model.selectGroup(originalGroupID)
+        model.selectGroupItem(second.id)
+
+        model.threshold = 0.80
+        try await waitUntil { model.groups.first?.items.count == 3 }
+
+        XCTAssertEqual(model.groups.first?.id, originalGroupID)
+        XCTAssertEqual(model.selectedGroupID, originalGroupID)
+        XCTAssertEqual(model.selectedMediaID, second.id)
+    }
+
     func testDeletePromptStartsByChoosingMethod() {
         let model = ScanViewModel()
         model.requestDeletion(of: SimilarityScoringTests.video(name: "a.mov"))
@@ -1105,15 +1171,14 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertTrue(model.groups.isEmpty)
     }
 
-    func testDiscoverFilesPrunesHashCacheToDiscoveredPaths() async throws {
+    func testDiscoverFilesDoesNotPruneGlobalCache() async throws {
         let root = FileManager.default.temporaryDirectory
             .resolvingSymlinksInPath()
-            .appendingPathComponent("DiscoverPrune-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("DiscoverRetention-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let keepURL = root.appendingPathComponent("keep.mp4")
         try Data([1]).write(to: keepURL)
-        let discoveredPath = try XCTUnwrap(VideoScanner.discoverVideoURLs(in: root).first).path
         let cache = PruneRecordingCache()
         let scanner = VideoScanner(maxConcurrentLoads: 1) { url in
             MediaItem(
@@ -1132,10 +1197,45 @@ final class ScanViewModelTests: XCTestCase {
 
         model.discoverFiles()
         try await waitUntil { model.progress.stage == .completed }
-        try await waitUntilAsync { await cache.lastPrunedPaths() != nil }
+        try await Task.sleep(for: .milliseconds(50))
 
-        let prunedPaths = await cache.lastPrunedPaths()
-        XCTAssertEqual(prunedPaths, [discoveredPath])
+        let pruneCallCount = await cache.pruneCallCount()
+        XCTAssertEqual(pruneCallCount, 0)
+    }
+
+    func testCompletedScanDoesNotPruneGlobalCache() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("ScanRetention-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data([1]).write(to: root.appendingPathComponent("keep.mp4"))
+        let cache = PruneRecordingCache()
+        let scanner = VideoScanner(maxConcurrentLoads: 1) { url in
+            MediaItem(
+                kind: .video,
+                url: url,
+                fileSize: 1,
+                duration: 1,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: nil
+            )
+        }
+        let model = ScanViewModel(
+            scanner: scanner,
+            pipeline: ExactDuplicatePipeline(),
+            hashCache: cache
+        )
+        model.selectedFolders = [root]
+
+        model.startScan()
+        try await waitUntil { model.progress.stage == .completed }
+        try await Task.sleep(for: .milliseconds(50))
+
+        let pruneCallCount = await cache.pruneCallCount()
+        XCTAssertEqual(pruneCallCount, 0)
     }
 
     private func waitUntil(
@@ -1158,6 +1258,35 @@ final class ScanViewModelTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("Timed out waiting for async scan state")
+    }
+}
+
+private actor BlockingThresholdGroupBuilder {
+    private let blockedThreshold: Double
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+    private(set) var hasBlockedBuild = false
+
+    init(blockedThreshold: Double) {
+        self.blockedThreshold = blockedThreshold
+    }
+
+    func build(
+        items: [MediaItem],
+        relations: [SimilarityRelation],
+        threshold: Double
+    ) async -> [SimilarityGroup] {
+        if threshold == blockedThreshold {
+            hasBlockedBuild = true
+            await withCheckedContinuation { continuation in
+                blockedContinuation = continuation
+            }
+        }
+        return SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
+    }
+
+    func resumeBlockedBuild() {
+        blockedContinuation?.resume()
+        blockedContinuation = nil
     }
 }
 
@@ -1279,6 +1408,7 @@ private final class FakeDeletionService: DeletionServicing {
 
 private actor PruneRecordingCache: HashCaching {
     private var prunedPaths: Set<String>?
+    private var pruneCalls = 0
 
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
         nil
@@ -1287,6 +1417,7 @@ private actor PruneRecordingCache: HashCaching {
     func upsert(_ record: CacheRecord) {}
 
     func pruneStale(validPaths: Set<String>) {
+        pruneCalls += 1
         prunedPaths = validPaths
     }
 
@@ -1298,6 +1429,10 @@ private actor PruneRecordingCache: HashCaching {
 
     func lastPrunedPaths() -> Set<String>? {
         prunedPaths
+    }
+
+    func pruneCallCount() -> Int {
+        pruneCalls
     }
 }
 

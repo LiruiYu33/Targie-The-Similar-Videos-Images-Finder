@@ -63,6 +63,12 @@ private struct ScanSideResult: Sendable {
     let issues: [ScanIssue]
 }
 
+typealias SimilarityGroupBuilder = @Sendable (
+    [MediaItem],
+    [SimilarityRelation],
+    Double
+) async -> [SimilarityGroup]
+
 enum ScanProgressLane: CaseIterable, Hashable, Sendable {
     case video
     case image
@@ -314,13 +320,32 @@ final class ScanViewModel: ObservableObject {
     /// not recompute groups on every intermediate value (which freezes the UI
     /// on large libraries). The rebuild fires shortly after the last change.
     private var thresholdRebuildTask: Task<Void, Never>?
+    private var thresholdRebuildGeneration = 0
+    private var resultsRevision = 0
 
     private func scheduleThresholdRebuild() {
         thresholdRebuildTask?.cancel()
+        thresholdRebuildGeneration &+= 1
+        let generation = thresholdRebuildGeneration
         thresholdRebuildTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000)
-            guard !Task.isCancelled else { return }
-            self?.rebuildGroups(preserving: self?.groups ?? [])
+            guard !Task.isCancelled, let self else { return }
+
+            let revision = self.resultsRevision
+            let threshold = self.threshold
+            let items = self.allItems
+            let relations = self.allRelations
+            let previousGroups = self.groups
+            let groupBuilder = self.groupBuilder
+            let rebuilt = await groupBuilder(items, relations, threshold)
+
+            guard
+                !Task.isCancelled,
+                self.thresholdRebuildGeneration == generation,
+                self.resultsRevision == revision,
+                self.threshold == threshold
+            else { return }
+            self.applyRebuiltGroups(rebuilt, preserving: previousGroups)
         }
     }
     @Published private(set) var groups: [SimilarityGroup] = []
@@ -346,6 +371,7 @@ final class ScanViewModel: ObservableObject {
     /// its contents, or the sort field/direction actually change.
     @Published private(set) var sortedGroupItems: [MediaItem] = []
     @Published private(set) var progress = ScanProgress()
+    @Published private(set) var itemsRevision = 0
     @Published private(set) var issues: [ScanIssue] = []
     @Published var presentedError: PresentedError?
     @Published var deletePrompt: DeletePrompt?
@@ -364,6 +390,7 @@ final class ScanViewModel: ObservableObject {
     private let hashCache: (any HashCaching)?
     private let thumbnailStore: ThumbnailStore
     private let activityManager: ScanActivityManaging
+    private let groupBuilder: SimilarityGroupBuilder
     private var groupSelectionAnchorID: UUID?
     private var scanActivity: NSObjectProtocol?
 
@@ -375,13 +402,15 @@ final class ScanViewModel: ObservableObject {
         hashCache: (any HashCaching)? = ScanViewModel.makeDefaultHashCache(),
         thumbnailStore: ThumbnailStore = .shared,
         activityManager: ScanActivityManaging = ProcessInfoScanActivityManager(),
-        scanIntensity: ScanIntensity = .defaultIntensity
+        scanIntensity: ScanIntensity = .defaultIntensity,
+        groupBuilder: SimilarityGroupBuilder? = nil
     ) {
         self.deletionService = deletionService
         self.hashCache = hashCache
         self.thumbnailStore = thumbnailStore
         self.activityManager = activityManager
         self.scanIntensity = scanIntensity
+        self.groupBuilder = groupBuilder ?? ScanViewModel.buildGroupsOffMain
         self.pipeline = pipeline ?? SimilarityPipeline(cache: hashCache)
         self.imagePipeline = ImageSimilarityPipeline(cache: hashCache)
         // Use caller-provided scanners, but if they used the default loader,
@@ -396,6 +425,16 @@ final class ScanViewModel: ObservableObject {
 
     private static func makeDefaultHashCache() -> (any HashCaching)? {
         try? HashCache()
+    }
+
+    private nonisolated static func buildGroupsOffMain(
+        items: [MediaItem],
+        relations: [SimilarityRelation],
+        threshold: Double
+    ) async -> [SimilarityGroup] {
+        await Task.detached(priority: .userInitiated) {
+            SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
+        }.value
     }
 
     private func beginScanActivity(reason: String) {
@@ -479,9 +518,10 @@ final class ScanViewModel: ObservableObject {
         guard !selectedFolders.isEmpty, !isScanning else { return }
         let folders = selectedFolders
         scanTask?.cancel()
+        invalidatePendingGroupBuild()
         beginScanActivity(reason: "Scanning media for similar files")
         progress = ScanProgress(stage: .discovering)
-        allItems = []
+        replaceItems(with: [])
         allRelations = []
         groups = []
         checkedMediaIDs = []
@@ -538,15 +578,19 @@ final class ScanViewModel: ObservableObject {
                 let items = videoResult.items + imageResult.items
                 let relations = videoResult.relations + imageResult.relations
                 let scanIssues = videoResult.issues + imageResult.issues
+                let rebuiltGroups = try await buildGroupsForCurrentThreshold(
+                    items: items,
+                    relations: relations
+                )
+                try Task.checkCancellation()
                 // Publish the combined results once, after both kinds are done —
                 // the sidebar shows groups only when scanning is complete.
-                publish(items: items, relations: relations)
-                try Task.checkCancellation()
-                // `publish` already wrote the final combined items/relations/groups,
-                // so only the progress and cache cleanup remain here.
+                publish(items: items, relations: relations, groups: rebuiltGroups)
+                // `publish` already wrote the final combined items/relations/groups.
+                // Cache entries are historical across every scanned folder, so a
+                // partial folder selection must never prune the global cache.
                 issues = scanIssues
                 progress = ScanProgress(stage: .completed, fraction: 1, discoveredCount: items.count)
-                pruneCaches(for: items)
             } catch is CancellationError {
                 progress = ScanProgress(stage: .cancelled)
             } catch {
@@ -660,6 +704,7 @@ final class ScanViewModel: ObservableObject {
 
         let folders = selectedFolders
         scanTask?.cancel()
+        invalidatePendingGroupBuild()
         beginScanActivity(reason: "Reading media metadata")
         progress = ScanProgress(stage: .discovering)
 
@@ -702,10 +747,10 @@ final class ScanViewModel: ObservableObject {
                 let items = videoResult.items + imageResult.items
                 let scanIssues = videoResult.issues + imageResult.issues
                 try Task.checkCancellation()
-                allItems = items
+                invalidatePendingGroupBuild()
+                replaceItems(with: items)
                 issues = scanIssues
                 progress = ScanProgress(stage: .completed, fraction: 1, discoveredCount: items.count)
-                pruneCaches(for: items)
             } catch is CancellationError {
                 progress = ScanProgress(stage: .cancelled)
             } catch {
@@ -735,19 +780,6 @@ final class ScanViewModel: ObservableObject {
     func setScanIntensity(_ intensity: ScanIntensity) {
         guard scanIntensity != intensity else { return }
         scanIntensity = intensity
-    }
-
-    private func pruneCaches(for items: [MediaItem]) {
-        let validPaths = Set(items.map { $0.url.path })
-        if let hashCache {
-            Task { await hashCache.pruneStale(validPaths: validPaths) }
-        }
-
-        let thumbnailStore = self.thumbnailStore
-        let validSourceURLs = Set(items.map(\.url))
-        Task.detached(priority: .utility) {
-            try? thumbnailStore.pruneStale(validSourceURLs: validSourceURLs)
-        }
     }
 
     private func kind(for mode: ScanMode) -> MediaKind? {
@@ -918,6 +950,10 @@ final class ScanViewModel: ObservableObject {
                 checkedMediaIDs.remove(media.id)
             } catch { failures.append("\(media.filename): \(error.localizedDescription)") }
         }
+        if !deletedIDs.isEmpty {
+            invalidatePendingGroupBuild()
+            noteItemsChanged()
+        }
         preserveGroupContinuity(groupsBeforeDeletion, deletedIDs: deletedIDs)
         rebuildGroups(preserving: groupsBeforeDeletion)
         deletePrompt = nil
@@ -961,17 +997,27 @@ final class ScanViewModel: ObservableObject {
     /// Used after deletion from Browse mode.
     func removeItem(_ id: UUID) {
         let groupsBeforeRemoval = groups
+        let hadItem = allItems.contains { $0.id == id }
         allItems.removeAll { $0.id == id }
         allRelations.removeAll { $0.contains(id) }
         checkedMediaIDs.remove(id)
+        if hadItem {
+            invalidatePendingGroupBuild()
+            noteItemsChanged()
+        }
         preserveGroupContinuity(groupsBeforeRemoval, deletedIDs: [id])
         rebuildGroups(preserving: groupsBeforeRemoval)
     }
 
     func replaceResultsForTesting(items: [MediaItem], relations: [SimilarityRelation]) {
-        allItems = items
+        invalidatePendingGroupBuild()
+        replaceItems(with: items)
         allRelations = relations
         rebuildGroups()
+    }
+
+    func replaceProgressForTesting(_ progress: ScanProgress) {
+        self.progress = progress
     }
 
     func localizedError(_ language: AppLanguage) -> String? {
@@ -980,13 +1026,20 @@ final class ScanViewModel: ObservableObject {
 
     private func rebuildGroups(preserving previousGroups: [SimilarityGroup]? = nil) {
         let beforeRebuild = previousGroups ?? groups
+        let rebuilt = SimilarityGrouper.groups(items: allItems, relations: allRelations, threshold: threshold)
+        applyRebuiltGroups(rebuilt, preserving: beforeRebuild)
+    }
+
+    private func applyRebuiltGroups(
+        _ rebuilt: [SimilarityGroup],
+        preserving beforeRebuild: [SimilarityGroup]
+    ) {
         // Remember where the selected group sat in the *visible* list before the
         // rebuild, so if it dissolves we can keep the cursor near that spot.
         let visibleBefore = beforeRebuild.filter { $0.kind.map { visibleKinds.contains($0) } ?? false }
         let visibleIndexBefore = selectedGroupID.flatMap { id in
             visibleBefore.firstIndex(where: { $0.id == id })
         }
-        let rebuilt = SimilarityGrouper.groups(items: allItems, relations: allRelations, threshold: threshold)
         let dissolvedGroupKind = selectedGroup?.kind
         groups = groupsByPreservingStableIDs(rebuilt, previousGroups: beforeRebuild)
         checkedMediaIDs.formIntersection(Set(allItems.map(\.id)))
@@ -1009,6 +1062,21 @@ final class ScanViewModel: ObservableObject {
             selectNextVisibleGroup(afterDissolving: dissolvedGroupKind, at: visibleIndexBefore)
         }
         // else: nothing was selected before — leave it that way.
+    }
+
+    private func buildGroupsForCurrentThreshold(
+        items: [MediaItem],
+        relations: [SimilarityRelation]
+    ) async throws -> [SimilarityGroup] {
+        while true {
+            try Task.checkCancellation()
+            let targetThreshold = threshold
+            let rebuilt = await groupBuilder(items, relations, targetThreshold)
+            try Task.checkCancellation()
+            if threshold == targetThreshold {
+                return rebuilt
+            }
+        }
     }
 
     /// The groups currently visible in the sidebar, in the order they're shown.
@@ -1089,10 +1157,15 @@ final class ScanViewModel: ObservableObject {
         }
     }
 
-    private func publish(items: [MediaItem], relations: [SimilarityRelation]) {
-        allItems = items
+    private func publish(
+        items: [MediaItem],
+        relations: [SimilarityRelation],
+        groups rebuiltGroups: [SimilarityGroup]
+    ) {
+        invalidatePendingGroupBuild()
+        replaceItems(with: items)
         allRelations = relations
-        groups = SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
+        groups = rebuiltGroups
         // Don't auto-select a group — let the user pick. The right pane shows
         // "Select a similar group" / "Select a file" until the user clicks.
         selectedGroupID = nil
@@ -1102,7 +1175,8 @@ final class ScanViewModel: ObservableObject {
     }
 
     private func resetResults() {
-        allItems = []
+        invalidatePendingGroupBuild()
+        replaceItems(with: [])
         allRelations = []
         groups = []
         selectedGroupID = nil
@@ -1112,6 +1186,23 @@ final class ScanViewModel: ObservableObject {
         groupSelectionAnchorID = nil
         progress = ScanProgress()
         issues = []
+    }
+
+    private func replaceItems(with items: [MediaItem]) {
+        guard allItems != items else { return }
+        allItems = items
+        noteItemsChanged()
+    }
+
+    private func noteItemsChanged() {
+        itemsRevision &+= 1
+    }
+
+    private func invalidatePendingGroupBuild() {
+        resultsRevision &+= 1
+        thresholdRebuildGeneration &+= 1
+        thresholdRebuildTask?.cancel()
+        thresholdRebuildTask = nil
     }
 
     private nonisolated static func uniqueItemsByURL(_ items: [MediaItem]) -> [MediaItem] {
@@ -1124,23 +1215,36 @@ final class ScanViewModel: ObservableObject {
         previousGroups: [SimilarityGroup]
     ) -> [SimilarityGroup] {
         guard !previousGroups.isEmpty else { return rebuiltGroups }
-        var availablePreviousGroups = previousGroups
+        var previousGroupIndicesByItemID: [UUID: [Int]] = [:]
+        for (index, group) in previousGroups.enumerated() {
+            for item in group.items {
+                previousGroupIndicesByItemID[item.id, default: []].append(index)
+            }
+        }
+        var availablePreviousGroupIndices = Set(previousGroups.indices)
 
         return rebuiltGroups.map { group in
-            let groupItemIDs = Set(group.items.map(\.id))
-            var bestMatch: (index: Int, overlap: Int)?
+            var overlapByPreviousGroupIndex: [Int: Int] = [:]
+            for item in group.items {
+                for index in previousGroupIndicesByItemID[item.id, default: []]
+                    where availablePreviousGroupIndices.contains(index)
+                        && previousGroups[index].kind == group.kind {
+                    overlapByPreviousGroupIndex[index, default: 0] += 1
+                }
+            }
 
-            for (index, previousGroup) in availablePreviousGroups.enumerated() where previousGroup.kind == group.kind {
-                let previousItemIDs = Set(previousGroup.items.map(\.id))
-                let overlap = groupItemIDs.intersection(previousItemIDs).count
-                guard overlap >= 2 else { continue }
-                if bestMatch == nil || overlap > bestMatch!.overlap {
+            var bestMatch: (index: Int, overlap: Int)?
+            for (index, overlap) in overlapByPreviousGroupIndex where overlap >= 2 {
+                if bestMatch == nil
+                    || overlap > bestMatch!.overlap
+                    || (overlap == bestMatch!.overlap && index < bestMatch!.index) {
                     bestMatch = (index, overlap)
                 }
             }
 
             guard let bestMatch else { return group }
-            let previousGroup = availablePreviousGroups.remove(at: bestMatch.index)
+            availablePreviousGroupIndices.remove(bestMatch.index)
+            let previousGroup = previousGroups[bestMatch.index]
             return SimilarityGroup(id: previousGroup.id, items: group.items, relations: group.relations)
         }
     }

@@ -55,7 +55,11 @@ enum QuickPrehasher {
 
     /// Computes a `QuickPrehash` from a `MediaItem` synchronously using only in-memory data.
     static func prehash(for video: MediaItem) -> QuickPrehash {
-        let (mean, variance) = thumbnailStats(video.thumbnailData)
+        prehash(for: video, thumbnailData: video.thumbnailData)
+    }
+
+    static func prehash(for video: MediaItem, thumbnailData: Data?) -> QuickPrehash {
+        let (mean, variance) = thumbnailStats(thumbnailData)
         return QuickPrehash(
             videoID: video.id,
             durationBucket: durationBucket(video.duration ?? 0),

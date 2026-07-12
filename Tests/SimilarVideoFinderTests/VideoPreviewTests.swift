@@ -115,6 +115,83 @@ final class VideoPreviewTests: XCTestCase {
         XCTAssertEqual(coordinator.currentURL, secondURL)
     }
 
+    func testRepeatedPlayingUpdateForSameURLIssuesOnePlayCommand() throws {
+        let url = try temporaryPlayableURL(named: "PreviewRepeatedPlay")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let playerView = AVPlayerView()
+        playerView.player = AVPlayer()
+        let recorder = PlayerCommandRecorder()
+        let coordinator = NativeVideoPlayerView.Coordinator(
+            volume: .constant(0.5),
+            commands: recorder.commands
+        )
+
+        coordinator.updatePlayer(in: playerView, url: url, volume: 0.5, isPlaying: true)
+        coordinator.updatePlayer(in: playerView, url: url, volume: 0.5, isPlaying: true)
+
+        XCTAssertEqual(recorder.events, ["replace", "play"])
+    }
+
+    func testVolumeUpdateDoesNotResumeNativePausedPlayer() throws {
+        let url = try temporaryPlayableURL(named: "PreviewNativePause")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let playerView = AVPlayerView()
+        let player = AVPlayer()
+        playerView.player = player
+        let recorder = PlayerCommandRecorder()
+        let coordinator = NativeVideoPlayerView.Coordinator(
+            volume: .constant(0.5),
+            commands: recorder.commands
+        )
+
+        coordinator.updatePlayer(in: playerView, url: url, volume: 0.5, isPlaying: true)
+        player.pause()
+        coordinator.updatePlayer(in: playerView, url: url, volume: 0.7, isPlaying: true)
+
+        XCTAssertEqual(recorder.events.filter { $0 == "play" }.count, 1)
+    }
+
+    func testPlayingURLChangePausesBeforeReplacingAndStartingOnce() throws {
+        let firstURL = try temporaryPlayableURL(named: "PreviewCommandOrderA")
+        let secondURL = try temporaryPlayableURL(named: "PreviewCommandOrderB")
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+        let playerView = AVPlayerView()
+        playerView.player = AVPlayer()
+        let recorder = PlayerCommandRecorder()
+        let coordinator = NativeVideoPlayerView.Coordinator(
+            volume: .constant(0.5),
+            commands: recorder.commands
+        )
+        coordinator.updatePlayer(in: playerView, url: firstURL, volume: 0.5, isPlaying: true)
+        recorder.events.removeAll()
+
+        coordinator.updatePlayer(in: playerView, url: secondURL, volume: 0.5, isPlaying: true)
+
+        XCTAssertEqual(recorder.events, ["pause", "replace", "play"])
+    }
+
+    func testRepeatedStoppedUpdatePausesAndClearsOnlyOnce() throws {
+        let url = try temporaryPlayableURL(named: "PreviewRepeatedStop")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let playerView = AVPlayerView()
+        playerView.player = AVPlayer()
+        let recorder = PlayerCommandRecorder()
+        let coordinator = NativeVideoPlayerView.Coordinator(
+            volume: .constant(0.5),
+            commands: recorder.commands
+        )
+        coordinator.updatePlayer(in: playerView, url: url, volume: 0.5, isPlaying: true)
+        recorder.events.removeAll()
+
+        coordinator.updatePlayer(in: playerView, url: url, volume: 0.5, isPlaying: false)
+        coordinator.updatePlayer(in: playerView, url: url, volume: 0.5, isPlaying: false)
+
+        XCTAssertEqual(recorder.events, ["pause", "clear"])
+    }
+
     func testVolumeSyncIgnoresEffectivelyUnchangedValues() {
         XCTAssertFalse(NativeVideoPlayerVolumeSync.shouldApply(boundVolume: 0.5, toPlayerVolume: 0.5))
         XCTAssertFalse(NativeVideoPlayerVolumeSync.shouldPersist(playerVolume: 0.5, storedVolume: 0.5004))
@@ -135,5 +212,32 @@ final class VideoPreviewTests: XCTestCase {
 
         XCTAssertTrue(player.currentItem === item)
         XCTAssertEqual(player.rate, 0)
+    }
+
+    private func temporaryPlayableURL(named name: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString).mov")
+        try Data([0]).write(to: url)
+        return url
+    }
+
+}
+
+@MainActor
+private final class PlayerCommandRecorder {
+    var events: [String] = []
+
+    var commands: NativeVideoPlayerCommands {
+        NativeVideoPlayerCommands(
+            play: { [weak self] _ in self?.events.append("play") },
+            pause: { [weak self] player in
+                self?.events.append("pause")
+                player.pause()
+            },
+            replaceCurrentItem: { [weak self] player, item in
+                self?.events.append(item == nil ? "clear" : "replace")
+                player.replaceCurrentItem(with: item)
+            }
+        )
     }
 }

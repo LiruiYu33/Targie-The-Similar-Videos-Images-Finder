@@ -79,17 +79,17 @@ struct MediaItem: Identifiable, Hashable, Sendable {
     }
 
     var filename: String { url.lastPathComponent }
+    /// Synchronous access is intentionally limited to embedded or already
+    /// memory-cached bytes. Disk-backed thumbnails must use `loadThumbnailData()`.
     var thumbnailData: Data? {
         if let embeddedThumbnailData { return embeddedThumbnailData }
-        if let thumbnailURL, let data = ThumbnailStore.persistedData(at: thumbnailURL) {
-            return data
-        }
-        guard kind == .image else { return nil }
-        return ThumbnailStore.imageThumbnailData(
-            sourceURL: url,
-            modifiedAt: modifiedAt,
-            thumbnailURL: thumbnailURL
-        )
+        return thumbnailURL.flatMap(ThumbnailStore.cachedData(at:))
+    }
+
+    func loadThumbnailData() async -> Data? {
+        if let thumbnailData { return thumbnailData }
+        guard let thumbnailURL else { return nil }
+        return await ThumbnailStore.loadPersistedData(at: thumbnailURL)
     }
     var isThumbnailDiskBacked: Bool { embeddedThumbnailData == nil && thumbnailURL != nil }
 

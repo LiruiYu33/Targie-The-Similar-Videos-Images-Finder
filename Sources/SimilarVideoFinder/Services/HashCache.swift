@@ -320,6 +320,8 @@ private enum ScanRelationIndexCodec {
 protocol HashCaching: Sendable {
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> CacheRecord?
     func upsert(_ record: CacheRecord) async
+    /// Explicit maintenance operation for callers that own a complete cache
+    /// universe. Normal folder scans must not use their partial path set here.
     func pruneStale(validPaths: Set<String>) async
     func count() async -> Int
     func clearAll() async
@@ -439,7 +441,8 @@ extension HashCaching {
 // MARK: - HashCache
 
 /// SQLite-backed persistent hash cache implemented with GRDB.swift.
-/// Database location: ~/Library/Caches/Targie/hash_cache.sqlite
+/// Default database location: ~/Library/Caches/Targie/hash_cache.sqlite
+/// Diagnostics can override the shared cache root with TARGIE_CACHE_ROOT.
 actor HashCache: HashCaching {
     private static let stalePruneTables = ["hash_cache", "media_metadata", "image_features", "frame_features"]
     private static let pruneInsertBatchSize = 500
@@ -1334,15 +1337,7 @@ actor HashCache: HashCaching {
     // MARK: - Default Path
 
     private static func defaultDatabaseURL() throws -> URL {
-        let cachesDir = try FileManager.default.url(
-            for: .cachesDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        return cachesDir
-            .appendingPathComponent("Targie", isDirectory: true)
-            .appendingPathComponent("hash_cache.sqlite")
+        CachePaths.hashDatabaseURL()
     }
 }
 

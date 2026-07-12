@@ -19,21 +19,30 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
+import Combine
 import XCTest
 @testable import SimilarVideoFinder
 
 @MainActor
 final class BrowseViewModelTests: XCTestCase {
 
-    private func makeItem(name: String, width: Int, height: Int, kind: MediaKind = .video) -> MediaItem {
+    private func makeItem(
+        name: String,
+        width: Int,
+        height: Int,
+        kind: MediaKind = .video,
+        directory: String = "/tmp",
+        fileSize: Int64 = 1000,
+        modifiedAt: Date? = nil
+    ) -> MediaItem {
         MediaItem(
             kind: kind,
-            url: URL(fileURLWithPath: "/tmp/\(name)"),
-            fileSize: 1000,
+            url: URL(fileURLWithPath: directory).appendingPathComponent(name),
+            fileSize: fileSize,
             duration: kind == .video ? 10 : nil,
             width: width,
             height: height,
-            modifiedAt: nil,
+            modifiedAt: modifiedAt,
             thumbnailData: nil
         )
     }
@@ -165,6 +174,120 @@ final class BrowseViewModelTests: XCTestCase {
         let browse = BrowseViewModel(scanModel: scanModel)
 
         XCTAssertEqual(browse.displayedItems.map(\.id), sortedIDs)
+    }
+
+    func testProgressUpdateDoesNotRecomputeDisplayedItems() async throws {
+        let scanModel = ScanViewModel(hashCache: nil)
+        scanModel.replaceResultsForTesting(
+            items: [makeItem(name: "a.mov", width: 1920, height: 1080)],
+            relations: []
+        )
+        let browse = BrowseViewModel(scanModel: scanModel)
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        scanModel.replaceProgressForTesting(ScanProgress(stage: .hashing, fraction: 0.5))
+        try await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount)
+    }
+
+    func testThresholdUpdateDoesNotRecomputeDisplayedItems() async throws {
+        let scanModel = ScanViewModel(hashCache: nil)
+        scanModel.replaceResultsForTesting(
+            items: [makeItem(name: "a.mov", width: 1920, height: 1080)],
+            relations: []
+        )
+        let browse = BrowseViewModel(scanModel: scanModel)
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        scanModel.threshold = 0.80
+        try await Task.sleep(for: .milliseconds(180))
+
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount)
+    }
+
+    func testItemRevisionRecomputesDisplayedItemsOnce() async throws {
+        let scanModel = ScanViewModel(hashCache: nil)
+        let browse = BrowseViewModel(scanModel: scanModel)
+        let recomputeCount = browse.displayedItemsRecomputeCount
+        let item = makeItem(name: "a.mov", width: 1920, height: 1080)
+
+        scanModel.replaceResultsForTesting(items: [item], relations: [])
+        try await waitUntil { browse.displayedItems.map(\.id) == [item.id] }
+
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
+    }
+
+    func testEqualSortKeysUseDeterministicPathOrderInBothDirections() {
+        let date = Date(timeIntervalSince1970: 1_000)
+        let first = makeItem(
+            name: "same.mov",
+            width: 1920,
+            height: 1080,
+            directory: "/tmp/a",
+            modifiedAt: date
+        )
+        let second = makeItem(
+            name: "same.mov",
+            width: 1920,
+            height: 1080,
+            directory: "/tmp/b",
+            modifiedAt: date
+        )
+        let third = makeItem(
+            name: "same.mov",
+            width: 1920,
+            height: 1080,
+            directory: "/tmp/c",
+            modifiedAt: date
+        )
+        let expected = [first.id, second.id, third.id]
+        let scanModel = ScanViewModel(hashCache: nil)
+        scanModel.replaceResultsForTesting(items: [third, first, second], relations: [])
+        let browse = BrowseViewModel(scanModel: scanModel)
+
+        for field in BrowseViewModel.SortField.allCases {
+            browse.sortField = field
+            browse.sortAscending = true
+            XCTAssertEqual(browse.displayedItems.map(\.id), expected, "Ascending \(field)")
+
+            browse.sortAscending = false
+            XCTAssertEqual(browse.displayedItems.map(\.id), expected, "Descending \(field)")
+        }
+    }
+
+    func testUnchangedOrderedIDsDoNotRepublishDisplayedItems() {
+        let first = makeItem(name: "a.mov", width: 1920, height: 1080)
+        let second = makeItem(name: "b.mov", width: 1920, height: 1080)
+        let scanModel = ScanViewModel(hashCache: nil)
+        scanModel.replaceResultsForTesting(items: [first, second], relations: [])
+        let browse = BrowseViewModel(scanModel: scanModel)
+        var publicationCount = 0
+        let cancellable = browse.$displayedItems.dropFirst().sink { _ in
+            publicationCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        browse.sortField = .fileSize
+
+        XCTAssertEqual(browse.displayedItems.map(\.id), [first.id, second.id])
+        XCTAssertEqual(publicationCount, 0)
+    }
+
+    func testSetSortUpdatesFieldAndDirectionWithOneRecompute() {
+        let narrow = makeItem(name: "a.mov", width: 720, height: 1280)
+        let wide = makeItem(name: "b.mov", width: 1920, height: 1080)
+        let scanModel = ScanViewModel(hashCache: nil)
+        scanModel.replaceResultsForTesting(items: [narrow, wide], relations: [])
+        let browse = BrowseViewModel(scanModel: scanModel)
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        browse.setSort(field: .resolutionWidth, ascending: false)
+
+        XCTAssertEqual(browse.sortField, .resolutionWidth)
+        XCTAssertFalse(browse.sortAscending)
+        XCTAssertEqual(browse.displayedItems.map(\.id), [wide.id, narrow.id])
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
     }
 
     func testDeletingSelectedItemSelectsNextDisplayedItem() async throws {

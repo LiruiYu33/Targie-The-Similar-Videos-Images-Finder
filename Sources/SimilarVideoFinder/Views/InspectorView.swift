@@ -129,16 +129,14 @@ struct MediaPreview: View {
             if media.kind == .video {
                 VideoPlaybackPreview(media: media)
                     .id(media.id)
-            } else if let image = MediaThumbnailImageCache.shared.image(for: media) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
             } else {
                 ZStack {
                     Color.secondary.opacity(0.12)
-                    Image(systemName: media.kind == .video ? "film" : "photo")
-                        .font(.system(size: 42))
-                        .foregroundStyle(.secondary)
+                    MediaThumbnailView(
+                        item: media,
+                        placeholderSystemImage: "photo",
+                        placeholderFont: .system(size: 42)
+                    )
                 }
             }
         }

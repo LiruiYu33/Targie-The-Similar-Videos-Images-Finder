@@ -10,17 +10,14 @@ import XCTest
 @testable import SimilarVideoFinder
 
 final class ThumbnailStoreTests: XCTestCase {
-    func testDiskBackedThumbnailLoadsThroughMediaItem() throws {
+    func testDiskBackedThumbnailLoadsAsynchronouslyThroughMediaItem() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ThumbnailStoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = ThumbnailStore(directoryURL: root)
         let data = Data([1, 2, 3, 4])
-        let thumbnailURL = try store.persist(
-            data,
-            sourceURL: URL(fileURLWithPath: "/media/example.jpg"),
-            modifiedAt: Date(timeIntervalSince1970: 123)
-        )
+        let thumbnailURL = root.appendingPathComponent("thumbnail.jpg")
+        try data.write(to: thumbnailURL)
 
         let item = MediaItem(
             kind: .image,
@@ -35,40 +32,36 @@ final class ThumbnailStoreTests: XCTestCase {
         )
 
         XCTAssertTrue(item.isThumbnailDiskBacked)
+        XCTAssertNil(item.thumbnailData)
+        let loadedData = await item.loadThumbnailData()
+        XCTAssertEqual(loadedData, data)
         XCTAssertEqual(item.thumbnailData, data)
+
+        try FileManager.default.removeItem(at: thumbnailURL)
+        let missingData = await ThumbnailStore.loadPersistedData(at: thumbnailURL)
+        XCTAssertNil(missingData)
     }
 
-    func testImageThumbnailDataRebuildsMissingDiskBackedThumbnail() throws {
+    func testImageThumbnailDataRebuildsMissingDiskBackedThumbnail() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ThumbnailStoreRepairTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = ThumbnailStore(directoryURL: root.appendingPathComponent("thumbnails"))
         let sourceURL = root.appendingPathComponent("source.png")
         try writePNG(width: 40, height: 20, to: sourceURL)
         let date = Date(timeIntervalSince1970: 789)
-        let thumbnailURL = try store.persist(
-            Data([1, 2, 3]),
+        let thumbnailURL = root
+            .appendingPathComponent("thumbnails", isDirectory: true)
+            .appendingPathComponent("missing.jpg")
+
+        let data = await ThumbnailStore.imageThumbnailData(
             sourceURL: sourceURL,
-            modifiedAt: date
-        )
-        try FileManager.default.removeItem(at: thumbnailURL)
-        let item = MediaItem(
-            kind: .image,
-            url: sourceURL,
-            fileSize: 4,
-            duration: nil,
-            width: 40,
-            height: 20,
             modifiedAt: date,
-            thumbnailData: nil,
             thumbnailURL: thumbnailURL
         )
 
-        let data = try XCTUnwrap(item.thumbnailData)
-
         XCTAssertTrue(FileManager.default.fileExists(atPath: thumbnailURL.path))
-        XCTAssertNotNil(NSImage(data: data))
+        XCTAssertNotNil(NSImage(data: try XCTUnwrap(data)))
     }
 
     func testPruneStaleRemovesThumbnailsOutsideValidSourceSet() throws {

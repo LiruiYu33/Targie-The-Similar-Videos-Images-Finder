@@ -373,14 +373,11 @@ extension View {
 struct BrowseThumbnailCell: View {
     let item: MediaItem
     var body: some View {
-        Group {
-            if let image = MediaThumbnailImageCache.shared.image(for: item) {
-                Image(nsImage: image).resizable().scaledToFit()
-            } else {
-                Image(systemName: item.kind == .video ? "film" : "photo")
-                    .foregroundStyle(.secondary)
-            }
-        }
+        MediaThumbnailView(
+            item: item,
+            placeholderSystemImage: item.kind == .video ? "film" : "photo",
+            placeholderFont: .body
+        )
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
@@ -402,7 +399,7 @@ struct BrowseResolutionSortPopover: View {
 
                 Picker("", selection: Binding(
                     get: { browseModel.sortField.isResolution ? browseModel.sortField : .resolutionWidth },
-                    set: { browseModel.sortField = $0; browseModel.sortAscending = true }
+                    set: { browseModel.setSort(field: $0, ascending: true) }
                 )) {
                     Text(L10n.sortByWidth(language)).tag(BrowseViewModel.SortField.resolutionWidth)
                     Text(L10n.sortByHeight(language)).tag(BrowseViewModel.SortField.resolutionHeight)

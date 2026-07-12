@@ -38,15 +38,11 @@ struct VideoCardView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.black.opacity(0.88))
-                if let image = MediaThumbnailImageCache.shared.image(for: video) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                } else {
-                    Image(systemName: video.kind == .video ? "film" : "photo")
-                        .font(.largeTitle)
-                        .foregroundStyle(.white.opacity(0.7))
-                }
+                MediaThumbnailView(
+                    item: video,
+                    placeholderSystemImage: video.kind == .video ? "film" : "photo",
+                    placeholderColor: .white.opacity(0.7)
+                )
             }
             .aspectRatio(previewAspectRatio, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8))

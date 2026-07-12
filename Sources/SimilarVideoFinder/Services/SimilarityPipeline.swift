@@ -154,7 +154,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         scanIntensity: ScanIntensity,
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> PipelineResult {
-        // ---- Phase A: QuickPrehash (synchronous and low-cost) ----
+        // ---- Phase A: QuickPrehash (low-cost, with bounded async thumbnail reads) ----
         await progress(ScanProgress(
             stage: .prehashing,
             fraction: 0,
@@ -162,9 +162,12 @@ struct SimilarityPipeline: SimilarityProcessing {
             discoveredCount: videos.count
         ))
 
-        let prehashes: [UUID: QuickPrehash] = videos.reduce(into: [:]) { acc, video in
-            acc[video.id] = QuickPrehasher.prehash(for: video)
-        }
+        let prehashes = try await Self.computeQuickPrehashes(
+            videos: videos,
+            maxConcurrentLoads: scanIntensity.hashConcurrencyLimit(
+                processorCount: ProcessInfo.processInfo.activeProcessorCount
+            )
+        )
 
         // Filter candidate pairs through QuickPrehash.
         let prehashCandidates = PrehashCandidateFinder.find(
@@ -515,6 +518,49 @@ struct SimilarityPipeline: SimilarityProcessing {
             if seen.insert(second.id).inserted { result.append(second) }
         }
         return result
+    }
+
+    // MARK: - Phase A helpers
+
+    private static func computeQuickPrehashes(
+        videos: [MediaItem],
+        maxConcurrentLoads: Int
+    ) async throws -> [UUID: QuickPrehash] {
+        try await withThrowingTaskGroup(of: (UUID, QuickPrehash).self) { group in
+            var iterator = videos.makeIterator()
+            let concurrencyLimit = max(1, maxConcurrentLoads)
+
+            for _ in 0..<min(concurrencyLimit, videos.count) {
+                guard let video = iterator.next() else { break }
+                group.addTask {
+                    try Task.checkCancellation()
+                    let thumbnailData = await video.loadThumbnailData()
+                    try Task.checkCancellation()
+                    return (
+                        video.id,
+                        QuickPrehasher.prehash(for: video, thumbnailData: thumbnailData)
+                    )
+                }
+            }
+
+            var result: [UUID: QuickPrehash] = [:]
+            result.reserveCapacity(videos.count)
+            while let (id, prehash) = try await group.next() {
+                result[id] = prehash
+                if let video = iterator.next() {
+                    group.addTask {
+                        try Task.checkCancellation()
+                        let thumbnailData = await video.loadThumbnailData()
+                        try Task.checkCancellation()
+                        return (
+                            video.id,
+                            QuickPrehasher.prehash(for: video, thumbnailData: thumbnailData)
+                        )
+                    }
+                }
+            }
+            return result
+        }
     }
 
     // MARK: - Phase B helpers

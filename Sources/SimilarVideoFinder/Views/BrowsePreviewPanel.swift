@@ -240,7 +240,7 @@ struct BrowseStackedPreview: View {
     }
 }
 
-// MARK: - Browse Media Preview (with video playback via native AVPlayerLayer)
+// MARK: - Browse Media Preview (with video playback via native AVPlayerView)
 
 struct BrowseMediaPreview: View {
     let media: MediaItem
@@ -251,16 +251,14 @@ struct BrowseMediaPreview: View {
                 VideoPlaybackPreview(media: media)
                     .id(media.id)
                     .aspectRatio(16 / 9, contentMode: .fit)
-            } else if let image = MediaThumbnailImageCache.shared.image(for: media) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
             } else {
                 ZStack {
                     Color.secondary.opacity(0.12)
-                    Image(systemName: "photo")
-                        .font(.system(size: 42))
-                        .foregroundStyle(.secondary)
+                    MediaThumbnailView(
+                        item: media,
+                        placeholderSystemImage: "photo",
+                        placeholderFont: .system(size: 42)
+                    )
                 }
             }
         }
@@ -361,14 +359,18 @@ struct NativeVideoPlayerView: NSViewRepresentable {
         weak var playerView: AVPlayerView?
         private var volumeObservation: NSKeyValueObservation?
         private weak var observedPlayer: AVPlayer?
+        private var isPlaybackRequested = false
+        private let commands: NativeVideoPlayerCommands
         private let playerTeardown: @MainActor (AVPlayer) -> Void
 
         @MainActor
         init(
             volume: Binding<Double>,
+            commands: NativeVideoPlayerCommands = .live,
             playerTeardown: @escaping @MainActor (AVPlayer) -> Void = NativeVideoPlayerTeardown.release
         ) {
             self.volume = volume
+            self.commands = commands
             self.playerTeardown = playerTeardown
         }
 
@@ -380,31 +382,41 @@ struct NativeVideoPlayerView: NSViewRepresentable {
             }
 
             guard isPlaying else {
-                player.pause()
+                if isPlaybackRequested {
+                    commands.pause(player)
+                }
                 if currentURL != nil || player.currentItem != nil {
-                    player.replaceCurrentItem(with: nil)
+                    commands.replaceCurrentItem(player, nil)
                 }
                 currentURL = nil
+                isPlaybackRequested = false
                 return
             }
 
             guard currentURL != url else {
-                player.play()
+                if !isPlaybackRequested {
+                    isPlaybackRequested = true
+                    commands.play(player)
+                }
                 return
             }
 
             // pause-before-replace: avoids stalling the SwiftUI diff loop that
             // whole-player swaps and cancelPendingSeeks triggered previously.
-            player.pause()
+            if currentURL != nil || player.currentItem != nil || isPlaybackRequested {
+                commands.pause(player)
+            }
             if FileManager.default.fileExists(atPath: url.path) {
-                player.replaceCurrentItem(with: AVPlayerItem(url: url))
+                commands.replaceCurrentItem(player, AVPlayerItem(url: url))
                 currentURL = url
-                if isPlaying {
-                    player.play()
-                }
+                isPlaybackRequested = true
+                commands.play(player)
             } else {
-                player.replaceCurrentItem(with: nil)
+                if player.currentItem != nil {
+                    commands.replaceCurrentItem(player, nil)
+                }
                 currentURL = nil
+                isPlaybackRequested = false
             }
         }
 
@@ -427,6 +439,7 @@ struct NativeVideoPlayerView: NSViewRepresentable {
         func releaseCurrentPlayer(from playerView: AVPlayerView) {
             removeVolumeObservation()
             currentURL = nil
+            isPlaybackRequested = false
             if let player = playerView.player {
                 playerTeardown(player)
             }
@@ -452,6 +465,18 @@ struct NativeVideoPlayerView: NSViewRepresentable {
             observedPlayer = nil
         }
     }
+}
+
+struct NativeVideoPlayerCommands {
+    let play: @MainActor (AVPlayer) -> Void
+    let pause: @MainActor (AVPlayer) -> Void
+    let replaceCurrentItem: @MainActor (AVPlayer, AVPlayerItem?) -> Void
+
+    static let live = NativeVideoPlayerCommands(
+        play: { $0.play() },
+        pause: { $0.pause() },
+        replaceCurrentItem: { $0.replaceCurrentItem(with: $1) }
+    )
 }
 
 enum NativeVideoPlayerVolumeSync {

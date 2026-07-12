@@ -20,6 +20,7 @@
 // and credit the original author (Lirui Yu).
 
 import Combine
+import Foundation
 import SwiftUI
 
 @MainActor
@@ -37,7 +38,7 @@ final class BrowseViewModel: ObservableObject {
         var id: String { rawValue }
     }
 
-    struct ResolutionPreset: Identifiable, Sendable {
+    struct ResolutionPreset: Identifiable, Sendable, Equatable {
         let id: String
         let label: String
         let shortEdge: Int
@@ -72,15 +73,55 @@ final class BrowseViewModel: ObservableObject {
     /// when the same items appear in a different sort order.
     @Published var sortVersion: Int = 0
 
-    @Published var sortField: SortField = .name { didSet { recomputeDisplayedItems(bumpSortVersion: true) } }
-    @Published var sortAscending: Bool = true  { didSet { recomputeDisplayedItems(bumpSortVersion: true) } }
+    @Published var sortField: SortField = .name {
+        didSet {
+            guard sortField != oldValue else { return }
+            requestDisplayedItemsRecompute(bumpSortVersion: true)
+        }
+    }
+    @Published var sortAscending: Bool = true {
+        didSet {
+            guard sortAscending != oldValue else { return }
+            requestDisplayedItemsRecompute(bumpSortVersion: true)
+        }
+    }
     @Published var isResolutionSortPresented: Bool = false
-    @Published var mediaFilter: MediaFilter = .all { didSet { recomputeDisplayedItems() } }
-    @Published var resolutionComparator: ResolutionComparator = .lessThan { didSet { recomputeDisplayedItems() } }
-    @Published var selectedResolutionPreset: ResolutionPreset? { didSet { recomputeDisplayedItems() } }
-    @Published var manualWidth: String = "" { didSet { recomputeDisplayedItems() } }
-    @Published var manualHeight: String = "" { didSet { recomputeDisplayedItems() } }
-    @Published var searchText: String = "" { didSet { recomputeDisplayedItems() } }
+    @Published var mediaFilter: MediaFilter = .all {
+        didSet {
+            guard mediaFilter != oldValue else { return }
+            requestDisplayedItemsRecompute()
+        }
+    }
+    @Published var resolutionComparator: ResolutionComparator = .lessThan {
+        didSet {
+            guard resolutionComparator != oldValue else { return }
+            requestDisplayedItemsRecompute()
+        }
+    }
+    @Published var selectedResolutionPreset: ResolutionPreset? {
+        didSet {
+            guard selectedResolutionPreset != oldValue else { return }
+            requestDisplayedItemsRecompute()
+        }
+    }
+    @Published var manualWidth: String = "" {
+        didSet {
+            guard manualWidth != oldValue else { return }
+            requestDisplayedItemsRecompute()
+        }
+    }
+    @Published var manualHeight: String = "" {
+        didSet {
+            guard manualHeight != oldValue else { return }
+            requestDisplayedItemsRecompute()
+        }
+    }
+    @Published var searchText: String = "" {
+        didSet {
+            guard searchText != oldValue else { return }
+            requestDisplayedItemsRecompute()
+        }
+    }
     @Published var selectedMediaIDs: Set<UUID> = []
     @Published var primarySelectionID: UUID?
     @Published var selectionAnchorID: UUID?
@@ -89,19 +130,28 @@ final class BrowseViewModel: ObservableObject {
 
     let scanModel: ScanViewModel
     private var cancellables = Set<AnyCancellable>()
+    private var isBatchingDisplayedItemsRecompute = false
+    private var hasPendingDisplayedItemsRecompute = false
+    private var pendingSortVersionBump = false
+    private(set) var displayedItemsRecomputeCount = 0
 
     init(scanModel: ScanViewModel) {
         self.scanModel = scanModel
 
-        // Forward scanModel changes so views observing browseModel
-        // re-render when scanModel's @Published properties change
-        // (e.g. progress, allItems via computed `items`).
+        // Forward scan state changes needed by Browse progress and controls,
+        // but only an item revision should rebuild the sorted media list.
         scanModel.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                guard let self else { return }
-                self.objectWillChange.send()
-                self.recomputeDisplayedItems()
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        scanModel.$itemsRevision
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.requestDisplayedItemsRecompute()
             }
             .store(in: &cancellables)
 
@@ -110,7 +160,28 @@ final class BrowseViewModel: ObservableObject {
 
     // MARK: - Displayed items computation
 
+    private func requestDisplayedItemsRecompute(bumpSortVersion: Bool = false) {
+        if isBatchingDisplayedItemsRecompute {
+            hasPendingDisplayedItemsRecompute = true
+            pendingSortVersionBump = pendingSortVersionBump || bumpSortVersion
+            return
+        }
+        recomputeDisplayedItems(bumpSortVersion: bumpSortVersion)
+    }
+
+    private func batchDisplayedItemsChanges(_ changes: () -> Void) {
+        isBatchingDisplayedItemsRecompute = true
+        changes()
+        isBatchingDisplayedItemsRecompute = false
+        guard hasPendingDisplayedItemsRecompute else { return }
+        let bumpSortVersion = pendingSortVersionBump
+        hasPendingDisplayedItemsRecompute = false
+        pendingSortVersionBump = false
+        recomputeDisplayedItems(bumpSortVersion: bumpSortVersion)
+    }
+
     private func recomputeDisplayedItems(bumpSortVersion: Bool = false) {
+        displayedItemsRecomputeCount &+= 1
         let previousDisplayedItems = displayedItems
         let previousSelectedIDs = selectedMediaIDs
         let previousPrimarySelectionID = effectivePrimarySelectionID ?? primarySelectionID
@@ -143,34 +214,55 @@ final class BrowseViewModel: ObservableObject {
         }
 
         // Sort
-        items.sort { a, b in
-            let result: Bool
-            switch sortField {
-            case .name:
-                result = a.filename.localizedStandardCompare(b.filename) == .orderedAscending
-            case .fileSize:
-                result = a.fileSize < b.fileSize
-            case .modifiedTime:
-                let d1 = a.modifiedAt ?? .distantPast
-                let d2 = b.modifiedAt ?? .distantPast
-                result = d1 < d2
-            case .resolutionWidth:
-                result = a.width < b.width
-            case .resolutionHeight:
-                result = a.height < b.height
-            }
-            return sortAscending ? result : !result
-        }
+        items.sort(by: isOrderedBefore)
 
-        displayedItems = items
+        let orderedIDsChanged = previousDisplayedItems.map(\.id) != items.map(\.id)
+        if orderedIDsChanged {
+            displayedItems = items
+        }
         pruneSelection(
             previousDisplayedItems: previousDisplayedItems,
             previousSelectedIDs: previousSelectedIDs,
             previousPrimarySelectionID: previousPrimarySelectionID
         )
-        if bumpSortVersion {
+        if bumpSortVersion && orderedIDsChanged {
             sortVersion &+= 1
         }
+    }
+
+    private func isOrderedBefore(_ first: MediaItem, _ second: MediaItem) -> Bool {
+        let primaryComparison: ComparisonResult
+        switch sortField {
+        case .name:
+            primaryComparison = first.filename.localizedStandardCompare(second.filename)
+        case .fileSize:
+            primaryComparison = compare(first.fileSize, second.fileSize)
+        case .modifiedTime:
+            primaryComparison = compare(first.modifiedAt ?? .distantPast, second.modifiedAt ?? .distantPast)
+        case .resolutionWidth:
+            primaryComparison = compare(first.width, second.width)
+        case .resolutionHeight:
+            primaryComparison = compare(first.height, second.height)
+        }
+
+        if primaryComparison != .orderedSame {
+            return sortAscending
+                ? primaryComparison == .orderedAscending
+                : primaryComparison == .orderedDescending
+        }
+
+        let pathComparison = first.url.standardizedFileURL.path
+            .localizedStandardCompare(second.url.standardizedFileURL.path)
+        if pathComparison != .orderedSame {
+            return pathComparison == .orderedAscending
+        }
+        return first.id.uuidString < second.id.uuidString
+    }
+
+    private func compare<Value: Comparable>(_ first: Value, _ second: Value) -> ComparisonResult {
+        if first < second { return .orderedAscending }
+        if first > second { return .orderedDescending }
+        return .orderedSame
     }
 
     /// The primary selected item from the browse table.
@@ -361,21 +453,28 @@ final class BrowseViewModel: ObservableObject {
         if sortField == field {
             sortAscending.toggle()
         } else {
+            setSort(field: field, ascending: true)
+        }
+    }
+
+    func setSort(field: SortField, ascending: Bool) {
+        batchDisplayedItemsChanges {
             sortField = field
-            sortAscending = true
+            sortAscending = ascending
         }
     }
 
     /// Reset sort back to name/ascending (used by the resolution sort popover's Clear button).
     func clearResolutionSort() {
-        sortField = .name
-        sortAscending = true
+        setSort(field: .name, ascending: true)
     }
 
     func clearResolutionFilter() {
-        selectedResolutionPreset = nil
-        manualWidth = ""
-        manualHeight = ""
+        batchDisplayedItemsChanges {
+            selectedResolutionPreset = nil
+            manualWidth = ""
+            manualHeight = ""
+        }
     }
 
     var hasActiveFilter: Bool {
