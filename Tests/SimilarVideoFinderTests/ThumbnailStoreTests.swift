@@ -82,6 +82,30 @@ final class ThumbnailStoreTests: XCTestCase {
         XCTAssertEqual(store.count(), 1)
     }
 
+    func testAsyncSizeAndClearAllCoverPersistedThumbnails() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ThumbnailStoreClearTests-(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ThumbnailStore(directoryURL: root)
+        let date = Date(timeIntervalSince1970: 654)
+        _ = try store.persist(
+            Data([1, 2, 3]),
+            sourceURL: URL(fileURLWithPath: "/media/first.jpg"),
+            modifiedAt: date
+        )
+        _ = try store.persist(
+            Data([4, 5]),
+            sourceURL: URL(fileURLWithPath: "/media/second.jpg"),
+            modifiedAt: date
+        )
+
+        let size = await store.totalSize()
+        XCTAssertEqual(size, 5)
+
+        try await store.clearAll()
+        XCTAssertEqual(store.count(), 0)
+    }
+
     private func writePNG(width: Int, height: Int, to url: URL) throws {
         guard let context = CGContext(
             data: nil,

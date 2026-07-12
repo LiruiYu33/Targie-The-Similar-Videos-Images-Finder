@@ -768,7 +768,9 @@ final class ScanViewModel: ObservableObject {
         // the group list by kind. If the selected group isn't visible under
         // the new mode, clear the selection so the detail pane doesn't show a
         // hidden group.
-        if let selectedGroup, selectedGroup.kind != kind(for: mode) {
+        if let targetKind = kind(for: mode),
+           let selectedGroup,
+           selectedGroup.kind != targetKind {
             selectedGroupID = nil
             selectedMediaID = nil
             sortedGroupItems = []
@@ -978,7 +980,7 @@ final class ScanViewModel: ObservableObject {
     /// Returns the current cache footprint in human-readable size strings so the
     /// UI can show users what they'd be deleting.
     func cacheStats() async -> (thumbnailMB: String, hashMB: String) {
-        let tb = Double(ThumbnailStore.shared.totalSize()) / 1_048_576
+        let tb = Double(await thumbnailStore.totalSize()) / 1_048_576
         let hb = Double(await hashCache?.sizeInBytes() ?? 0) / 1_048_576
         return (String(format: tb < 1 ? "%.1f" : "%.0f", tb),
                 String(format: hb < 1 ? "%.1f" : "%.0f", hb))
@@ -989,7 +991,7 @@ final class ScanViewModel: ObservableObject {
     /// "Clear Cache" button in the main toolbar.
     func clearAllCaches() async {
         MediaThumbnailImageCache.shared.removeAll()
-        try? ThumbnailStore.shared.clearAll()
+        try? await thumbnailStore.clearAll()
         await hashCache?.clearAll()
     }
 

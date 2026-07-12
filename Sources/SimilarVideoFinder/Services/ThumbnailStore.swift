@@ -104,13 +104,19 @@ struct ThumbnailStore: Sendable {
     }
 
     /// Total size of cached thumbnail files, in bytes.
-    func totalSize() -> Int64 {
-        guard FileManager.default.fileExists(atPath: directoryURL.path),
-              let contents = try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: [.fileSizeKey])
-        else { return 0 }
-        return contents.filter { $0.pathExtension == "jpg" }.reduce(0) { total, url in
-            total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-        }
+    func totalSize() async -> Int64 {
+        let directoryURL = directoryURL
+        return await Task.detached(priority: .utility) {
+            guard FileManager.default.fileExists(atPath: directoryURL.path),
+                  let contents = try? FileManager.default.contentsOfDirectory(
+                    at: directoryURL,
+                    includingPropertiesForKeys: [.fileSizeKey]
+                  )
+            else { return 0 }
+            return contents.filter { $0.pathExtension == "jpg" }.reduce(0) { total, url in
+                total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            }
+        }.value
     }
 
     /// Number of cached thumbnails currently on disk.
@@ -122,13 +128,19 @@ struct ThumbnailStore: Sendable {
     }
 
     /// Removes every cached thumbnail from disk and the in-memory cache.
-    func clearAll() throws {
-        ThumbnailDataCache.shared.removeAll()
-        guard FileManager.default.fileExists(atPath: directoryURL.path) else { return }
-        let contents = try FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
-        for url in contents where url.pathExtension == "jpg" {
-            try? FileManager.default.removeItem(at: url)
-        }
+    func clearAll() async throws {
+        let directoryURL = directoryURL
+        try await Task.detached(priority: .utility) {
+            ThumbnailDataCache.shared.removeAll()
+            guard FileManager.default.fileExists(atPath: directoryURL.path) else { return }
+            let contents = try FileManager.default.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: nil
+            )
+            for url in contents where url.pathExtension == "jpg" {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }.value
     }
 
     static func cachedData(at url: URL) -> Data? {

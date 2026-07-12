@@ -150,7 +150,7 @@ struct ContentView: View {
                     systemImage: "doc.text.image",
                     action: enterBrowseMode
                 )
-                .disabled(model.selectedFolders.isEmpty)
+                .disabled(model.selectedFolders.isEmpty || model.isScanning)
 
                 ToolbarLabeledButton(
                     title: L10n.clearCache(language),
@@ -231,6 +231,7 @@ struct ContentView: View {
     // MARK: - Mode Switching
 
     private func enterBrowseMode() {
+        guard !model.isScanning else { return }
         if !model.hasDiscoveredItems {
             model.discoverFiles()
         }

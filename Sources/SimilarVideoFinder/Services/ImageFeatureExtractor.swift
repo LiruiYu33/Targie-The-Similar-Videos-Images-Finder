@@ -56,8 +56,13 @@ enum ImageFeatureSerializer {
 }
 
 actor ImageFeatureCache {
+    private struct CachedTask {
+        let id: UUID
+        let task: Task<ImageFeature, Error>
+    }
+
     private let extractor: any ImageFeatureExtracting
-    private var storage: [URL: Task<ImageFeature, Error>] = [:]
+    private var storage: [URL: CachedTask] = [:]
     private let persistentCache: (any HashCaching)?
 
     init(
@@ -69,7 +74,9 @@ actor ImageFeatureCache {
     }
 
     func feature(for url: URL) async throws -> ImageFeature {
-        if let cached = storage[url] { return try await cached.value }
+        if let cached = storage[url] {
+            return try await value(from: cached, for: url)
+        }
 
         let extractor = self.extractor
         let persistentCache = self.persistentCache
@@ -80,8 +87,20 @@ actor ImageFeatureCache {
                 persistentCache: persistentCache
             )
         }
-        storage[url] = task
-        return try await task.value
+        let cached = CachedTask(id: UUID(), task: task)
+        storage[url] = cached
+        return try await value(from: cached, for: url)
+    }
+
+    private func value(from cached: CachedTask, for url: URL) async throws -> ImageFeature {
+        do {
+            return try await cached.task.value
+        } catch {
+            if storage[url]?.id == cached.id {
+                storage.removeValue(forKey: url)
+            }
+            throw error
+        }
     }
 
     private static func loadFeature(

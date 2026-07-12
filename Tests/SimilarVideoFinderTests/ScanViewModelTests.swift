@@ -841,6 +841,62 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(model.selectedGroupID, videoGroupID)
     }
 
+    func testSwitchingFromVideosToAllPreservesVisibleSelection() {
+        let first = SimilarityScoringTests.video(name: "all-visible-a.mov")
+        let second = SimilarityScoringTests.video(name: "all-visible-b.mov")
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.95,
+            evidence: [.similarPerceptualHash]
+        )
+        let model = ScanViewModel(hashCache: nil)
+        model.replaceResultsForTesting(items: [first, second], relations: [relation])
+        model.setScanMode(.videos)
+        let groupID = model.groups[0].id
+        model.selectGroup(groupID)
+        model.toggleChecked(first.id)
+
+        model.setScanMode(.all)
+
+        XCTAssertEqual(model.selectedGroupID, groupID)
+        XCTAssertEqual(model.selectedMediaID, first.id)
+        XCTAssertEqual(model.checkedMediaIDs, [first.id])
+    }
+
+    func testCacheMaintenanceUsesInjectedThumbnailStore() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ScanViewModelCache-(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let thumbnailStore = ThumbnailStore(directoryURL: root)
+        _ = try thumbnailStore.persist(
+            Data(repeating: 1, count: 1_048_576),
+            sourceURL: URL(fileURLWithPath: "/media/cache-test.jpg"),
+            modifiedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let cache = InMemoryHashCache()
+        await cache.upsert(CacheRecord(
+            filePath: "/media/cache-test.jpg",
+            fileSize: 1,
+            modifiedAt: nil,
+            perceptualHash: Data([1]),
+            prehashDurationBucket: 0,
+            prehashSizeBucket: 0,
+            prehashAspectBucket: 0,
+            prehashThumbnailMean: 0,
+            prehashThumbnailVariance: 0
+        ))
+        let model = ScanViewModel(hashCache: cache, thumbnailStore: thumbnailStore)
+
+        let stats = await model.cacheStats()
+        XCTAssertEqual(stats.thumbnailMB, "1")
+        await model.clearAllCaches()
+
+        XCTAssertEqual(thumbnailStore.count(), 0)
+        let hashCount = await cache.count()
+        XCTAssertEqual(hashCount, 0)
+    }
+
     // MARK: - Compare Media group sort
 
     /// Builds a connected group of three files with controllable metadata so

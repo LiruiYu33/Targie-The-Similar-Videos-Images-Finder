@@ -150,6 +150,23 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         XCTAssertEqual(extractor.extractionCount, 1)
     }
 
+    func testImageFeatureCacheRetriesAfterFailedTask() async {
+        let extractor = CountingThrowingImageFeatureExtractor()
+        let cache = ImageFeatureCache(extractor: extractor)
+        let url = URL(fileURLWithPath: "/tmp/retry-feature.jpg")
+
+        for _ in 0..<2 {
+            do {
+                _ = try await cache.feature(for: url)
+                XCTFail("Feature extraction should fail")
+            } catch {
+                // A failed in-flight task must be removed so the next call retries.
+            }
+        }
+
+        XCTAssertEqual(extractor.extractionCount, 2)
+    }
+
     func testCachedPairRelationUsesBatchLookupDuringComparison() async throws {
         let first = image(path: "/missing/batch-pair-cache-first.jpg", size: 1_000)
         let second = image(path: "/missing/batch-pair-cache-second.jpg", size: 1_100)
