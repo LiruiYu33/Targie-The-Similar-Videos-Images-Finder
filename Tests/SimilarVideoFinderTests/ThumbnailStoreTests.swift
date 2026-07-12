@@ -84,7 +84,7 @@ final class ThumbnailStoreTests: XCTestCase {
 
     func testAsyncSizeAndClearAllCoverPersistedThumbnails() async throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ThumbnailStoreClearTests-(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("ThumbnailStoreClearTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = ThumbnailStore(directoryURL: root)
         let date = Date(timeIntervalSince1970: 654)
@@ -104,6 +104,36 @@ final class ThumbnailStoreTests: XCTestCase {
 
         try await store.clearAll()
         XCTAssertEqual(store.count(), 0)
+    }
+
+    func testPersistLoadsDirectoryIndexOnlyOnceAndRemovesStaleVersion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ThumbnailStoreIndexTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ThumbnailStore(directoryURL: root)
+        let firstSource = URL(fileURLWithPath: "/media/first.jpg")
+        let secondSource = URL(fileURLWithPath: "/media/second.jpg")
+
+        let staleThumbnail = try store.persist(
+            Data([1]),
+            sourceURL: firstSource,
+            modifiedAt: Date(timeIntervalSince1970: 1)
+        )
+        let currentThumbnail = try store.persist(
+            Data([2]),
+            sourceURL: firstSource,
+            modifiedAt: Date(timeIntervalSince1970: 2)
+        )
+        _ = try store.persist(
+            Data([3]),
+            sourceURL: secondSource,
+            modifiedAt: Date(timeIntervalSince1970: 1)
+        )
+
+        XCTAssertEqual(store.directoryIndexLoadCountForTesting, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleThumbnail.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: currentThumbnail.path))
+        XCTAssertEqual(store.count(), 2)
     }
 
     private func writePNG(width: Int, height: Int, to url: URL) throws {
