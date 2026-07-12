@@ -110,6 +110,36 @@ final class VideoScannerTests: XCTestCase {
         XCTAssertEqual(finalReading.cacheHits, 1)
         XCTAssertEqual(finalReading.cacheTotal, 1)
     }
+
+    func testLargeScanThrottlesMetadataProgressUpdates() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<250 {
+            try Data().write(to: root.appendingPathComponent("video-\(index).mp4"))
+        }
+        let progress = VideoScannerProgressRecorder()
+        let scanner = VideoScanner(maxConcurrentLoads: 8) { url in
+            MediaItem(
+                kind: .video,
+                url: url,
+                fileSize: 1,
+                duration: 1,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: nil
+            )
+        }
+
+        _ = try await scanner.scan(folder: root) {
+            await progress.append($0)
+        }
+
+        let updates = await progress.updates(for: .readingMetadata)
+        XCTAssertLessThanOrEqual(updates.count, 102)
+        XCTAssertEqual(updates.last?.fraction, 1)
+    }
 }
 
 private actor LoadConcurrencyTracker {

@@ -11,6 +11,12 @@ struct ThumbnailStore: Sendable {
     static let shared = ThumbnailStore(directoryURL: CachePaths.thumbnailDirectoryURL())
 
     let directoryURL: URL
+    private let fileIndex: ThumbnailFileIndex
+
+    init(directoryURL: URL) {
+        self.directoryURL = directoryURL
+        self.fileIndex = ThumbnailFileIndex(directoryURL: directoryURL)
+    }
 
     func persist(_ data: Data, sourceURL: URL, modifiedAt: Date?) throws -> URL {
         try FileManager.default.createDirectory(
@@ -19,16 +25,16 @@ struct ThumbnailStore: Sendable {
         )
         let pathKey = pathKey(for: sourceURL)
         let destination = destinationURL(pathKey: pathKey, modifiedAt: modifiedAt)
-        // Remove every thumbnail for this source file that differs from the
-        // current modification time — those are stale because the file changed.
-        if let existing = try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil) {
-            for url in existing where url.lastPathComponent.hasPrefix("\(pathKey)_") && url != destination {
+        try fileIndex.withFiles { filesByPathKey in
+            for url in filesByPathKey[pathKey, default: []] where url != destination {
                 try? FileManager.default.removeItem(at: url)
                 ThumbnailDataCache.shared.remove(url)
             }
-        }
-        if !FileManager.default.fileExists(atPath: destination.path) {
-            try data.write(to: destination, options: .atomic)
+            filesByPathKey[pathKey] = []
+            if !FileManager.default.fileExists(atPath: destination.path) {
+                try data.write(to: destination, options: .atomic)
+            }
+            filesByPathKey[pathKey] = [destination]
         }
         ThumbnailDataCache.shared.insert(data, for: destination)
         return destination
@@ -38,8 +44,16 @@ struct ThumbnailStore: Sendable {
     /// on disk, without generating anything. Lets scanners skip the expensive
     /// thumbnail generation (video frame decode / image downscale) on re-scan.
     func existingThumbnailURL(for sourceURL: URL, modifiedAt: Date?) -> URL? {
-        let expected = destinationURL(pathKey: pathKey(for: sourceURL), modifiedAt: modifiedAt)
-        return FileManager.default.fileExists(atPath: expected.path) ? expected : nil
+        let pathKey = pathKey(for: sourceURL)
+        let expected = destinationURL(pathKey: pathKey, modifiedAt: modifiedAt)
+        return fileIndex.withFiles { filesByPathKey in
+            guard FileManager.default.fileExists(atPath: expected.path) else {
+                filesByPathKey[pathKey]?.remove(expected)
+                return nil
+            }
+            filesByPathKey[pathKey, default: []].insert(expected)
+            return expected
+        }
     }
 
     /// Migrates a thumbnail from a known old path to the new source URL.
@@ -49,21 +63,32 @@ struct ThumbnailStore: Sendable {
     func migrateFromOldPath(_ oldPath: String, to newURL: URL, modifiedAt: Date?) -> URL? {
         let oldPathKey = pathKey(for: URL(fileURLWithPath: oldPath))
         let oldURL = directoryURL.appendingPathComponent("\(oldPathKey)_\(modifiedKey(for: modifiedAt)).jpg")
-        guard FileManager.default.fileExists(atPath: oldURL.path) else { return nil }
+        let newPathKey = pathKey(for: newURL)
+        let destination = destinationURL(pathKey: newPathKey, modifiedAt: modifiedAt)
 
-        let destination = destinationURL(pathKey: pathKey(for: newURL), modifiedAt: modifiedAt)
-        guard !FileManager.default.fileExists(atPath: destination.path) else { return destination }
-
-        do {
-            try FileManager.default.copyItem(at: oldURL, to: destination)
-            try? FileManager.default.removeItem(at: oldURL)
-            ThumbnailDataCache.shared.remove(oldURL)
-            if let data = try? Data(contentsOf: destination) {
-                ThumbnailDataCache.shared.insert(data, for: destination)
+        return fileIndex.withFiles { filesByPathKey in
+            guard FileManager.default.fileExists(atPath: oldURL.path) else { return nil }
+            if FileManager.default.fileExists(atPath: destination.path) {
+                filesByPathKey[newPathKey, default: []].insert(destination)
+                return destination
             }
-            return destination
-        } catch {
-            return nil
+
+            do {
+                try FileManager.default.copyItem(at: oldURL, to: destination)
+                try? FileManager.default.removeItem(at: oldURL)
+                filesByPathKey[oldPathKey]?.remove(oldURL)
+                if filesByPathKey[oldPathKey]?.isEmpty == true {
+                    filesByPathKey.removeValue(forKey: oldPathKey)
+                }
+                filesByPathKey[newPathKey, default: []].insert(destination)
+                ThumbnailDataCache.shared.remove(oldURL)
+                if let data = try? Data(contentsOf: destination) {
+                    ThumbnailDataCache.shared.insert(data, for: destination)
+                }
+                return destination
+            } catch {
+                return nil
+            }
         }
     }
 
@@ -72,12 +97,14 @@ struct ThumbnailStore: Sendable {
     func pruneStale(validSourceURLs: Set<URL>) throws {
         guard FileManager.default.fileExists(atPath: directoryURL.path) else { return }
         let validPathKeys = Set(validSourceURLs.map { pathKey(for: $0) })
-        let contents = try FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
-        for url in contents where url.pathExtension == "jpg" {
-            guard let pathKey = url.lastPathComponent.split(separator: "_", maxSplits: 1).first else { continue }
-            if !validPathKeys.contains(String(pathKey)) {
-                try? FileManager.default.removeItem(at: url)
-                ThumbnailDataCache.shared.remove(url)
+        fileIndex.withFiles { filesByPathKey in
+            let stalePathKeys = filesByPathKey.keys.filter { !validPathKeys.contains($0) }
+            for pathKey in stalePathKeys {
+                for url in filesByPathKey[pathKey, default: []] {
+                    try? FileManager.default.removeItem(at: url)
+                    ThumbnailDataCache.shared.remove(url)
+                }
+                filesByPathKey.removeValue(forKey: pathKey)
             }
         }
     }
@@ -104,31 +131,51 @@ struct ThumbnailStore: Sendable {
     }
 
     /// Total size of cached thumbnail files, in bytes.
-    func totalSize() -> Int64 {
-        guard FileManager.default.fileExists(atPath: directoryURL.path),
-              let contents = try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: [.fileSizeKey])
-        else { return 0 }
-        return contents.filter { $0.pathExtension == "jpg" }.reduce(0) { total, url in
-            total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-        }
+    func totalSize() async -> Int64 {
+        let directoryURL = directoryURL
+        return await Task.detached(priority: .utility) {
+            guard FileManager.default.fileExists(atPath: directoryURL.path),
+                  let contents = try? FileManager.default.contentsOfDirectory(
+                    at: directoryURL,
+                    includingPropertiesForKeys: [.fileSizeKey]
+                  )
+            else { return 0 }
+            return contents.filter { $0.pathExtension == "jpg" }.reduce(0) { total, url in
+                total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            }
+        }.value
     }
 
     /// Number of cached thumbnails currently on disk.
     func count() -> Int {
-        guard FileManager.default.fileExists(atPath: directoryURL.path),
-              let contents = try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
-        else { return 0 }
-        return contents.filter { $0.pathExtension == "jpg" }.count
+        fileIndex.count
     }
 
     /// Removes every cached thumbnail from disk and the in-memory cache.
-    func clearAll() throws {
-        ThumbnailDataCache.shared.removeAll()
-        guard FileManager.default.fileExists(atPath: directoryURL.path) else { return }
-        let contents = try FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
-        for url in contents where url.pathExtension == "jpg" {
-            try? FileManager.default.removeItem(at: url)
-        }
+    func clearAll() async throws {
+        let directoryURL = directoryURL
+        let fileIndex = fileIndex
+        try await Task.detached(priority: .utility) {
+            ThumbnailDataCache.shared.removeAll()
+            try fileIndex.withFiles { filesByPathKey in
+                guard FileManager.default.fileExists(atPath: directoryURL.path) else {
+                    filesByPathKey.removeAll()
+                    return
+                }
+                let contents = try FileManager.default.contentsOfDirectory(
+                    at: directoryURL,
+                    includingPropertiesForKeys: nil
+                )
+                for url in contents where url.pathExtension == "jpg" {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                filesByPathKey.removeAll()
+            }
+        }.value
+    }
+
+    var directoryIndexLoadCountForTesting: Int {
+        fileIndex.directoryLoadCount
     }
 
     static func cachedData(at url: URL) -> Data? {
@@ -172,6 +219,7 @@ struct ThumbnailStore: Sendable {
             )
             try data.write(to: thumbnailURL, options: .atomic)
             ThumbnailDataCache.shared.insert(data, for: thumbnailURL)
+            shared.fileIndex.recordIfRecognized(thumbnailURL)
         } catch {
             return data
         }
@@ -273,6 +321,74 @@ struct ThumbnailStore: Sendable {
         }
     }
 
+}
+
+private final class ThumbnailFileIndex: @unchecked Sendable {
+    private let directoryURL: URL
+    private let lock = NSLock()
+    private var filesByPathKey: [String: Set<URL>] = [:]
+    private var hasLoadedDirectory = false
+    private var loadCount = 0
+
+    init(directoryURL: URL) {
+        self.directoryURL = directoryURL
+    }
+
+    func withFiles<T>(
+        _ operation: (inout [String: Set<URL>]) throws -> T
+    ) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        loadDirectoryIfNeeded()
+        return try operation(&filesByPathKey)
+    }
+
+    func record(_ url: URL, pathKey: String) {
+        _ = withFiles { filesByPathKey in
+            filesByPathKey[pathKey, default: []].insert(url)
+        }
+    }
+
+    func recordIfRecognized(_ url: URL) {
+        guard url.deletingLastPathComponent().standardizedFileURL == directoryURL.standardizedFileURL,
+              let pathKey = Self.pathKey(from: url)
+        else { return }
+        record(url, pathKey: pathKey)
+    }
+
+    var count: Int {
+        withFiles { filesByPathKey in
+            filesByPathKey.values.reduce(0) { $0 + $1.count }
+        }
+    }
+
+    var directoryLoadCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return loadCount
+    }
+
+    private func loadDirectoryIfNeeded() {
+        guard !hasLoadedDirectory else { return }
+        hasLoadedDirectory = true
+        loadCount += 1
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for url in contents {
+            guard let pathKey = Self.pathKey(from: url) else { continue }
+            filesByPathKey[pathKey, default: []].insert(url)
+        }
+    }
+
+    private static func pathKey(from url: URL) -> String? {
+        guard url.pathExtension.lowercased() == "jpg",
+              let pathKey = url.lastPathComponent.split(separator: "_", maxSplits: 1).first,
+              !pathKey.isEmpty
+        else { return nil }
+        return String(pathKey)
+    }
 }
 
 private final class ThumbnailDataCache: @unchecked Sendable {

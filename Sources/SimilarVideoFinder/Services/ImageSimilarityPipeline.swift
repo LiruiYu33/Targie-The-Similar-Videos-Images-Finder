@@ -233,7 +233,7 @@ struct ImageSimilarityPipeline: Sendable {
                     if pendingPairRelationUpserts.count >= Self.pairRelationWriteBatchSize {
                         await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
                     }
-                    if ScanProgressReporting.shouldReportComparison(completed: completedMisses, total: misses.count) {
+                    if ScanProgressReporting.shouldReport(completed: completedMisses, total: misses.count) {
                         await progress(ScanProgress(
                             stage: .comparing,
                             fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
@@ -339,15 +339,17 @@ struct ImageSimilarityPipeline: Sendable {
                     record.algorithmVersion = Self.algorithmVersion
                     await cache?.upsert(record)
                 }
-                await progress(ScanProgress(
-                    stage: .hashing,
-                    fraction: images.isEmpty ? 1 : Double(completed) / Double(images.count),
-                    currentFile: item.filename,
-                    discoveredCount: images.count,
-                    cacheHits: cacheHits,
-                    cacheTotal: images.count,
-                    cacheKind: cache != nil && !images.isEmpty ? .fingerprint : nil
-                ))
+                if ScanProgressReporting.shouldReport(completed: completed, total: images.count) {
+                    await progress(ScanProgress(
+                        stage: .hashing,
+                        fraction: images.isEmpty ? 1 : Double(completed) / Double(images.count),
+                        currentFile: item.filename,
+                        discoveredCount: images.count,
+                        cacheHits: cacheHits,
+                        cacheTotal: images.count,
+                        cacheKind: cache != nil && !images.isEmpty ? .fingerprint : nil
+                    ))
+                }
                 if let next = iterator.next() { group.addTask { (next, try? ImagePerceptualHasher.hash(for: next.url, id: next.id)) } }
             }
         }

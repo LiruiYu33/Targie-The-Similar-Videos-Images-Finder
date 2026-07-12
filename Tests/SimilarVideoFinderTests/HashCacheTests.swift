@@ -292,6 +292,108 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNotNil(metadata)
     }
 
+    func testMetadataUpdateInvalidatesSHA256WhenFileIdentityChanges() async {
+        let originalDate = Date(timeIntervalSince1970: 5_510)
+        let changedDate = originalDate.addingTimeInterval(10)
+        let path = tempDir.appendingPathComponent("changed-in-place.mp4").path
+        await cache.upsertMetadata(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: originalDate,
+            mediaKind: .video,
+            duration: 10,
+            width: 640,
+            height: 360
+        )
+        await cache.upsertSHA256(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: originalDate,
+            mediaKind: .video,
+            sha256: "stale-sha"
+        )
+
+        await cache.upsertMetadata(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate,
+            mediaKind: .video,
+            duration: 11,
+            width: 640,
+            height: 360
+        )
+
+        let sha = await cache.lookupSHA256(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate,
+            mediaKind: .video
+        )
+        XCTAssertNil(sha)
+    }
+
+    func testMetadataUpdatePreservesSHA256ForUnchangedFileIdentity() async {
+        let date = Date(timeIntervalSince1970: 5_520)
+        let path = tempDir.appendingPathComponent("same-file.mp4").path
+        await cache.upsertSHA256(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: date,
+            mediaKind: .video,
+            sha256: "current-sha"
+        )
+
+        await cache.upsertMetadata(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: date,
+            mediaKind: .video,
+            duration: 12,
+            width: 1920,
+            height: 1080
+        )
+
+        let sha = await cache.lookupSHA256(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: date,
+            mediaKind: .video
+        )
+        XCTAssertEqual(sha, "current-sha")
+    }
+
+    func testInMemoryMetadataUpdateInvalidatesSHA256WhenIdentityChanges() async {
+        let inMemory = InMemoryHashCache()
+        let originalDate = Date(timeIntervalSince1970: 5_530)
+        let changedDate = originalDate.addingTimeInterval(10)
+        let path = "/tmp/in-memory-changed.mp4"
+        await inMemory.upsertSHA256(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: originalDate,
+            mediaKind: .video,
+            sha256: "stale-sha"
+        )
+
+        await inMemory.upsertMetadata(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate,
+            mediaKind: .video,
+            duration: 10,
+            width: 640,
+            height: 360
+        )
+
+        let sha = await inMemory.lookupSHA256(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate,
+            mediaKind: .video
+        )
+        XCTAssertNil(sha)
+    }
+
     func testBatchMetadataLookupReturnsOnlyMatchingPrimaryEntries() async {
         let date = Date(timeIntervalSince1970: 5_600)
         let matching = MediaMetadataCacheKey(filePath: "/tmp/batch-metadata.mp4", fileSize: 4, modifiedAt: date, mediaKind: .video)

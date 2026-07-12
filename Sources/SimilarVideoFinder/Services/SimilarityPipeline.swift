@@ -451,7 +451,7 @@ struct SimilarityPipeline: SimilarityProcessing {
                     if pendingPairRelationUpserts.count >= Self.pairRelationWriteBatchSize {
                         await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
                     }
-                    if ScanProgressReporting.shouldReportComparison(completed: completedMisses, total: misses.count) {
+                    if ScanProgressReporting.shouldReport(completed: completedMisses, total: misses.count) {
                         await progress(ScanProgress(
                             stage: .comparing,
                             fraction: 0.2 + 0.8 * Double(completedMisses) / Double(misses.count),
@@ -632,6 +632,7 @@ struct SimilarityPipeline: SimilarityProcessing {
             processorCount: ProcessInfo.processInfo.activeProcessorCount,
             scanIntensity: scanIntensity
         )
+        let filenamesByID = Dictionary(uniqueKeysWithValues: needsHashing.map { ($0.id, $0.filename) })
 
         let computed = try await withThrowingTaskGroup(of: (UUID, VideoPerceptualHash?).self) { group in
             var iterator = needsHashing.makeIterator()
@@ -650,16 +651,17 @@ struct SimilarityPipeline: SimilarityProcessing {
                 if let hash { results[id] = hash }
 
                 let done = await counter.increment()
-                let video = needsHashing.first { $0.id == id }
-                await progress(ScanProgress(
-                    stage: .hashing,
-                    fraction: Double(done) / Double(total),
-                    currentFile: video?.filename ?? "",
-                    discoveredCount: total,
-                    cacheHits: cached.count,
-                    cacheTotal: cacheTotal,
-                    cacheKind: cache != nil && cacheTotal > 0 ? .fingerprint : nil
-                ))
+                if ScanProgressReporting.shouldReport(completed: done, total: total) {
+                    await progress(ScanProgress(
+                        stage: .hashing,
+                        fraction: Double(done) / Double(total),
+                        currentFile: filenamesByID[id] ?? "",
+                        discoveredCount: total,
+                        cacheHits: cached.count,
+                        cacheTotal: cacheTotal,
+                        cacheKind: cache != nil && cacheTotal > 0 ? .fingerprint : nil
+                    ))
+                }
 
                 if let next = iterator.next() {
                     group.addTask {

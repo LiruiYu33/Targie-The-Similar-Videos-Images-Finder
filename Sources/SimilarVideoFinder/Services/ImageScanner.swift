@@ -125,15 +125,17 @@ struct ImageScanner: Sendable {
                 collected.append(result)
                 completed += 1
                 if result.metadataCacheHit { metadataCacheHits += 1 }
-                await progress(ScanProgress(
-                    stage: .readingMetadata,
-                    fraction: urls.isEmpty ? 1 : Double(completed) / Double(urls.count),
-                    currentFile: result.url.lastPathComponent,
-                    discoveredCount: urls.count,
-                    cacheHits: metadataCacheHits,
-                    cacheTotal: reportsMetadataCache ? urls.count : 0,
-                    cacheKind: reportsMetadataCache ? .metadata : nil
-                ))
+                if ScanProgressReporting.shouldReport(completed: completed, total: urls.count) {
+                    await progress(ScanProgress(
+                        stage: .readingMetadata,
+                        fraction: urls.isEmpty ? 1 : Double(completed) / Double(urls.count),
+                        currentFile: result.url.lastPathComponent,
+                        discoveredCount: urls.count,
+                        cacheHits: metadataCacheHits,
+                        cacheTotal: reportsMetadataCache ? urls.count : 0,
+                        cacheKind: reportsMetadataCache ? .metadata : nil
+                    ))
+                }
                 if let next = iterator.next() {
                     group.addTask {
                         try await Self.load(

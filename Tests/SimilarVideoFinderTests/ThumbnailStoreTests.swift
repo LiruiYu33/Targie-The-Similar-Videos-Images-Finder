@@ -82,6 +82,60 @@ final class ThumbnailStoreTests: XCTestCase {
         XCTAssertEqual(store.count(), 1)
     }
 
+    func testAsyncSizeAndClearAllCoverPersistedThumbnails() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ThumbnailStoreClearTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ThumbnailStore(directoryURL: root)
+        let date = Date(timeIntervalSince1970: 654)
+        _ = try store.persist(
+            Data([1, 2, 3]),
+            sourceURL: URL(fileURLWithPath: "/media/first.jpg"),
+            modifiedAt: date
+        )
+        _ = try store.persist(
+            Data([4, 5]),
+            sourceURL: URL(fileURLWithPath: "/media/second.jpg"),
+            modifiedAt: date
+        )
+
+        let size = await store.totalSize()
+        XCTAssertEqual(size, 5)
+
+        try await store.clearAll()
+        XCTAssertEqual(store.count(), 0)
+    }
+
+    func testPersistLoadsDirectoryIndexOnlyOnceAndRemovesStaleVersion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ThumbnailStoreIndexTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ThumbnailStore(directoryURL: root)
+        let firstSource = URL(fileURLWithPath: "/media/first.jpg")
+        let secondSource = URL(fileURLWithPath: "/media/second.jpg")
+
+        let staleThumbnail = try store.persist(
+            Data([1]),
+            sourceURL: firstSource,
+            modifiedAt: Date(timeIntervalSince1970: 1)
+        )
+        let currentThumbnail = try store.persist(
+            Data([2]),
+            sourceURL: firstSource,
+            modifiedAt: Date(timeIntervalSince1970: 2)
+        )
+        _ = try store.persist(
+            Data([3]),
+            sourceURL: secondSource,
+            modifiedAt: Date(timeIntervalSince1970: 1)
+        )
+
+        XCTAssertEqual(store.directoryIndexLoadCountForTesting, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleThumbnail.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: currentThumbnail.path))
+        XCTAssertEqual(store.count(), 2)
+    }
+
     private func writePNG(width: Int, height: Int, to url: URL) throws {
         guard let context = CGContext(
             data: nil,

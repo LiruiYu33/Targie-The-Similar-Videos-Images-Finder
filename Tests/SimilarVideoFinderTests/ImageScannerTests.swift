@@ -90,6 +90,38 @@ final class ImageScannerTests: XCTestCase {
         XCTAssertEqual(result.issues[0].url.lastPathComponent, "bad.jpg")
     }
 
+    func testLargeScanThrottlesMetadataProgressUpdates() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<250 {
+            FileManager.default.createFile(
+                atPath: root.appendingPathComponent("image-\(index).jpg").path,
+                contents: Data()
+            )
+        }
+        let progress = ImageScannerProgressRecorder()
+        let scanner = ImageScanner(maxConcurrentLoads: 8) { url in
+            MediaItem(
+                kind: .image,
+                url: url,
+                fileSize: 1,
+                duration: nil,
+                width: 16,
+                height: 9,
+                modifiedAt: nil,
+                thumbnailData: nil
+            )
+        }
+
+        _ = try await scanner.scan(folder: root) {
+            await progress.append($0)
+        }
+
+        let updates = await progress.updates(for: .readingMetadata)
+        XCTAssertLessThanOrEqual(updates.count, 102)
+        XCTAssertEqual(updates.last?.fraction, 1)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("ImageScannerTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -118,4 +150,16 @@ final class ImageScannerTests: XCTestCase {
 private enum TestError: Error {
     case unreadable
     case fixtureCreation
+}
+
+private actor ImageScannerProgressRecorder {
+    private var updates: [ScanProgress] = []
+
+    func append(_ update: ScanProgress) {
+        updates.append(update)
+    }
+
+    func updates(for stage: ScanStage) -> [ScanProgress] {
+        updates.filter { $0.stage == stage }
+    }
 }

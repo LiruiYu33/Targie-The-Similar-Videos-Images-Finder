@@ -53,6 +53,23 @@ final class MediaModelTests: XCTestCase {
         XCTAssertEqual(ScanMode.videos.id, "videos")
     }
 
+    func testLargeWorkProgressIsThrottledButAlwaysReportsEndpoints() {
+        let total = 10_000
+        let reported = (1...total).filter {
+            ScanProgressReporting.shouldReport(completed: $0, total: total)
+        }
+
+        XCTAssertEqual(reported.first, 1)
+        XCTAssertEqual(reported.last, total)
+        XCTAssertLessThanOrEqual(reported.count, 101)
+    }
+
+    func testSmallWorkProgressReportsEveryCompletion() {
+        XCTAssertTrue((1...100).allSatisfy {
+            ScanProgressReporting.shouldReport(completed: $0, total: 100)
+        })
+    }
+
     // MARK: - MediaItem
 
     func testImageMediaItemHasNoDuration() {

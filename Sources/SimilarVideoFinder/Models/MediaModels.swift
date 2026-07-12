@@ -225,10 +225,13 @@ struct ScanProgress: Equatable, Sendable {
 }
 
 enum ScanProgressReporting {
-    static func shouldReportComparison(completed: Int, total: Int) -> Bool {
-        guard total > 100 else { return true }
+    private static let maximumUpdates = 100
+
+    static func shouldReport(completed: Int, total: Int) -> Bool {
+        guard total > maximumUpdates else { return true }
         guard completed < total else { return true }
         if completed == 1 { return true }
-        return completed.isMultiple(of: max(1, total / 100))
+        let interval = max(1, (total + maximumUpdates - 1) / maximumUpdates)
+        return completed.isMultiple(of: interval)
     }
 }

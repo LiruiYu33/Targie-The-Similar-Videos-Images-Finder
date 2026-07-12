@@ -710,11 +710,16 @@ actor HashCache: HashCaching {
 
     func upsertMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, duration: Double?, width: Int?, height: Int?) async {
         try? await dbQueue.write { db in
-            let sha256 = try String.fetchOne(
-                db,
-                sql: "SELECT sha256 FROM media_metadata WHERE filePath = ?",
-                arguments: [filePath]
-            )
+            let existing = try MediaMetadata
+                .filter(Column("filePath") == filePath)
+                .fetchOne(db)
+            let sha256 = existing.flatMap { record -> String? in
+                guard record.fileSize == fileSize,
+                      record.mediaKind.isEmpty || record.mediaKind == mediaKind.rawValue,
+                      modifiedAtMatches(record.modifiedAt, modifiedAt)
+                else { return nil }
+                return record.sha256
+            }
             try MediaMetadata(
                 filePath: filePath,
                 fileSize: fileSize,
@@ -1396,7 +1401,7 @@ extension CacheRecord {
 actor InMemoryHashCache: HashCaching {
     private var storage: [String: CacheRecord] = [:]
     private var metadata: [String: (key: MediaMetadataCacheKey, entry: MediaMetadataCacheEntry)] = [:]
-    private var sha256Store: [String: String] = [:]
+    private var sha256Store: [String: (key: MediaMetadataCacheKey, value: String)] = [:]
     private var imageFeatures: [String: Data] = [:]
     private var frameFeatures: [String: Data] = [:]
     private var pairRelations: [PairRelationCacheKey: PairRelationRecord] = [:]
@@ -1455,6 +1460,12 @@ actor InMemoryHashCache: HashCaching {
 
     func upsertMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, duration: Double?, width: Int?, height: Int?) async {
         let key = MediaMetadataCacheKey(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: mediaKind)
+        if let cached = sha256Store[filePath],
+           (cached.key.fileSize != fileSize
+               || cached.key.mediaKind != mediaKind
+               || !datesMatch(cached.key.modifiedAt, modifiedAt)) {
+            sha256Store.removeValue(forKey: filePath)
+        }
         metadata[filePath] = (key, MediaMetadataCacheEntry(duration: duration, width: width, height: height))
     }
 
@@ -1481,11 +1492,22 @@ actor InMemoryHashCache: HashCaching {
     }
 
     func upsertSHA256(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, sha256: String) async {
-        sha256Store[filePath] = sha256
+        let key = MediaMetadataCacheKey(
+            filePath: filePath,
+            fileSize: fileSize,
+            modifiedAt: modifiedAt,
+            mediaKind: mediaKind
+        )
+        sha256Store[filePath] = (key, sha256)
     }
 
     func lookupSHA256(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind) async -> String? {
-        sha256Store[filePath]
+        guard let cached = sha256Store[filePath],
+              cached.key.fileSize == fileSize,
+              cached.key.mediaKind == mediaKind,
+              datesMatch(cached.key.modifiedAt, modifiedAt)
+        else { return nil }
+        return cached.value
     }
 
     func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {
