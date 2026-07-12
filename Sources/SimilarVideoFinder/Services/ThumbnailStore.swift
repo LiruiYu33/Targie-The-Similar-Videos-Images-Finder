@@ -8,7 +8,7 @@ import Foundation
 import ImageIO
 
 struct ThumbnailStore: Sendable {
-    static let shared = ThumbnailStore(directoryURL: defaultDirectoryURL())
+    static let shared = ThumbnailStore(directoryURL: CachePaths.thumbnailDirectoryURL())
 
     let directoryURL: URL
 
@@ -67,8 +67,8 @@ struct ThumbnailStore: Sendable {
         }
     }
 
-    /// Removes cached thumbnails whose source path is no longer part of the
-    /// current library scan.
+    /// Explicit maintenance operation for a caller that owns a complete source
+    /// universe. Normal folder scans retain thumbnails from earlier folders.
     func pruneStale(validSourceURLs: Set<URL>) throws {
         guard FileManager.default.fileExists(atPath: directoryURL.path) else { return }
         let validPathKeys = Set(validSourceURLs.map { pathKey(for: $0) })
@@ -131,33 +131,40 @@ struct ThumbnailStore: Sendable {
         }
     }
 
-    static func data(at url: URL) -> Data? {
-        ThumbnailDataCache.shared.data(at: url)
+    static func cachedData(at url: URL) -> Data? {
+        ThumbnailDataCache.shared.cachedData(at: url)
     }
 
-    static func persistedData(at url: URL) -> Data? {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            ThumbnailDataCache.shared.remove(url)
-            return nil
-        }
-        return data(at: url)
+    static func loadPersistedData(at url: URL) async -> Data? {
+        await ThumbnailDataCache.shared.loadData(at: url)
     }
 
-    func imageThumbnailData(for sourceURL: URL, modifiedAt: Date?) -> Data? {
+    func imageThumbnailData(for sourceURL: URL, modifiedAt: Date?) async -> Data? {
+        guard !Task.isCancelled else { return nil }
         if let existingURL = existingThumbnailURL(for: sourceURL, modifiedAt: modifiedAt),
-           let data = Self.data(at: existingURL) {
+           let data = await Self.loadPersistedData(at: existingURL),
+           await Self.isDecodableImageData(data) {
+            guard !Task.isCancelled else { return nil }
             return data
         }
-        guard let data = Self.makeImageThumbnailData(for: sourceURL) else { return nil }
-        return (try? persist(data, sourceURL: sourceURL, modifiedAt: modifiedAt)).flatMap(Self.data(at:)) ?? data
+        guard let data = await Self.makeImageThumbnailDataOffMain(for: sourceURL) else { return nil }
+        guard !Task.isCancelled else { return nil }
+        _ = try? persist(data, sourceURL: sourceURL, modifiedAt: modifiedAt)
+        return data
     }
 
-    static func imageThumbnailData(sourceURL: URL, modifiedAt: Date?, thumbnailURL: URL?) -> Data? {
+    static func imageThumbnailData(sourceURL: URL, modifiedAt: Date?, thumbnailURL: URL?) async -> Data? {
+        guard !Task.isCancelled else { return nil }
         guard let thumbnailURL else {
-            return shared.imageThumbnailData(for: sourceURL, modifiedAt: modifiedAt)
+            return await shared.imageThumbnailData(for: sourceURL, modifiedAt: modifiedAt)
         }
-        if let data = persistedData(at: thumbnailURL) { return data }
-        guard let data = makeImageThumbnailData(for: sourceURL) else { return nil }
+        if let data = await loadPersistedData(at: thumbnailURL),
+           await isDecodableImageData(data) {
+            guard !Task.isCancelled else { return nil }
+            return data
+        }
+        guard let data = await makeImageThumbnailDataOffMain(for: sourceURL) else { return nil }
+        guard !Task.isCancelled else { return nil }
         do {
             try FileManager.default.createDirectory(
                 at: thumbnailURL.deletingLastPathComponent(),
@@ -172,14 +179,36 @@ struct ThumbnailStore: Sendable {
     }
 
     func videoThumbnailData(for sourceURL: URL, duration: Double?, modifiedAt: Date?) async -> Data? {
+        guard !Task.isCancelled else { return nil }
         if let existingURL = existingThumbnailURL(for: sourceURL, modifiedAt: modifiedAt),
-           let data = Self.data(at: existingURL) {
+           let data = await Self.loadPersistedData(at: existingURL),
+           await Self.isDecodableImageData(data) {
+            guard !Task.isCancelled else { return nil }
             return data
         }
         guard let data = await Self.makeVideoThumbnailData(sourceURL: sourceURL, duration: duration) else {
             return nil
         }
-        return (try? persist(data, sourceURL: sourceURL, modifiedAt: modifiedAt)).flatMap(Self.data(at:)) ?? data
+        guard !Task.isCancelled else { return nil }
+        _ = try? persist(data, sourceURL: sourceURL, modifiedAt: modifiedAt)
+        return data
+    }
+
+    private static func makeImageThumbnailDataOffMain(for sourceURL: URL) async -> Data? {
+        await Task.detached(priority: .utility) {
+            makeImageThumbnailData(for: sourceURL)
+        }.value
+    }
+
+    private static func isDecodableImageData(_ data: Data) async -> Bool {
+        await Task.detached(priority: .utility) {
+            guard let source = CGImageSourceCreateWithData(data as CFData, [
+                kCGImageSourceShouldCache: false
+            ] as CFDictionary) else { return false }
+            return CGImageSourceCreateImageAtIndex(source, 0, [
+                kCGImageSourceShouldCache: false
+            ] as CFDictionary) != nil
+        }.value
     }
 
     private static func makeImageThumbnailData(for sourceURL: URL) -> Data? {
@@ -244,46 +273,84 @@ struct ThumbnailStore: Sendable {
         }
     }
 
-    private static func defaultDirectoryURL() -> URL {
-        let base = (try? FileManager.default.url(
-            for: .cachesDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )) ?? FileManager.default.temporaryDirectory
-        return base
-            .appendingPathComponent("Targie", isDirectory: true)
-            .appendingPathComponent("thumbnails", isDirectory: true)
-    }
 }
 
 private final class ThumbnailDataCache: @unchecked Sendable {
     static let shared = ThumbnailDataCache()
 
     private let cache = NSCache<NSURL, NSData>()
+    private let stateLock = NSLock()
+    private var generation = 0
 
     private init() {
         cache.totalCostLimit = 64 * 1024 * 1024
     }
 
     func insert(_ data: Data, for url: URL) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         cache.setObject(data as NSData, forKey: url as NSURL, cost: data.count)
     }
 
     func remove(_ url: URL) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         cache.removeObject(forKey: url as NSURL)
     }
 
     func removeAll() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        generation &+= 1
         cache.removeAllObjects()
     }
 
-    func data(at url: URL) -> Data? {
-        if let cached = cache.object(forKey: url as NSURL) {
-            return cached as Data
+    func cachedData(at url: URL) -> Data? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard let cached = cache.object(forKey: url as NSURL) else { return nil }
+        return cached as Data
+    }
+
+    func loadData(at url: URL) async -> Data? {
+        let loadGeneration = generationSnapshot()
+        if let cached = cachedData(at: url) {
+            let fileExists = await Task.detached(priority: .utility) {
+                FileManager.default.fileExists(atPath: url.path)
+            }.value
+            guard !Task.isCancelled, isCurrent(loadGeneration) else { return nil }
+            if fileExists { return cached }
+            remove(url)
+            return nil
         }
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        insert(data, for: url)
+        let data = await Task.detached(priority: .utility) {
+            try? Data(contentsOf: url, options: [.mappedIfSafe])
+        }.value
+        guard
+            !Task.isCancelled,
+            let data,
+            insert(data, for: url, ifCurrent: loadGeneration)
+        else { return nil }
         return data
+    }
+
+    private func generationSnapshot() -> Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return generation
+    }
+
+    private func isCurrent(_ expectedGeneration: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return generation == expectedGeneration
+    }
+
+    private func insert(_ data: Data, for url: URL, ifCurrent expectedGeneration: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard generation == expectedGeneration else { return false }
+        cache.setObject(data as NSData, forKey: url as NSURL, cost: data.count)
+        return true
     }
 }

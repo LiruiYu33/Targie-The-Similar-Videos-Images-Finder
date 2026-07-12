@@ -36,7 +36,8 @@ enum SimilarityGrouper {
 
         let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
         var visited = Set<UUID>()
-        var result: [SimilarityGroup] = []
+        var components: [Set<UUID>] = []
+        var componentIndexByItemID: [UUID: Int] = [:]
 
         for item in items where !visited.contains(item.id) && adjacency[item.id] != nil {
             var stack = [item.id]
@@ -46,21 +47,47 @@ enum SimilarityGrouper {
                 component.insert(current)
                 stack.append(contentsOf: adjacency[current, default: []])
             }
-            let groupItems = component.compactMap { byID[$0] }.sorted { $0.filename < $1.filename }
-            guard groupItems.count >= 2 else { continue }
-            // Homogeneity guard: the similarity pipelines should never produce cross-media relations,
-            // but this defensive layer validates with `SimilarityGroup.make` and rejects mixed groups.
-            let componentRelations = accepted.filter {
-                component.contains($0.firstID) && component.contains($0.secondID)
+            let componentIndex = components.count
+            components.append(component)
+            for itemID in component {
+                componentIndexByItemID[itemID] = componentIndex
             }
-            if let group = SimilarityGroup.make(items: groupItems, relations: componentRelations) {
-                result.append(group)
+        }
+
+        var relationBuckets = Array(repeating: [SimilarityRelation](), count: components.count)
+        for relation in accepted {
+            guard
+                let firstIndex = componentIndexByItemID[relation.firstID],
+                firstIndex == componentIndexByItemID[relation.secondID]
+            else { continue }
+            relationBuckets[firstIndex].append(relation)
+        }
+
+        var result: [(group: SimilarityGroup, orderingKey: String)] = []
+        result.reserveCapacity(components.count)
+        for (index, component) in components.enumerated() {
+            let groupItems = component.compactMap { byID[$0] }.sorted {
+                if $0.filename != $1.filename { return $0.filename < $1.filename }
+                if $0.url.path != $1.url.path { return $0.url.path < $1.url.path }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            guard groupItems.count >= 2 else { continue }
+            // Similarity pipelines should not produce cross-media relations,
+            // but the factory remains the final homogeneity guard.
+            if let group = SimilarityGroup.make(items: groupItems, relations: relationBuckets[index]) {
+                let orderingKey = groupItems.map { $0.id.uuidString }.min() ?? ""
+                result.append((group, orderingKey))
             }
         }
 
         return result.sorted {
-            if $0.maximumScore == $1.maximumScore { return $0.reclaimableBytes > $1.reclaimableBytes }
-            return $0.maximumScore > $1.maximumScore
-        }
+            if $0.group.maximumScore != $1.group.maximumScore {
+                return $0.group.maximumScore > $1.group.maximumScore
+            }
+            if $0.group.reclaimableBytes != $1.group.reclaimableBytes {
+                return $0.group.reclaimableBytes > $1.group.reclaimableBytes
+            }
+            return $0.orderingKey < $1.orderingKey
+        }.map(\.group)
     }
 }

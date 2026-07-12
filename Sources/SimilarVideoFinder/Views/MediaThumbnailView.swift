@@ -4,17 +4,52 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+final class MediaThumbnailLoader: ObservableObject {
+    @Published private(set) var loadedItemID: UUID?
+    @Published private(set) var loadedImage: NSImage?
+
+    private let cache: MediaThumbnailImageCache
+    private var requestedItemID: UUID?
+
+    init(cache: MediaThumbnailImageCache = .shared) {
+        self.cache = cache
+    }
+
+    func image(for item: MediaItem) -> NSImage? {
+        if loadedItemID == item.id {
+            return loadedImage
+        }
+        return cache.image(for: item)
+    }
+
+    func load(_ item: MediaItem) async {
+        requestedItemID = item.id
+        loadedItemID = item.id
+        loadedImage = cache.image(for: item)
+        guard loadedImage == nil else { return }
+
+        let loadedImage = await cache.image(
+            for: item,
+            repairingMissingVideoThumbnail: true
+        )
+        guard !Task.isCancelled, requestedItemID == item.id else { return }
+        loadedItemID = item.id
+        self.loadedImage = loadedImage
+    }
+}
+
 struct MediaThumbnailView: View {
     let item: MediaItem
     let placeholderSystemImage: String
     var placeholderFont: Font = .largeTitle
     var placeholderColor: Color = .secondary
 
-    @State private var repairedImage: NSImage?
+    @StateObject private var loader = MediaThumbnailLoader()
 
     var body: some View {
         Group {
-            if let image = repairedImage ?? MediaThumbnailImageCache.shared.image(for: item) {
+            if let image = loader.image(for: item) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
@@ -25,23 +60,7 @@ struct MediaThumbnailView: View {
             }
         }
         .task(id: item.id) {
-            await repairMissingVideoThumbnail()
+            await loader.load(item)
         }
-        .onChange(of: item.id) { _, _ in
-            repairedImage = nil
-        }
-    }
-
-    @MainActor
-    private func repairMissingVideoThumbnail() async {
-        guard repairedImage == nil else { return }
-        if let image = MediaThumbnailImageCache.shared.image(for: item) {
-            repairedImage = image
-            return
-        }
-        repairedImage = await MediaThumbnailImageCache.shared.image(
-            for: item,
-            repairingMissingVideoThumbnail: true
-        )
     }
 }
