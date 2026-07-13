@@ -111,8 +111,18 @@ final class MediaThumbnailImageCacheTests: XCTestCase {
             thumbnailData: nil
         )
 
-        let firstTask = Task { await cache.image(for: item, repairingMissingVideoThumbnail: true) }
-        let secondTask = Task { await cache.image(for: item, repairingMissingVideoThumbnail: true) }
+        let firstTask = Task<ObjectIdentifier?, Never> { @MainActor in
+            guard let image = await cache.image(for: item, repairingMissingVideoThumbnail: true) else {
+                return nil
+            }
+            return ObjectIdentifier(image)
+        }
+        let secondTask = Task<ObjectIdentifier?, Never> { @MainActor in
+            guard let image = await cache.image(for: item, repairingMissingVideoThumbnail: true) else {
+                return nil
+            }
+            return ObjectIdentifier(image)
+        }
         try await waitUntilAsync { await probe.hasBlockedFirstLoad }
 
         let heartbeat = expectation(description: "main actor remains responsive")
@@ -120,12 +130,12 @@ final class MediaThumbnailImageCacheTests: XCTestCase {
         await fulfillment(of: [heartbeat], timeout: 1)
 
         await probe.releaseFirstLoad()
-        let first = await firstTask.value
-        let second = await secondTask.value
+        let firstImageID = await firstTask.value
+        let secondImageID = await secondTask.value
         let loadCount = await probe.loadCount
 
-        XCTAssertNotNil(first)
-        XCTAssertTrue(first === second)
+        XCTAssertNotNil(firstImageID)
+        XCTAssertEqual(firstImageID, secondImageID)
         XCTAssertEqual(loadCount, 1)
     }
 
@@ -185,13 +195,15 @@ final class MediaThumbnailImageCacheTests: XCTestCase {
             thumbnailData: nil
         )
 
-        let loadTask = Task { await cache.image(for: item, repairingMissingVideoThumbnail: true) }
+        let loadTask = Task<Bool, Never> { @MainActor in
+            await cache.image(for: item, repairingMissingVideoThumbnail: true) == nil
+        }
         try await waitUntilAsync { await probe.hasBlockedFirstLoad }
         cache.removeAll()
         await probe.releaseFirstLoad()
-        let loadedImage = await loadTask.value
+        let loadWasDiscarded = await loadTask.value
 
-        XCTAssertNil(loadedImage)
+        XCTAssertTrue(loadWasDiscarded)
         XCTAssertNil(cache.image(for: item))
     }
 
