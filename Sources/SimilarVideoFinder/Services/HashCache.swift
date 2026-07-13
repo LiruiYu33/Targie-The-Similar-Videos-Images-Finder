@@ -37,7 +37,7 @@ struct CacheRecord: Codable, Sendable, FetchableRecord, PersistableRecord {
     var prehashThumbnailMean: Int
     var prehashThumbnailVariance: Int
     var mediaKind: String = MediaKind.video.rawValue
-    var algorithmVersion: String = "video-dct3d-v1"
+    var algorithmVersion: String = PerceptualHasher.algorithmVersion
 
     static var databaseTableName: String { "hash_cache" }
 }
@@ -371,7 +371,13 @@ protocol HashCaching: Sendable {
 
 extension HashCaching {
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> CacheRecord? {
-        await lookup(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: .video, algorithmVersion: "video-dct3d-v1")
+        await lookup(
+            filePath: filePath,
+            fileSize: fileSize,
+            modifiedAt: modifiedAt,
+            mediaKind: .video,
+            algorithmVersion: PerceptualHasher.algorithmVersion
+        )
     }
 
     func lookupHashes(keys: [MediaHashCacheKey]) async -> [MediaHashCacheKey: CacheRecord] {
@@ -1257,7 +1263,7 @@ actor HashCache: HashCaching {
         migrator.registerMigration("v2_media_cache_identity") { db in
             try db.alter(table: "hash_cache") { table in
                 table.add(column: "mediaKind", .text).notNull().defaults(to: MediaKind.video.rawValue)
-                table.add(column: "algorithmVersion", .text).notNull().defaults(to: "video-dct3d-v1")
+                table.add(column: "algorithmVersion", .text).notNull().defaults(to: PerceptualHasher.algorithmVersion)
             }
         }
         migrator.registerMigration("v3_media_metadata") { db in
@@ -1359,8 +1365,12 @@ private extension Array {
 
 extension CacheRecord {
     /// Restores a `CacheRecord` as a `VideoPerceptualHash` associated with an ID.
-    func toPerceptualHash(videoID: UUID) -> VideoPerceptualHash {
-        VideoPerceptualHash(videoID: videoID, hashBits: Array(perceptualHash))
+    func toPerceptualHash(videoID: UUID) -> VideoPerceptualHash? {
+        guard mediaKind == MediaKind.video.rawValue,
+              algorithmVersion == PerceptualHasher.algorithmVersion,
+              perceptualHash.count == PerceptualHasher.hashByteCount
+        else { return nil }
+        return VideoPerceptualHash(videoID: videoID, hashBits: Array(perceptualHash))
     }
 
     /// Restores a `QuickPrehash` associated with an ID.

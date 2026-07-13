@@ -39,6 +39,20 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(SimilarityPipeline.hashConcurrencyLimit(processorCount: 12, thermalState: .nominal), 4)
     }
 
+    func testCurrentVideoAlgorithmVersionsAreV2() {
+        XCTAssertEqual(PerceptualHasher.algorithmVersion, "video-dct3d-v2")
+        XCTAssertEqual(
+            SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false),
+            "video-pair-relation-v2-perceptual"
+        )
+        XCTAssertEqual(
+            SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: true),
+            "video-pair-relation-v2-frame"
+        )
+        XCTAssertEqual(ImageSimilarityPipeline.algorithmVersion, "image-phash-v1")
+        XCTAssertEqual(ImageSimilarityPipeline.pairRelationAlgorithmVersion, "image-pair-relation-v1")
+    }
+
     func testVideoComparisonConcurrencyDropsWhenThermalStateIsHigh() {
         XCTAssertEqual(
             SimilarityPipeline.comparisonConcurrencyLimit(processorCount: 12, thermalState: .nominal),
@@ -195,6 +209,60 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(finalHashing.cacheTotal, 2)
     }
 
+    func testMalformedCurrentFingerprintIsRecomputedAndThenCached() async throws {
+        let first = video(path: "/missing/valid-cached.mp4", size: 1_000)
+        let second = video(path: "/missing/malformed-cached.mp4", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, video: first, hash: [UInt8](repeating: 0, count: PerceptualHasher.hashByteCount))
+        var malformed = CacheRecord.make(
+            video: second,
+            perceptualHash: VideoPerceptualHash(
+                videoID: second.id,
+                hashBits: [UInt8](repeating: 0, count: PerceptualHasher.hashByteCount)
+            ),
+            quickPrehash: QuickPrehasher.prehash(for: second)
+        )
+        malformed.perceptualHash = Data([0, 1, 2, 3])
+        await cache.upsert(malformed)
+        let provider = VideoPerceptualHashProviderRecorder(
+            hashBits: [0xff] + [UInt8](repeating: 0, count: PerceptualHasher.hashByteCount - 1)
+        )
+        let firstProgress = VideoProgressRecorder()
+        let pipeline = SimilarityPipeline(
+            cache: cache,
+            perceptualHashProvider: { _, id in
+                await provider.hash(videoID: id)
+            }
+        )
+
+        _ = try await pipeline.process(videos: [first, second], threshold: 0.72) {
+            await firstProgress.append($0)
+        }
+
+        let firstCallCount = await provider.callCount
+        XCTAssertEqual(firstCallCount, 1)
+        let stored = await cache.lookup(
+            filePath: second.url.path,
+            fileSize: second.fileSize,
+            modifiedAt: second.modifiedAt
+        )
+        XCTAssertEqual(stored?.perceptualHash.count, PerceptualHasher.hashByteCount)
+        let firstHashingUpdates = await firstProgress.updates(for: .hashing)
+        let firstHashing = try XCTUnwrap(firstHashingUpdates.last)
+        XCTAssertEqual(firstHashing.cacheHits, 1)
+
+        let secondProgress = VideoProgressRecorder()
+        _ = try await pipeline.process(videos: [first, second], threshold: 0.72) {
+            await secondProgress.append($0)
+        }
+
+        let secondCallCount = await provider.callCount
+        XCTAssertEqual(secondCallCount, 1)
+        let secondHashingUpdates = await secondProgress.updates(for: .hashing)
+        let secondHashing = try XCTUnwrap(secondHashingUpdates.last)
+        XCTAssertEqual(secondHashing.cacheHits, 2)
+    }
+
     func testCachedPairRelationSkipsFrameVerification() async throws {
         let first = video(path: "/missing/pair-cache-first.mp4", size: 1_000)
         let second = video(path: "/missing/pair-cache-second.mp4", size: 1_100)
@@ -334,6 +402,32 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(result.relations.count, 1)
         let pairBatchLookupCount = await cache.pairBatchLookupCount
         XCTAssertEqual(pairBatchLookupCount, 0)
+    }
+
+    func testV1ScanRelationIndexDoesNotSkipCurrentCandidateLookup() async throws {
+        let first = video(path: "/missing/old-index-first.mp4", size: 1_000)
+        let second = video(path: "/missing/old-index-second.mp4", size: 1_100)
+        let cache = VideoPairRelationBatchRecordingCache()
+        await cache.seed(video: first, hash: [UInt8](repeating: 0, count: 8))
+        await cache.seed(video: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        await cache.seedScanRelationIndex(
+            items: [first, second],
+            algorithmVersion: "video-pair-relation-v1-perceptual",
+            relations: [
+                CachedScanRelation(
+                    firstPath: first.url.path,
+                    secondPath: second.url.path,
+                    score: 0.99,
+                    evidence: [.similarPerceptualHash]
+                )
+            ]
+        )
+        let pipeline = SimilarityPipeline(cache: cache)
+
+        _ = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+
+        let pairBatchLookupCount = await cache.pairBatchLookupCount
+        XCTAssertEqual(pairBatchLookupCount, 1)
     }
 
     func testCompletedVideoScanPersistsScanRelationIndexInSQLiteCache() async throws {
@@ -536,6 +630,20 @@ private actor VideoProgressRecorder {
     }
 }
 
+private actor VideoPerceptualHashProviderRecorder {
+    private let hashBits: [UInt8]
+    private(set) var callCount = 0
+
+    init(hashBits: [UInt8]) {
+        self.hashBits = hashBits
+    }
+
+    func hash(videoID: UUID) -> VideoPerceptualHash {
+        callCount += 1
+        return VideoPerceptualHash(videoID: videoID, hashBits: hashBits)
+    }
+}
+
 private actor VideoPairRelationBatchRecordingCache: HashCaching {
     private var hashes: [String: CacheRecord] = [:]
     private var relations: [PairRelationCacheKey: PairRelationCacheEntry] = [:]
@@ -555,7 +663,7 @@ private actor VideoPairRelationBatchRecordingCache: HashCaching {
             quickPrehash: prehash
         )
         record.mediaKind = MediaKind.video.rawValue
-        record.algorithmVersion = "video-dct3d-v1"
+        record.algorithmVersion = PerceptualHasher.algorithmVersion
         hashes[video.url.path] = record
     }
 
@@ -586,7 +694,15 @@ private actor VideoPairRelationBatchRecordingCache: HashCaching {
     }
 
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
-        hashes[filePath]
+        guard let record = hashes[filePath],
+              record.fileSize == fileSize,
+              record.mediaKind == mediaKind.rawValue,
+              record.algorithmVersion == algorithmVersion
+        else { return nil }
+        if let cachedDate = record.modifiedAt, let requestedDate = modifiedAt {
+            return abs(cachedDate.timeIntervalSince(requestedDate)) < 1 ? record : nil
+        }
+        return record.modifiedAt == nil && modifiedAt == nil ? record : nil
     }
 
     func upsert(_ record: CacheRecord) {}

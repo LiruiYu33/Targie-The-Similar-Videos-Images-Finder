@@ -315,7 +315,7 @@ struct VideoScanner {
                       fileSize: fileSize,
                       modifiedAt: modifiedAt,
                       mediaKind: .video,
-                      algorithmVersion: "video-dct3d-v1"
+                      algorithmVersion: PerceptualHasher.algorithmVersion
                   ),
                   let migrated = thumbnailStore.migrateFromOldPath(oldPath, to: url, modifiedAt: modifiedAt) {
             thumbnail = nil
