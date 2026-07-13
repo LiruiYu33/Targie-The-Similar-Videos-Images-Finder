@@ -112,47 +112,145 @@ final class PerceptualHasherTests: XCTestCase {
 
     // MARK: - Hash Computation Tests
 
-    func testComputeHashProducesDeterministicResult() {
+    func testComputeHashProducesDeterministicResult() throws {
         // Running the same frame data twice should produce the same hash.
         let frames = makeTestFrames(seed: 42, count: 5)
-        let hash1 = PerceptualHasher.computeHash(frames: frames)
-        let hash2 = PerceptualHasher.computeHash(frames: frames)
+        let hash1 = try XCTUnwrap(PerceptualHasher.computeHash(frames: frames))
+        let hash2 = try XCTUnwrap(PerceptualHasher.computeHash(frames: frames))
         XCTAssertEqual(hash1.hashBits, hash2.hashBits)
     }
 
-    func testComputeHashDifferentFramesProduceDifferentHashes() {
+    func testComputeHashDifferentFramesProduceDifferentHashes() throws {
         let framesA = makeTestFrames(seed: 42, count: 5)
         let framesB = makeTestFrames(seed: 99, count: 5)
-        let hashA = PerceptualHasher.computeHash(frames: framesA)
-        let hashB = PerceptualHasher.computeHash(frames: framesB)
+        let hashA = try XCTUnwrap(PerceptualHasher.computeHash(frames: framesA))
+        let hashB = try XCTUnwrap(PerceptualHasher.computeHash(frames: framesB))
         XCTAssertGreaterThan(hashA.hammingDistance(to: hashB), 0)
     }
 
-    func testComputeHashIdenticalFramesProduceSameHash() {
+    func testComputeHashIdenticalFramesProduceSameHash() throws {
         let framesA = makeTestFrames(seed: 42, count: 5)
-        let hashA = PerceptualHasher.computeHash(frames: framesA)
+        let hashA = try XCTUnwrap(PerceptualHasher.computeHash(frames: framesA))
 
         // Copy identical frame data.
         let framesB = framesA.map { PerceptualHasher.GrayFrame(pixels: $0.pixels) }
-        let hashB = PerceptualHasher.computeHash(frames: framesB)
+        let hashB = try XCTUnwrap(PerceptualHasher.computeHash(frames: framesB))
         XCTAssertEqual(hashA.hammingDistance(to: hashB), 0)
     }
 
-    func testVideoPerceptualHashSimilarity() {
+    func testVideoPerceptualHashSimilarity() throws {
         let framesA = makeTestFrames(seed: 42, count: 5)
         let framesB = makeTestFrames(seed: 42, count: 5)
-        let hashA = PerceptualHasher.computeHash(frames: framesA)
-        let hashB = PerceptualHasher.computeHash(frames: framesB)
+        let hashA = try XCTUnwrap(PerceptualHasher.computeHash(frames: framesA))
+        let hashB = try XCTUnwrap(PerceptualHasher.computeHash(frames: framesB))
         XCTAssertEqual(hashA.similarity(to: hashB), 1.0, accuracy: 0.01)
     }
 
-    func testHashBitCountMatchesExpected() {
+    func testHashBitCountMatchesExpected() throws {
         // Each frame keeps 4x4 = 16 coefficients; five frames keep the first four temporal terms.
         // Binarization gives 16x4 = 64 bits -> 8 bytes.
         let frames = makeTestFrames(seed: 42, count: 5)
-        let hash = PerceptualHasher.computeHash(frames: frames)
+        let hash = try XCTUnwrap(PerceptualHasher.computeHash(frames: frames))
         // 64 bits / 8 = 8 bytes
         XCTAssertEqual(hash.hashBits.count, 8)
+    }
+
+    func testNormalizeSampleSlotsRequiresAtLeastTwoDecodedFrames() {
+        let frame = makeTestFrames(seed: 1, count: 1)[0]
+
+        XCTAssertNil(PerceptualHasher.normalizeSampleSlots([frame, nil, nil, nil, nil]))
+        XCTAssertNil(PerceptualHasher.normalizeSampleSlots([nil, nil, nil, nil, nil]))
+    }
+
+    func testNormalizeSampleSlotsPreservesAllFiveOriginalSlots() throws {
+        let frames = makeTestFrames(seed: 2, count: 5)
+
+        let normalized = try XCTUnwrap(PerceptualHasher.normalizeSampleSlots(frames.map(Optional.some)))
+
+        XCTAssertEqual(normalized.map(\.pixels), frames.map(\.pixels))
+    }
+
+    func testNormalizeSampleSlotsFillsMissingMiddleSlotWithoutShiftingLaterFrames() throws {
+        let frames = makeTestFrames(seed: 3, count: 5)
+        let normalized = try XCTUnwrap(PerceptualHasher.normalizeSampleSlots([
+            frames[0],
+            frames[1],
+            nil,
+            frames[3],
+            frames[4]
+        ]))
+
+        XCTAssertEqual(normalized[2].pixels, frames[1].pixels)
+        XCTAssertEqual(normalized[3].pixels, frames[3].pixels)
+        XCTAssertEqual(normalized[4].pixels, frames[4].pixels)
+    }
+
+    func testNormalizeSampleSlotsUsesDeterministicNearestFrameAtEdges() throws {
+        let frames = makeTestFrames(seed: 4, count: 5)
+        let normalized = try XCTUnwrap(PerceptualHasher.normalizeSampleSlots([
+            nil,
+            frames[1],
+            frames[2],
+            frames[3],
+            nil
+        ]))
+
+        XCTAssertEqual(normalized[0].pixels, frames[1].pixels)
+        XCTAssertEqual(normalized[4].pixels, frames[3].pixels)
+    }
+
+    func testNormalizedTwoThreeFourAndFiveFrameInputsProduceEightByteHashes() throws {
+        let frames = makeSmoothTestFrames()
+        let slotSets: [[PerceptualHasher.GrayFrame?]] = [
+            [frames[0], nil, nil, nil, frames[4]],
+            [frames[0], nil, frames[2], nil, frames[4]],
+            [frames[0], frames[1], nil, frames[3], frames[4]],
+            frames.map(Optional.some)
+        ]
+
+        for slots in slotSets {
+            let normalized = try XCTUnwrap(PerceptualHasher.normalizeSampleSlots(slots))
+            let hash = try XCTUnwrap(PerceptualHasher.computeHash(frames: normalized))
+            XCTAssertEqual(normalized.count, PerceptualHasher.sampleCount)
+            XCTAssertEqual(hash.hashBits.count, PerceptualHasher.hashByteCount)
+        }
+    }
+
+    func testComputeHashRejectsNonCanonicalFrameCount() {
+        XCTAssertNil(PerceptualHasher.computeHash(frames: makeTestFrames(seed: 5, count: 4)))
+        XCTAssertNil(PerceptualHasher.computeHash(frames: makeTestFrames(seed: 5, count: 6)))
+    }
+
+    func testUnequalLengthVideoHashSimilarityReturnsZero() {
+        let short = VideoPerceptualHash(videoID: UUID(), hashBits: [UInt8](repeating: 0, count: 4))
+        let canonical = VideoPerceptualHash(videoID: UUID(), hashBits: [UInt8](repeating: 0, count: 8))
+
+        XCTAssertEqual(short.similarity(to: canonical), 0)
+        XCTAssertEqual(canonical.similarity(to: short), 0)
+    }
+
+    func testNormalizedMissingSlotsRemainWithinCandidateDistance() throws {
+        let frames = makeSmoothTestFrames()
+        let completeFrames = try XCTUnwrap(PerceptualHasher.normalizeSampleSlots(frames.map(Optional.some)))
+        let partialFrames = try XCTUnwrap(PerceptualHasher.normalizeSampleSlots([
+            frames[0],
+            nil,
+            frames[2],
+            nil,
+            frames[4]
+        ]))
+        let completeHash = try XCTUnwrap(PerceptualHasher.computeHash(frames: completeFrames))
+        let partialHash = try XCTUnwrap(PerceptualHasher.computeHash(frames: partialFrames))
+        var tree = BKTree<VideoPerceptualHash>()
+        tree.insert(completeHash, distance: { $0.hammingDistance(to: $1) })
+
+        let matches = tree.search(
+            partialHash,
+            maxDistance: SimilarityPipeline.perceptualMaxDistance,
+            distance: { $0.hammingDistance(to: $1) }
+        )
+
+        XCTAssertTrue(matches.contains { $0.item.videoID == completeHash.videoID })
     }
 
     // MARK: - Grayscale Downsampling Tests
@@ -186,6 +284,16 @@ final class PerceptualHasherTests: XCTestCase {
             frames.append(PerceptualHasher.GrayFrame(pixels: pixels))
         }
         return frames
+    }
+
+    private func makeSmoothTestFrames() -> [PerceptualHasher.GrayFrame] {
+        let size = PerceptualHasher.dctSize
+        return (0..<PerceptualHasher.sampleCount).map { frameIndex in
+            let pixels = (0..<size * size).map { pixelIndex in
+                Double((pixelIndex * 3 + frameIndex * 5) % 256)
+            }
+            return PerceptualHasher.GrayFrame(pixels: pixels)
+        }
     }
 
     private func makeSolidCGImage(value: UInt8, width: Int, height: Int) -> CGImage {

@@ -92,6 +92,7 @@ struct SimilarityPipeline: SimilarityProcessing {
     private let extractor: any FrameFeatureExtracting
     private let cache: (any HashCaching)?
     private let usesFrameVerification: Bool
+    private let perceptualHashProvider: @Sendable (URL, UUID) async throws -> VideoPerceptualHash?
     /// Maximum Hamming distance for two perceptual hashes to be considered potentially similar.
     /// For 64-bit hashes, this allows up to 24 different bits.
     static let perceptualMaxDistance = 24
@@ -99,7 +100,7 @@ struct SimilarityPipeline: SimilarityProcessing {
     fileprivate static let pairRelationWriteBatchSize = 512
 
     static func pairRelationAlgorithmVersion(usesFrameVerification: Bool) -> String {
-        usesFrameVerification ? "video-pair-relation-v1-frame" : "video-pair-relation-v1-perceptual"
+        usesFrameVerification ? "video-pair-relation-v2-frame" : "video-pair-relation-v2-perceptual"
     }
 
     static func scanRelationSignature(
@@ -117,11 +118,15 @@ struct SimilarityPipeline: SimilarityProcessing {
     init(
         cache: (any HashCaching)? = nil,
         extractor: any FrameFeatureExtracting = FrameFeatureExtractor(),
-        usesFrameVerification: Bool = false
+        usesFrameVerification: Bool = false,
+        perceptualHashProvider: @escaping @Sendable (URL, UUID) async throws -> VideoPerceptualHash? = {
+            try await PerceptualHasher.hash(for: $0, id: $1)
+        }
     ) {
         self.cache = cache
         self.extractor = extractor
         self.usesFrameVerification = usesFrameVerification
+        self.perceptualHashProvider = perceptualHashProvider
     }
 
     static func hashConcurrencyLimit(
@@ -589,23 +594,27 @@ struct SimilarityPipeline: SimilarityProcessing {
                         fileSize: $0.fileSize,
                         modifiedAt: $0.modifiedAt,
                         mediaKind: .video,
-                        algorithmVersion: "video-dct3d-v1"
+                        algorithmVersion: PerceptualHasher.algorithmVersion
                     )
                 )
             })
             let batch = await cache.lookupHashes(keys: Array(keysByID.values))
             for video in videos {
-                if let key = keysByID[video.id], let record = batch[key] {
-                    cached[video.id] = record.toPerceptualHash(videoID: video.id)
-                } else if let record = await cache.lookup(
+                if let key = keysByID[video.id],
+                   let record = batch[key],
+                   let hash = record.toPerceptualHash(videoID: video.id) {
+                    cached[video.id] = hash
+                    continue
+                }
+                if let record = await cache.lookup(
                     filePath: video.url.path,
                     fileSize: video.fileSize,
                     modifiedAt: video.modifiedAt
-                ) {
-                    cached[video.id] = record.toPerceptualHash(videoID: video.id)
-                } else {
-                    needsHashing.append(video)
+                ), let hash = record.toPerceptualHash(videoID: video.id) {
+                    cached[video.id] = hash
+                    continue
                 }
+                needsHashing.append(video)
             }
         } else {
             needsHashing = videos
@@ -633,6 +642,7 @@ struct SimilarityPipeline: SimilarityProcessing {
             scanIntensity: scanIntensity
         )
         let filenamesByID = Dictionary(uniqueKeysWithValues: needsHashing.map { ($0.id, $0.filename) })
+        let perceptualHashProvider = perceptualHashProvider
 
         let computed = try await withThrowingTaskGroup(of: (UUID, VideoPerceptualHash?).self) { group in
             var iterator = needsHashing.makeIterator()
@@ -640,7 +650,7 @@ struct SimilarityPipeline: SimilarityProcessing {
 
             while inFlight < concurrencyCap, let next = iterator.next() {
                 group.addTask {
-                    let hash = try await PerceptualHasher.hash(for: next.url, id: next.id)
+                    let hash = try await perceptualHashProvider(next.url, next.id)
                     return (next.id, hash)
                 }
                 inFlight += 1
@@ -665,7 +675,7 @@ struct SimilarityPipeline: SimilarityProcessing {
 
                 if let next = iterator.next() {
                     group.addTask {
-                        let hash = try await PerceptualHasher.hash(for: next.url, id: next.id)
+                        let hash = try await perceptualHashProvider(next.url, next.id)
                         return (next.id, hash)
                     }
                 }

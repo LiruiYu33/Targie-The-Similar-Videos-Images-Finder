@@ -109,6 +109,8 @@ final class VideoScannerTests: XCTestCase {
         XCTAssertEqual(finalReading.cacheKind, .metadata)
         XCTAssertEqual(finalReading.cacheHits, 1)
         XCTAssertEqual(finalReading.cacheTotal, 1)
+        let moveAlgorithmVersions = await cache.moveAlgorithmVersions
+        XCTAssertEqual(moveAlgorithmVersions, [PerceptualHasher.algorithmVersion])
     }
 
     func testLargeScanThrottlesMetadataProgressUpdates() async throws {
@@ -169,6 +171,8 @@ private actor VideoScannerProgressRecorder {
 }
 
 private actor VideoMetadataHitCache: HashCaching {
+    private(set) var moveAlgorithmVersions: [String] = []
+
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
         nil
     }
@@ -185,5 +189,16 @@ private actor VideoMetadataHitCache: HashCaching {
 
     func lookupMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind) -> (duration: Double?, width: Int?, height: Int?)? {
         mediaKind == .video ? (duration: 8, width: 1280, height: 720) : nil
+    }
+
+    func detectMove(
+        filePath: String,
+        fileSize: Int64,
+        modifiedAt: Date?,
+        mediaKind: MediaKind,
+        algorithmVersion: String
+    ) -> String? {
+        moveAlgorithmVersions.append(algorithmVersion)
+        return nil
     }
 }

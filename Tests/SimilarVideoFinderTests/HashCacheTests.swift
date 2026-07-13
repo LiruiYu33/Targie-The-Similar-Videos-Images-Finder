@@ -110,7 +110,7 @@ final class HashCacheTests: XCTestCase {
         )
         let wrongKind = await cache.lookup(
             filePath: record.filePath, fileSize: 100, modifiedAt: nil,
-            mediaKind: .video, algorithmVersion: "video-dct3d-v1"
+            mediaKind: .video, algorithmVersion: PerceptualHasher.algorithmVersion
         )
         let wrongVersion = await cache.lookup(
             filePath: record.filePath, fileSize: 100, modifiedAt: nil,
@@ -427,27 +427,37 @@ final class HashCacheTests: XCTestCase {
         let date = Date(timeIntervalSince1970: 5_700)
         var record = makeRecord(path: "/tmp/batch-hash.mp4", size: 4, date: date)
         record.mediaKind = MediaKind.video.rawValue
-        record.algorithmVersion = "video-dct3d-v1"
+        record.algorithmVersion = PerceptualHasher.algorithmVersion
         await cache.upsert(record)
         let matching = MediaHashCacheKey(
             filePath: record.filePath,
             fileSize: record.fileSize,
             modifiedAt: record.modifiedAt,
             mediaKind: .video,
-            algorithmVersion: "video-dct3d-v1"
+            algorithmVersion: PerceptualHasher.algorithmVersion
         )
-        let wrongVersion = MediaHashCacheKey(
+        let oldVersion = MediaHashCacheKey(
             filePath: record.filePath,
             fileSize: record.fileSize,
             modifiedAt: record.modifiedAt,
             mediaKind: .video,
-            algorithmVersion: "video-dct3d-v2"
+            algorithmVersion: "video-dct3d-v1"
         )
 
-        let batch = await cache.lookupHashes(keys: [matching, wrongVersion])
+        let batch = await cache.lookupHashes(keys: [matching, oldVersion])
 
         XCTAssertEqual(batch[matching]?.filePath, record.filePath)
-        XCTAssertNil(batch[wrongVersion])
+        XCTAssertNil(batch[oldVersion])
+    }
+
+    func testConvenienceVideoLookupIgnoresV1Fingerprint() async {
+        var record = makeRecord(path: "/tmp/old-video-hash.mp4", size: 4, date: nil)
+        record.algorithmVersion = "video-dct3d-v1"
+        await cache.upsert(record)
+
+        let result = await cache.lookup(filePath: record.filePath, fileSize: record.fileSize, modifiedAt: nil)
+
+        XCTAssertNil(result)
     }
 
     // MARK: - Pair Relation Cache
@@ -470,6 +480,31 @@ final class HashCacheTests: XCTestCase {
 
         XCTAssertEqual(cached?.score, 0.91)
         XCTAssertEqual(cached?.evidence, [.similarPerceptualHash, .similarName])
+    }
+
+    func testV1PairRelationIsNotReturnedForCurrentPipelineVersion() async {
+        let first = makeMedia(path: "/tmp/old-pair-a.mp4", size: 100, date: nil)
+        let second = makeMedia(path: "/tmp/old-pair-b.mp4", size: 120, date: nil)
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.91,
+            evidence: [.similarPerceptualHash]
+        )
+        await cache.upsertPairRelation(
+            first: first,
+            second: second,
+            algorithmVersion: "video-pair-relation-v1-perceptual",
+            relation: relation
+        )
+
+        let cached = await cache.lookupPairRelation(
+            first: first,
+            second: second,
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+
+        XCTAssertNil(cached)
     }
 
     func testPairRelationCacheToleratesSubmillisecondDateNoise() async {
@@ -596,6 +631,25 @@ final class HashCacheTests: XCTestCase {
         XCTAssertEqual(cached?.fileCount, 2)
         XCTAssertEqual(cached?.candidateCount, 1)
         XCTAssertEqual(cached?.relations, [relation])
+    }
+
+    func testV1ScanRelationIndexIsNotReturnedForCurrentPipelineVersion() async {
+        await cache.upsertScanRelationIndex(
+            signature: "old-video-index",
+            mediaKind: .video,
+            algorithmVersion: "video-pair-relation-v1-perceptual",
+            fileCount: 2,
+            candidateCount: 0,
+            relations: []
+        )
+
+        let cached = await cache.lookupScanRelationIndex(
+            signature: "old-video-index",
+            mediaKind: .video,
+            algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
+        )
+
+        XCTAssertNil(cached)
     }
 
     func testScanRelationIndexDeduplicatesRelationsBeforePersisting() async throws {
@@ -762,7 +816,7 @@ final class HashCacheTests: XCTestCase {
 
     // MARK: - Conversion
 
-    func testCacheRecordToPerceptualHash() {
+    func testCacheRecordToPerceptualHash() throws {
         let record = CacheRecord(
             filePath: "/tmp/x.mp4",
             fileSize: 100,
@@ -775,9 +829,16 @@ final class HashCacheTests: XCTestCase {
             prehashThumbnailVariance: 1000
         )
         let id = UUID()
-        let hash = record.toPerceptualHash(videoID: id)
+        let hash = try XCTUnwrap(record.toPerceptualHash(videoID: id))
         XCTAssertEqual(hash.videoID, id)
         XCTAssertEqual(hash.hashBits, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
+    }
+
+    func testCacheRecordRejectsMalformedVideoPerceptualHash() {
+        var record = makeRecord(path: "/tmp/malformed.mp4", size: 100, date: nil)
+        record.perceptualHash = Data([0x11, 0x22, 0x33, 0x44])
+
+        XCTAssertNil(record.toPerceptualHash(videoID: UUID()))
     }
 
     func testCacheRecordFromVideoItem() {
@@ -800,6 +861,7 @@ final class HashCacheTests: XCTestCase {
         XCTAssertEqual(record.fileSize, 1000)
         XCTAssertEqual(record.modifiedAt, Date(timeIntervalSince1970: 5000))
         XCTAssertEqual(Array(record.perceptualHash), [1, 2, 3, 4, 5, 6, 7, 8])
+        XCTAssertEqual(record.algorithmVersion, PerceptualHasher.algorithmVersion)
     }
 
     // MARK: - In-Memory Cache

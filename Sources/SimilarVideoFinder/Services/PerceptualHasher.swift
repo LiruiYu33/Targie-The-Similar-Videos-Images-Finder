@@ -35,20 +35,25 @@ struct VideoPerceptualHash: Hashable, Sendable {
 
     /// Converts Hamming distance to a 0...1 similarity score (0 = entirely different, 1 = identical).
     func similarity(to other: VideoPerceptualHash) -> Double {
+        guard !hashBits.isEmpty, hashBits.count == other.hashBits.count else { return 0 }
         let distance = hammingDistance(to: other)
         let maxBits = hashBits.count * 8
-        guard maxBits > 0 else { return 0 }
-        return 1.0 - Double(distance) / Double(maxBits)
+        return max(0, 1.0 - Double(distance) / Double(maxBits))
     }
 }
 
 // MARK: - Perceptual Hasher
 
 enum PerceptualHasher {
+    static let algorithmVersion = "video-dct3d-v2"
+    static let sampleCount = 5
+    static let hashByteCount = 8
+    private static let temporalCoefficientCount = 4
+    private static let standardFrameTolerance = CMTime(seconds: 0.35, preferredTimescale: 600)
+
     // Extract frames -> downsample to grayscale -> DCT-3D -> binarize -> byte vector.
     static func hash(for url: URL, id: UUID = UUID()) async throws -> VideoPerceptualHash? {
         let frames = try await extractGrayFrames(from: url)
-        guard frames.count >= 2 else { return nil }
         return computeHash(frames: frames, id: id)
     }
 
@@ -75,18 +80,67 @@ enum PerceptualHasher {
         guard duration.isFinite, duration > 0 else { return [] }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.35, preferredTimescale: 600)
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.35, preferredTimescale: 600)
 
-        var frames: [GrayFrame] = []
+        var sampleSlots: [GrayFrame?] = []
+        sampleSlots.reserveCapacity(sampleCount)
         for position in samplePositions {
             let time = CMTime(seconds: duration * position, preferredTimescale: 600)
-            guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { continue }
-            let gray = downsampleToGray(cgImage, size: dctSize)
-            guard gray.count == dctSize * dctSize else { continue }
-            frames.append(GrayFrame(pixels: gray))
+            sampleSlots.append(extractGrayFrame(at: time, using: generator))
         }
-        return frames
+        return normalizeSampleSlots(sampleSlots) ?? []
+    }
+
+    private static func extractGrayFrame(
+        at time: CMTime,
+        using generator: AVAssetImageGenerator
+    ) -> GrayFrame? {
+        generator.requestedTimeToleranceBefore = standardFrameTolerance
+        generator.requestedTimeToleranceAfter = standardFrameTolerance
+        if let frame = decodeGrayFrame(at: time, using: generator) {
+            return frame
+        }
+
+        generator.requestedTimeToleranceBefore = .positiveInfinity
+        generator.requestedTimeToleranceAfter = .positiveInfinity
+        defer {
+            generator.requestedTimeToleranceBefore = standardFrameTolerance
+            generator.requestedTimeToleranceAfter = standardFrameTolerance
+        }
+        return decodeGrayFrame(at: time, using: generator)
+    }
+
+    private static func decodeGrayFrame(
+        at time: CMTime,
+        using generator: AVAssetImageGenerator
+    ) -> GrayFrame? {
+        guard let image = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+        let pixels = downsampleToGray(image, size: dctSize)
+        guard pixels.count == dctSize * dctSize else { return nil }
+        return GrayFrame(pixels: pixels)
+    }
+
+    static func normalizeSampleSlots(_ sampleSlots: [GrayFrame?]) -> [GrayFrame]? {
+        guard sampleSlots.count == sampleCount else { return nil }
+        let decodedIndices = sampleSlots.indices.filter { sampleSlots[$0] != nil }
+        guard decodedIndices.count >= 2 else { return nil }
+
+        var normalized: [GrayFrame] = []
+        normalized.reserveCapacity(sampleCount)
+        for index in sampleSlots.indices {
+            if let frame = sampleSlots[index] {
+                normalized.append(frame)
+                continue
+            }
+            let nearestIndex = decodedIndices.min { lhs, rhs in
+                let lhsDistance = abs(samplePositions[lhs] - samplePositions[index])
+                let rhsDistance = abs(samplePositions[rhs] - samplePositions[index])
+                if lhsDistance == rhsDistance { return lhs < rhs }
+                return lhsDistance < rhsDistance
+            }
+            guard let nearestIndex, let frame = sampleSlots[nearestIndex] else { return nil }
+            normalized.append(frame)
+        }
+        return normalized
     }
 
     // MARK: - Grayscale Downsampling
@@ -181,7 +235,11 @@ enum PerceptualHasher {
     }
 
     /// Computes a 3D-DCT perceptual hash from multiple grayscale frames.
-    static func computeHash(frames: [GrayFrame], id: UUID = UUID()) -> VideoPerceptualHash {
+    static func computeHash(frames: [GrayFrame], id: UUID = UUID()) -> VideoPerceptualHash? {
+        guard frames.count == sampleCount,
+              frames.allSatisfy({ $0.pixels.count == dctSize * dctSize })
+        else { return nil }
+
         // Step 1: Run 2D-DCT on each frame and keep the low-frequency coefficients in the top-left corner.
         let frameCoeffs: [[Double]] = frames.map { frame in
             let dct2d = dct2D(frame.pixels, rows: dctSize, cols: dctSize)
@@ -201,14 +259,10 @@ enum PerceptualHasher {
         let numFrames = frameCoeffs.count
         let numCoeffs = frameCoeffs[0].count
 
-        // Store temporal coefficients as (numCoeffs x numFrames) column vectors.
-        var temporalCoeffs = [Double]()
-        temporalCoeffs.reserveCapacity(numCoeffs * numFrames)
-
         // Run 1D-DCT on each column and keep the first four temporal low-frequency coefficients.
         // This produces 16 x 4 = 64 values.
         var finalCoeffs = [Double]()
-        finalCoeffs.reserveCapacity(numCoeffs * 4)
+        finalCoeffs.reserveCapacity(numCoeffs * temporalCoefficientCount)
 
         for col in 0..<numCoeffs {
             var column = [Double]()
@@ -216,11 +270,10 @@ enum PerceptualHasher {
                 column.append(frameCoeffs[row][col])
             }
             let dct1d = dct1D(column)
-            // Keep the first four temporal low-frequency coefficients.
-            for i in 0..<min(4, dct1d.count) {
-                finalCoeffs.append(dct1d[i])
-            }
+            guard dct1d.count >= temporalCoefficientCount else { return nil }
+            finalCoeffs.append(contentsOf: dct1d.prefix(temporalCoefficientCount))
         }
+        guard finalCoeffs.count == hashByteCount * 8 else { return nil }
 
         // Step 3: Binarize using the median as threshold.
         let sorted = finalCoeffs.sorted()
@@ -236,6 +289,7 @@ enum PerceptualHasher {
             }
             hashBytes.append(byte)
         }
+        guard hashBytes.count == hashByteCount else { return nil }
 
         return VideoPerceptualHash(videoID: id, hashBits: hashBytes)
     }
