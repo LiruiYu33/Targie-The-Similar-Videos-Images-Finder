@@ -67,7 +67,7 @@ struct ContentView: View {
             isPresented: $isClearCacheConfirmPresented
         ) {
             Button(L10n.clearCache(language), role: .destructive) {
-                Task { await model.clearAllCaches() }
+                Task { _ = await model.clearAllCaches() }
             }
             Button(L10n.cancel(language), role: .cancel) {}
         } message: {
@@ -150,18 +150,20 @@ struct ContentView: View {
                     systemImage: "doc.text.image",
                     action: enterBrowseMode
                 )
-                .disabled(model.selectedFolders.isEmpty || model.isScanning)
+                .disabled(model.selectedFolders.isEmpty || model.isBusy)
 
                 ToolbarLabeledButton(
                     title: L10n.clearCache(language),
                     systemImage: "arrow.triangle.2.circlepath"
                 ) {
                     Task {
-                        cacheMB = await model.cacheStats()
+                        let stats = await model.cacheStats()
+                        guard !model.isBusy else { return }
+                        cacheMB = stats
                         isClearCacheConfirmPresented = true
                     }
                 }
-                .disabled(model.isScanning)
+                .disabled(model.isBusy)
 
                 ToolbarLabeledPopover(
                     title: L10n.scanIntensity(language),
@@ -190,7 +192,7 @@ struct ContentView: View {
                         }
                     }
                 }
-                .disabled(model.isScanning)
+                .disabled(model.isBusy)
 
                 ToolbarLabeledPopover(
                     title: L10n.language(language),
@@ -231,7 +233,7 @@ struct ContentView: View {
     // MARK: - Mode Switching
 
     private func enterBrowseMode() {
-        guard !model.isScanning else { return }
+        guard !model.isBusy else { return }
         if !model.hasDiscoveredItems {
             model.discoverFiles()
         }

@@ -22,6 +22,25 @@
 import Foundation
 import GRDB
 
+enum FileCacheIdentity {
+    static func normalizedModifiedAt(_ date: Date?) -> Date? {
+        guard let milliseconds = modifiedAtMilliseconds(date) else { return nil }
+        return Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
+    }
+
+    static func modifiedAtMatches(_ lhs: Date?, _ rhs: Date?) -> Bool {
+        modifiedAtMilliseconds(lhs) == modifiedAtMilliseconds(rhs)
+    }
+
+    static func modifiedAtSignature(_ date: Date?) -> String {
+        modifiedAtMilliseconds(date).map(String.init) ?? "nil"
+    }
+
+    private static func modifiedAtMilliseconds(_ date: Date?) -> Int64? {
+        date.map { Int64(($0.timeIntervalSince1970 * 1_000).rounded()) }
+    }
+}
+
 // MARK: - CacheRecord
 
 /// Cached hash record for a single video. `filePath`, `fileSize`, and `modifiedAt`
@@ -173,16 +192,10 @@ struct PairRelationCacheKey: Hashable, Sendable {
         self.secondPath = second.url.path
         self.firstFileSize = first.fileSize
         self.secondFileSize = second.fileSize
-        self.firstModifiedAt = Self.normalizedModifiedAt(first.modifiedAt)
-        self.secondModifiedAt = Self.normalizedModifiedAt(second.modifiedAt)
+        self.firstModifiedAt = FileCacheIdentity.normalizedModifiedAt(first.modifiedAt)
+        self.secondModifiedAt = FileCacheIdentity.normalizedModifiedAt(second.modifiedAt)
         self.mediaKind = first.kind
         self.algorithmVersion = algorithmVersion
-    }
-
-    private static func normalizedModifiedAt(_ date: Date?) -> Date? {
-        guard let date else { return nil }
-        let milliseconds = (date.timeIntervalSince1970 * 1_000).rounded()
-        return Date(timeIntervalSince1970: milliseconds / 1_000)
     }
 }
 
@@ -268,8 +281,7 @@ private enum PairRelationCacheCodec {
     }
 
     private static func identityDateMatch(_ lhs: Date?, _ rhs: Date?) -> Bool {
-        guard let lhs, let rhs else { return lhs == nil && rhs == nil }
-        return abs(lhs.timeIntervalSince(rhs)) < 0.001
+        FileCacheIdentity.modifiedAtMatches(lhs, rhs)
     }
 }
 
@@ -324,7 +336,7 @@ protocol HashCaching: Sendable {
     /// universe. Normal folder scans must not use their partial path set here.
     func pruneStale(validPaths: Set<String>) async
     func count() async -> Int
-    func clearAll() async
+    func clearAll() async throws
     func sizeInBytes() async -> Int64
     func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) async -> CacheRecord?
     func lookupHashes(keys: [MediaHashCacheKey]) async -> [MediaHashCacheKey: CacheRecord]
@@ -697,21 +709,17 @@ actor HashCache: HashCaching {
 
     /// Deletes every cached perceptual hash, metadata, and image feature.
     /// Next scan re-derives them.
-    func clearAll() {
-        do {
-            try dbQueue.write { db in
-                try db.execute(sql: "DELETE FROM hash_cache")
-                try db.execute(sql: "DELETE FROM media_metadata")
-                try db.execute(sql: "DELETE FROM image_features")
-                try db.execute(sql: "DELETE FROM frame_features")
-                try db.execute(sql: "DELETE FROM pair_relations")
-                try db.execute(sql: "DELETE FROM scan_relation_index_relations")
-                try db.execute(sql: "DELETE FROM scan_relation_indexes")
-            }
-            try dbQueue.vacuum()
-        } catch {
-            // Clear Cache is best-effort; scans can rebuild any missing data.
+    func clearAll() throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM hash_cache")
+            try db.execute(sql: "DELETE FROM media_metadata")
+            try db.execute(sql: "DELETE FROM image_features")
+            try db.execute(sql: "DELETE FROM frame_features")
+            try db.execute(sql: "DELETE FROM pair_relations")
+            try db.execute(sql: "DELETE FROM scan_relation_index_relations")
+            try db.execute(sql: "DELETE FROM scan_relation_indexes")
         }
+        try dbQueue.vacuum()
     }
 
     func upsertMetadata(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, duration: Double?, width: Int?, height: Int?) async {
@@ -1178,10 +1186,7 @@ actor HashCache: HashCaching {
     // MARK: - Helpers
 
     private nonisolated func modifiedAtMatches(_ cached: Date?, _ current: Date?) -> Bool {
-        if let a = cached, let b = current {
-            return abs(a.timeIntervalSince(b)) < 1.0
-        }
-        return cached == nil && current == nil
+        FileCacheIdentity.modifiedAtMatches(cached, current)
     }
 
     private nonisolated func modifiedAtExactlyMatches(_ cached: Date?, _ current: Date?) -> Bool {
@@ -1412,8 +1417,8 @@ actor InMemoryHashCache: HashCaching {
     private var storage: [String: CacheRecord] = [:]
     private var metadata: [String: (key: MediaMetadataCacheKey, entry: MediaMetadataCacheEntry)] = [:]
     private var sha256Store: [String: (key: MediaMetadataCacheKey, value: String)] = [:]
-    private var imageFeatures: [String: Data] = [:]
-    private var frameFeatures: [String: Data] = [:]
+    private var imageFeatures: [String: (fileSize: Int64, modifiedAt: Date?, data: Data)] = [:]
+    private var frameFeatures: [String: (fileSize: Int64, modifiedAt: Date?, data: Data)] = [:]
     private var pairRelations: [PairRelationCacheKey: PairRelationRecord] = [:]
     private var scanRelationIndexes: [String: CachedScanRelationIndex] = [:]
 
@@ -1421,10 +1426,7 @@ actor InMemoryHashCache: HashCaching {
         guard let record = storage[filePath] else { return nil }
         guard record.fileSize == fileSize else { return nil }
         guard record.mediaKind == mediaKind.rawValue, record.algorithmVersion == algorithmVersion else { return nil }
-        if let a = record.modifiedAt, let b = modifiedAt {
-            return abs(a.timeIntervalSince(b)) < 1.0 ? record : nil
-        }
-        return record.modifiedAt == nil && modifiedAt == nil ? record : nil
+        return datesMatch(record.modifiedAt, modifiedAt) ? record : nil
     }
 
     func lookupHashes(keys: [MediaHashCacheKey]) -> [MediaHashCacheKey: CacheRecord] {
@@ -1521,19 +1523,27 @@ actor InMemoryHashCache: HashCaching {
     }
 
     func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {
-        imageFeatures[filePath] = featureData
+        imageFeatures[filePath] = (fileSize, modifiedAt, featureData)
     }
 
     func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
-        imageFeatures[filePath]
+        guard let cached = imageFeatures[filePath],
+              cached.fileSize == fileSize,
+              datesMatch(cached.modifiedAt, modifiedAt)
+        else { return nil }
+        return cached.data
     }
 
     func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {
-        frameFeatures[filePath] = featureData
+        frameFeatures[filePath] = (fileSize, modifiedAt, featureData)
     }
 
     func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
-        frameFeatures[filePath]
+        guard let cached = frameFeatures[filePath],
+              cached.fileSize == fileSize,
+              datesMatch(cached.modifiedAt, modifiedAt)
+        else { return nil }
+        return cached.data
     }
 
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {
@@ -1607,9 +1617,6 @@ actor InMemoryHashCache: HashCaching {
     }
 
     private func datesMatch(_ cached: Date?, _ current: Date?) -> Bool {
-        if let a = cached, let b = current {
-            return abs(a.timeIntervalSince(b)) < 1.0
-        }
-        return cached == nil && current == nil
+        FileCacheIdentity.modifiedAtMatches(cached, current)
     }
 }

@@ -66,13 +66,19 @@ enum ScanRelationSignatureBuilder {
             hasher.update(data: Data([0]))
         }
 
+        update("scan-relation-signature-v2")
         update(algorithmVersion)
         for item in items.sorted(by: { $0.url.path < $1.url.path }) {
-            guard let hash = hashes[item.id] else { continue }
             update(item.url.path)
             update(String(item.fileSize))
-            hasher.update(data: hash)
-            hasher.update(data: Data([0xff]))
+            update(FileCacheIdentity.modifiedAtSignature(item.modifiedAt))
+            if let hash = hashes[item.id] {
+                update("fingerprint")
+                hasher.update(data: hash)
+                hasher.update(data: Data([0xff]))
+            } else {
+                update("missing-fingerprint")
+            }
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
@@ -649,7 +655,9 @@ struct SimilarityPipeline: SimilarityProcessing {
             var inFlight = 0
 
             while inFlight < concurrencyCap, let next = iterator.next() {
+                try Task.checkCancellation()
                 group.addTask {
+                    try Task.checkCancellation()
                     let hash = try await perceptualHashProvider(next.url, next.id)
                     return (next.id, hash)
                 }
@@ -658,6 +666,7 @@ struct SimilarityPipeline: SimilarityProcessing {
 
             var results: [UUID: VideoPerceptualHash] = [:]
             while let (id, hash) = try await group.next() {
+                try Task.checkCancellation()
                 if let hash { results[id] = hash }
 
                 let done = await counter.increment()
@@ -674,7 +683,9 @@ struct SimilarityPipeline: SimilarityProcessing {
                 }
 
                 if let next = iterator.next() {
+                    try Task.checkCancellation()
                     group.addTask {
+                        try Task.checkCancellation()
                         let hash = try await perceptualHashProvider(next.url, next.id)
                         return (next.id, hash)
                     }

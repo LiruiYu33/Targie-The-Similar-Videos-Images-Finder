@@ -24,7 +24,9 @@ import Foundation
 
 enum FileHasher {
     static func sha256(of url: URL) async throws -> String {
-        try await Task.detached(priority: .utility) {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
             var hasher = SHA256()
@@ -33,8 +35,14 @@ enum FileHasher {
                 guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { break }
                 hasher.update(data: data)
             }
+            try Task.checkCancellation()
             return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     /// Cache-aware SHA-256 — checks the persistent cache before reading the file,

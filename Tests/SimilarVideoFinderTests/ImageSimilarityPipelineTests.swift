@@ -81,6 +81,34 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         XCTAssertEqual(finalHashing.cacheTotal, 1)
     }
 
+    func testCancellingImageHashingPropagatesCancellation() async throws {
+        let image = image(path: "/tmp/cancelled-image.jpg", size: 10)
+        let provider = BlockingImagePerceptualHashProvider()
+        let pipeline = ImageSimilarityPipeline(
+            perceptualHashProvider: { url, id in
+                try await provider.hash(for: url, id: id)
+            }
+        )
+        let task = Task {
+            try await pipeline.process(images: [image], threshold: 0.88) { _ in }
+        }
+
+        for _ in 0..<100 {
+            if await provider.hasStarted { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let hasStarted = await provider.hasStarted
+        XCTAssertTrue(hasStarted)
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Image hashing cancellation should reach the pipeline caller")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
     func testCachedPairRelationSkipsImageFeatureExtraction() async throws {
         let first = image(path: "/missing/pair-cache-first.jpg", size: 1_000)
         let second = image(path: "/missing/pair-cache-second.jpg", size: 1_100)
@@ -376,6 +404,16 @@ private actor ImageProgressRecorder {
 
     func updates(for stage: ScanStage) -> [ScanProgress] {
         updates.filter { $0.stage == stage }
+    }
+}
+
+private actor BlockingImagePerceptualHashProvider {
+    private(set) var hasStarted = false
+
+    func hash(for url: URL, id: UUID) async throws -> ImagePerceptualHash? {
+        hasStarted = true
+        try await Task.sleep(nanoseconds: 30_000_000_000)
+        return ImagePerceptualHash(mediaID: id, hashBits: [UInt8](repeating: 0, count: 8))
     }
 }
 

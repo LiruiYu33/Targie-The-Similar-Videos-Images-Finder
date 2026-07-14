@@ -930,11 +930,62 @@ final class ScanViewModelTests: XCTestCase {
 
         let stats = await model.cacheStats()
         XCTAssertEqual(stats.thumbnailMB, "1")
-        await model.clearAllCaches()
+        let cleared = await model.clearAllCaches()
 
+        XCTAssertTrue(cleared)
         XCTAssertEqual(thumbnailStore.count(), 0)
         let hashCount = await cache.count()
         XCTAssertEqual(hashCount, 0)
+    }
+
+    func testCacheClearingBlocksScanAndFolderChangesUntilFinished() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BlockingCacheClear-\(UUID().uuidString)", isDirectory: true)
+        let second = root.appendingPathComponent("second", isDirectory: true)
+        let thumbnailDirectory = root.appendingPathComponent("thumbnails", isDirectory: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = BlockingClearCache()
+        let model = ScanViewModel(
+            hashCache: cache,
+            thumbnailStore: ThumbnailStore(directoryURL: thumbnailDirectory)
+        )
+        model.selectedFolders = [root]
+
+        let clearTask = Task { await model.clearAllCaches() }
+        try await waitUntilAsync { await cache.hasStarted }
+
+        XCTAssertTrue(model.isClearingCache)
+        XCTAssertTrue(model.isBusy)
+        model.startScan()
+        let added = model.addFolders([second])
+        XCTAssertFalse(model.isScanning)
+        XCTAssertFalse(added)
+        XCTAssertEqual(model.selectedFolders, [root])
+
+        await cache.resume()
+        let cleared = await clearTask.value
+        XCTAssertTrue(cleared)
+        XCTAssertFalse(model.isClearingCache)
+        XCTAssertFalse(model.isBusy)
+    }
+
+    func testCacheClearFailureIsPresentedAndReleasesBusyState() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FailedCacheClear-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = ScanViewModel(
+            hashCache: FailingClearCache(),
+            thumbnailStore: ThumbnailStore(directoryURL: root.appendingPathComponent("thumbnails"))
+        )
+
+        let cleared = await model.clearAllCaches()
+
+        XCTAssertFalse(cleared)
+        XCTAssertNotNil(model.presentedError)
+        XCTAssertFalse(model.isClearingCache)
+        XCTAssertFalse(model.isBusy)
     }
 
     // MARK: - Compare Media group sort
@@ -1557,4 +1608,44 @@ private actor MetadataHitCache: HashCaching {
     func metadataLookupCount() -> Int {
         metadataLookups
     }
+}
+
+private actor BlockingClearCache: HashCaching {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var hasStarted = false
+
+    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
+        nil
+    }
+
+    func upsert(_ record: CacheRecord) {}
+    func pruneStale(validPaths: Set<String>) {}
+    func count() -> Int { 0 }
+    func sizeInBytes() -> Int64 { 0 }
+
+    func clearAll() async throws {
+        hasStarted = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor FailingClearCache: HashCaching {
+    enum Failure: Error {
+        case unavailable
+    }
+
+    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? {
+        nil
+    }
+
+    func upsert(_ record: CacheRecord) {}
+    func pruneStale(validPaths: Set<String>) {}
+    func count() -> Int { 0 }
+    func sizeInBytes() -> Int64 { 0 }
+    func clearAll() throws { throw Failure.unavailable }
 }
