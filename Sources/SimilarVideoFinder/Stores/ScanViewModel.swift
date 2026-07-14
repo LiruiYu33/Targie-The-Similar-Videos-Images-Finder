@@ -104,43 +104,35 @@ actor ScanProgressAggregator {
         return aggregate(preferredLane: lane)
     }
 
-    func complete(_ lane: ScanProgressLane, discoveredCount: Int) -> ScanProgress {
+    func complete(_ lane: ScanProgressLane, discoveredCount: Int) -> ScanProgress? {
         var progress = updates[lane] ?? ScanProgress(stage: .completed, fraction: 1)
         progress.stage = .completed
         progress.fraction = 1
         progress.discoveredCount = max(progress.discoveredCount, discoveredCount)
         updates[lane] = progress
         completedLanes.insert(lane)
+        guard completedLanes.count < ScanProgressLane.allCases.count else { return nil }
         return aggregate(preferredLane: lane)
     }
 
     private func aggregate(preferredLane: ScanProgressLane) -> ScanProgress {
         let allLanes = ScanProgressLane.allCases
-        let allCompleted = completedLanes.count == allLanes.count
         let rawFraction = allLanes.reduce(into: (weighted: 0.0, total: 0.0)) { partial, lane in
             let progress = updates[lane] ?? ScanProgress(stage: .discovering, fraction: 0)
             let weight = Double(max(1, progress.discoveredCount))
             partial.weighted += normalizedFraction(for: progress) * weight
             partial.total += weight
         }
-        let currentStage: ScanStage
-        if allCompleted {
-            emittedFraction = 1
-            emittedStage = .completed
-            currentStage = .completed
-        } else {
-            let nextFraction = rawFraction.total > 0 ? rawFraction.weighted / rawFraction.total : 0
-            emittedFraction = max(emittedFraction, min(1, max(0, nextFraction)))
-            let nextStage = aggregateStage()
-            if stageRank(nextStage) >= stageRank(emittedStage) {
-                emittedStage = nextStage
-            }
-            currentStage = nextStage
+        let nextFraction = rawFraction.total > 0 ? rawFraction.weighted / rawFraction.total : 0
+        emittedFraction = max(emittedFraction, min(1, max(0, nextFraction)))
+        let currentStage = aggregateStage()
+        if stageRank(currentStage) >= stageRank(emittedStage) {
+            emittedStage = currentStage
         }
 
         let displayProgress = progressForDisplay(preferredLane: preferredLane, stage: currentStage)
             ?? fallbackProgressForDisplay(preferredLane: preferredLane)
-        let displayStage = allCompleted ? .completed : displayProgress?.stage ?? currentStage
+        let displayStage = displayProgress?.stage ?? currentStage
         let comparisonDetails = displayStage == .comparing
             ? aggregatedComparisonDetails(preferredPhase: displayProgress?.comparisonPhase)
             : nil
@@ -371,6 +363,7 @@ final class ScanViewModel: ObservableObject {
     /// its contents, or the sort field/direction actually change.
     @Published private(set) var sortedGroupItems: [MediaItem] = []
     @Published private(set) var progress = ScanProgress()
+    @Published private(set) var isScanning = false
     @Published private(set) var itemsRevision = 0
     @Published private(set) var issues: [ScanIssue] = []
     @Published var presentedError: PresentedError?
@@ -392,6 +385,7 @@ final class ScanViewModel: ObservableObject {
     private let activityManager: ScanActivityManaging
     private let groupBuilder: SimilarityGroupBuilder
     private var groupSelectionAnchorID: UUID?
+    private var activeScanID: UUID?
     private var scanActivity: NSObjectProtocol?
 
     init(
@@ -437,23 +431,36 @@ final class ScanViewModel: ObservableObject {
         }.value
     }
 
-    private func beginScanActivity(reason: String) {
-        endScanActivity()
+    private func beginScanRun(reason: String) -> UUID {
+        let scanID = UUID()
+        activeScanID = scanID
         scanActivity = activityManager.begin(reason: reason)
+        isScanning = true
+        return scanID
     }
 
-    private func endScanActivity() {
-        guard let activity = scanActivity else { return }
+    private func finishScanRun(_ scanID: UUID) {
+        guard activeScanID == scanID else { return }
+        activeScanID = nil
+        scanTask = nil
+        if let activity = scanActivity {
+            activityManager.end(activity)
+        }
         scanActivity = nil
-        activityManager.end(activity)
+        isScanning = false
+    }
+
+    private func updateProgress(_ progress: ScanProgress, for scanID: UUID) {
+        guard activeScanID == scanID else { return }
+        self.progress = progress
+    }
+
+    private func isCurrentScan(_ scanID: UUID) -> Bool {
+        activeScanID == scanID
     }
 
     /// All media items discovered during scanning or file discovery.
     var items: [MediaItem] { allItems }
-
-    var isScanning: Bool {
-        [.discovering, .readingMetadata, .prehashing, .hashing, .comparing].contains(progress.stage)
-    }
 
     /// Whether browse mode has data to show.
     var hasDiscoveredItems: Bool { !allItems.isEmpty }
@@ -519,7 +526,7 @@ final class ScanViewModel: ObservableObject {
         let folders = selectedFolders
         scanTask?.cancel()
         invalidatePendingGroupBuild()
-        beginScanActivity(reason: "Scanning media for similar files")
+        let scanID = beginScanRun(reason: "Scanning media for similar files")
         progress = ScanProgress(stage: .discovering)
         replaceItems(with: [])
         allRelations = []
@@ -529,7 +536,7 @@ final class ScanViewModel: ObservableObject {
         issues = []
         scanTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.endScanActivity() }
+            defer { self.finishScanRun(scanID) }
             do {
                 // Always scan both kinds so the user can switch All / Images /
                 // Videos after scanning without re-scanning; `scanMode` only
@@ -553,10 +560,11 @@ final class ScanViewModel: ObservableObject {
                         scanIntensity: scanIntensity
                     ) { [weak self] update in
                         let aggregate = await progressAggregator.update(.video, with: update)
-                        await MainActor.run { self?.progress = aggregate }
+                        await MainActor.run { self?.updateProgress(aggregate, for: scanID) }
                     }
-                    let aggregate = await progressAggregator.complete(.video, discoveredCount: result.items.count)
-                    await MainActor.run { [weak self] in self?.progress = aggregate }
+                    if let aggregate = await progressAggregator.complete(.video, discoveredCount: result.items.count) {
+                        await MainActor.run { [weak self] in self?.updateProgress(aggregate, for: scanID) }
+                    }
                     return result
                 }()
                 async let imageSide: ScanSideResult = {
@@ -568,10 +576,11 @@ final class ScanViewModel: ObservableObject {
                         scanIntensity: scanIntensity
                     ) { [weak self] update in
                         let aggregate = await progressAggregator.update(.image, with: update)
-                        await MainActor.run { self?.progress = aggregate }
+                        await MainActor.run { self?.updateProgress(aggregate, for: scanID) }
                     }
-                    let aggregate = await progressAggregator.complete(.image, discoveredCount: result.items.count)
-                    await MainActor.run { [weak self] in self?.progress = aggregate }
+                    if let aggregate = await progressAggregator.complete(.image, discoveredCount: result.items.count) {
+                        await MainActor.run { [weak self] in self?.updateProgress(aggregate, for: scanID) }
+                    }
                     return result
                 }()
                 let (videoResult, imageResult) = try await (videoSide, imageSide)
@@ -583,6 +592,7 @@ final class ScanViewModel: ObservableObject {
                     relations: relations
                 )
                 try Task.checkCancellation()
+                guard isCurrentScan(scanID) else { throw CancellationError() }
                 // Publish the combined results once, after both kinds are done —
                 // the sidebar shows groups only when scanning is complete.
                 publish(items: items, relations: relations, groups: rebuiltGroups)
@@ -590,13 +600,17 @@ final class ScanViewModel: ObservableObject {
                 // Cache entries are historical across every scanned folder, so a
                 // partial folder selection must never prune the global cache.
                 issues = scanIssues
-                progress = ScanProgress(stage: .completed, fraction: 1, discoveredCount: items.count)
+                updateProgress(
+                    ScanProgress(stage: .completed, fraction: 1, discoveredCount: items.count),
+                    for: scanID
+                )
             } catch is CancellationError {
-                progress = ScanProgress(stage: .cancelled)
+                updateProgress(ScanProgress(stage: .cancelled), for: scanID)
             } catch {
+                guard isCurrentScan(scanID) else { return }
                 groups = []
                 presentedError = .message(error.localizedDescription)
-                progress = ScanProgress(stage: .idle)
+                updateProgress(ScanProgress(stage: .idle), for: scanID)
             }
         }
     }
@@ -705,12 +719,12 @@ final class ScanViewModel: ObservableObject {
         let folders = selectedFolders
         scanTask?.cancel()
         invalidatePendingGroupBuild()
-        beginScanActivity(reason: "Reading media metadata")
+        let scanID = beginScanRun(reason: "Reading media metadata")
         progress = ScanProgress(stage: .discovering)
 
         scanTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.endScanActivity() }
+            defer { self.finishScanRun(scanID) }
             do {
                 // Always scan both kinds (see startScan); scanMode only filters.
                 let metadataLimit = self.scanIntensity.metadataConcurrencyLimit(
@@ -723,39 +737,46 @@ final class ScanViewModel: ObservableObject {
                     let result = try await Self.scanFolders(folders) { folder in
                         let scanned = try await scanner.scan(folder: folder) { [weak self] update in
                             let aggregate = await progressAggregator.update(.video, with: update)
-                            await MainActor.run { self?.progress = aggregate }
+                            await MainActor.run { self?.updateProgress(aggregate, for: scanID) }
                         }
                         return (scanned.videos, scanned.issues)
                     }
-                    let aggregate = await progressAggregator.complete(.video, discoveredCount: result.items.count)
-                    await MainActor.run { [weak self] in self?.progress = aggregate }
+                    if let aggregate = await progressAggregator.complete(.video, discoveredCount: result.items.count) {
+                        await MainActor.run { [weak self] in self?.updateProgress(aggregate, for: scanID) }
+                    }
                     return result
                 }()
                 async let imageScan: (items: [MediaItem], issues: [ScanIssue]) = {
                     let result = try await Self.scanFolders(folders) { folder in
                         let scanned = try await imageScanner.scan(folder: folder) { [weak self] update in
                             let aggregate = await progressAggregator.update(.image, with: update)
-                            await MainActor.run { self?.progress = aggregate }
+                            await MainActor.run { self?.updateProgress(aggregate, for: scanID) }
                         }
                         return (scanned.images, scanned.issues)
                     }
-                    let aggregate = await progressAggregator.complete(.image, discoveredCount: result.items.count)
-                    await MainActor.run { [weak self] in self?.progress = aggregate }
+                    if let aggregate = await progressAggregator.complete(.image, discoveredCount: result.items.count) {
+                        await MainActor.run { [weak self] in self?.updateProgress(aggregate, for: scanID) }
+                    }
                     return result
                 }()
                 let (videoResult, imageResult) = try await (videoScan, imageScan)
                 let items = videoResult.items + imageResult.items
                 let scanIssues = videoResult.issues + imageResult.issues
                 try Task.checkCancellation()
+                guard isCurrentScan(scanID) else { throw CancellationError() }
                 invalidatePendingGroupBuild()
                 replaceItems(with: items)
                 issues = scanIssues
-                progress = ScanProgress(stage: .completed, fraction: 1, discoveredCount: items.count)
+                updateProgress(
+                    ScanProgress(stage: .completed, fraction: 1, discoveredCount: items.count),
+                    for: scanID
+                )
             } catch is CancellationError {
-                progress = ScanProgress(stage: .cancelled)
+                updateProgress(ScanProgress(stage: .cancelled), for: scanID)
             } catch {
+                guard isCurrentScan(scanID) else { return }
                 presentedError = .message(error.localizedDescription)
-                progress = ScanProgress(stage: .idle)
+                updateProgress(ScanProgress(stage: .idle), for: scanID)
             }
         }
     }
