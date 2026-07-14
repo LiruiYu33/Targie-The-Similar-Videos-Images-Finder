@@ -255,6 +255,46 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(activityManager.endCount, 1)
     }
 
+    func testScanRemainsActiveUntilFinalGroupsArePublished() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FinalGroupBuild-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let controller = BlockingThresholdGroupBuilder(blockedThreshold: 0.88)
+        let activityManager = RecordingScanActivityManager()
+        let model = ScanViewModel(
+            hashCache: nil,
+            activityManager: activityManager,
+            groupBuilder: { items, relations, threshold in
+                await controller.build(items: items, relations: relations, threshold: threshold)
+            }
+        )
+        model.selectedFolders = [root]
+        defer {
+            model.cancelScan()
+            Task { await controller.resumeBlockedBuild() }
+        }
+
+        model.startScan()
+        try await waitUntilAsync { await controller.hasBlockedBuild }
+
+        XCTAssertTrue(model.isScanning)
+        XCTAssertNotEqual(model.progress.stage, .completed)
+        XCTAssertFalse(model.clearFolders())
+        model.startScan()
+        model.discoverFiles()
+        XCTAssertEqual(model.selectedFolders, [root])
+        XCTAssertEqual(activityManager.beginReasons.count, 1)
+        XCTAssertEqual(activityManager.endCount, 0)
+
+        await controller.resumeBlockedBuild()
+        try await waitUntil { !model.isScanning }
+
+        XCTAssertEqual(model.progress.stage, .completed)
+        XCTAssertEqual(activityManager.endCount, 1)
+    }
+
     func testProgressAggregationDoesNotMixCacheStatsFromAnotherLane() async {
         let aggregator = ScanProgressAggregator(workflow: .fullScan)
         _ = await aggregator.update(.image, with: ScanProgress(
