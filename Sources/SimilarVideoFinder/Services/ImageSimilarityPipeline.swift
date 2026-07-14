@@ -17,10 +17,18 @@ struct ImageSimilarityPipeline: Sendable {
     private static let pairRelationWriteBatchSize = 512
     private let cache: (any HashCaching)?
     private let featureExtractor: any ImageFeatureExtracting
+    private let perceptualHashProvider: @Sendable (URL, UUID) async throws -> ImagePerceptualHash?
 
-    init(cache: (any HashCaching)? = nil, featureExtractor: any ImageFeatureExtracting = ImageFeatureExtractor()) {
+    init(
+        cache: (any HashCaching)? = nil,
+        featureExtractor: any ImageFeatureExtracting = ImageFeatureExtractor(),
+        perceptualHashProvider: @escaping @Sendable (URL, UUID) async throws -> ImagePerceptualHash? = {
+            try ImagePerceptualHasher.hash(for: $0, id: $1)
+        }
+    ) {
         self.cache = cache
         self.featureExtractor = featureExtractor
+        self.perceptualHashProvider = perceptualHashProvider
     }
 
     static func comparisonConcurrencyLimit(
@@ -324,13 +332,27 @@ struct ImageSimilarityPipeline: Sendable {
             processorCount: ProcessInfo.processInfo.activeProcessorCount,
             scanIntensity: scanIntensity
         )
+        let perceptualHashProvider = perceptualHashProvider
         try await withThrowingTaskGroup(of: (MediaItem, ImagePerceptualHash?).self) { group in
             var iterator = missing.makeIterator()
             for _ in 0..<min(concurrencyLimit, missing.count) {
-                if let item = iterator.next() { group.addTask { (item, try? ImagePerceptualHasher.hash(for: item.url, id: item.id)) } }
+                try Task.checkCancellation()
+                if let item = iterator.next() {
+                    group.addTask {
+                        try Task.checkCancellation()
+                        do {
+                            return (item, try await perceptualHashProvider(item.url, item.id))
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            return (item, nil)
+                        }
+                    }
+                }
             }
             var completed = hashes.count
             while let (item, hash) = try await group.next() {
+                try Task.checkCancellation()
                 completed += 1
                 if let hash {
                     hashes[item.id] = hash
@@ -350,7 +372,19 @@ struct ImageSimilarityPipeline: Sendable {
                         cacheKind: cache != nil && !images.isEmpty ? .fingerprint : nil
                     ))
                 }
-                if let next = iterator.next() { group.addTask { (next, try? ImagePerceptualHasher.hash(for: next.url, id: next.id)) } }
+                if let next = iterator.next() {
+                    try Task.checkCancellation()
+                    group.addTask {
+                        try Task.checkCancellation()
+                        do {
+                            return (next, try await perceptualHashProvider(next.url, next.id))
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            return (next, nil)
+                        }
+                    }
+                }
             }
         }
         return hashes

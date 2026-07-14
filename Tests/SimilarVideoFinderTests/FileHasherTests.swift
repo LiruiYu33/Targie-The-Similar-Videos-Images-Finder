@@ -40,4 +40,23 @@ final class FileHasherTests: XCTestCase {
         XCTAssertEqual(a, b)
         XCTAssertNotEqual(a, c)
     }
+
+    func testAlreadyCancelledHashDoesNotStartDetachedWork() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CancelledHash-\(UUID().uuidString).bin")
+        try Data("payload".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await FileHasher.sha256(of: url)
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled hash operation should throw")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
 }

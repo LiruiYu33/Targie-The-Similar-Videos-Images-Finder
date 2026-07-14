@@ -47,6 +47,42 @@ final class FrameFeatureExtractorTests: XCTestCase {
         XCTAssertEqual(secondCount, 1)
     }
 
+    func testFeatureCacheCoalescesConcurrentRequestsForSameVideo() async throws {
+        let extractor = CountingFrameFeatureExtractor(delayNanoseconds: 50_000_000)
+        let cache = FrameFeatureCache(extractor: extractor)
+        let url = URL(fileURLWithPath: "/tmp/concurrent-video.mp4")
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<6 {
+                group.addTask {
+                    _ = try await cache.features(for: url)
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        let count = await extractor.count(for: url)
+        XCTAssertEqual(count, 1)
+    }
+
+    func testFeatureCacheRetriesAfterFailedTask() async {
+        let extractor = CountingFrameFeatureExtractor(alwaysFails: true)
+        let cache = FrameFeatureCache(extractor: extractor)
+        let url = URL(fileURLWithPath: "/tmp/retry-video.mp4")
+
+        for _ in 0..<2 {
+            do {
+                _ = try await cache.features(for: url)
+                XCTFail("Feature extraction should fail")
+            } catch {
+                // A failed in-flight task must be removed so the next call retries.
+            }
+        }
+
+        let count = await extractor.count(for: url)
+        XCTAssertEqual(count, 2)
+    }
+
     func testFeatureCachePersistsFeaturesAcrossCacheInstances() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("FrameFeatureCachePersistence-\(UUID().uuidString)", isDirectory: true)
@@ -72,10 +108,27 @@ final class FrameFeatureExtractorTests: XCTestCase {
 }
 
 private actor CountingFrameFeatureExtractor: FrameFeatureExtracting {
+    enum Failure: Error {
+        case extractionFailed
+    }
+
     private var counts: [URL: Int] = [:]
+    private let delayNanoseconds: UInt64
+    private let alwaysFails: Bool
+
+    init(delayNanoseconds: UInt64 = 0, alwaysFails: Bool = false) {
+        self.delayNanoseconds = delayNanoseconds
+        self.alwaysFails = alwaysFails
+    }
 
     func features(for url: URL) async throws -> FrameFeatures {
         counts[url, default: 0] += 1
+        if delayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: delayNanoseconds)
+        }
+        if alwaysFails {
+            throw Failure.extractionFailed
+        }
         return FrameFeatures(observations: [])
     }
 

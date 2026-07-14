@@ -90,4 +90,32 @@ final class SimilarityGrouperTests: XCTestCase {
         XCTAssertEqual(first.map(\.maximumScore), second.map(\.maximumScore))
         XCTAssertEqual(first.map(\.reclaimableBytes), second.map(\.reclaimableBytes))
     }
+
+    func testCancellableGroupingStopsWhenCurrentTaskIsCancelled() async {
+        let first = SimilarityScoringTests.video(name: "cancel-a.mov")
+        let second = SimilarityScoringTests.video(name: "cancel-b.mov")
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.95,
+            evidence: []
+        )
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try SimilarityGrouper.cancellableGroups(
+                items: [first, second],
+                relations: [relation],
+                threshold: 0.90
+            )
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled grouping should throw")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected grouping error: \(error)")
+        }
+    }
 }

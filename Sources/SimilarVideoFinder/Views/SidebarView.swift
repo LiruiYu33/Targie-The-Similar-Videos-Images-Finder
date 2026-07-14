@@ -65,7 +65,7 @@ struct SidebarView: View {
                 sidebarActionLabel(L10n.addFolders(language), systemImage: "folder.badge.plus")
             }
             .sidebarActionButtonShape()
-            .disabled(model.isScanning)
+            .disabled(model.isBusy)
 
         case .clearFolders:
             Button {
@@ -74,7 +74,7 @@ struct SidebarView: View {
                 sidebarActionLabel(L10n.clearFolders(language), systemImage: "folder.badge.minus")
             }
             .sidebarActionButtonShape()
-            .disabled(model.isScanning || model.selectedFolders.isEmpty)
+            .disabled(model.isBusy || model.selectedFolders.isEmpty)
 
         case .folderStatus:
             folderStatus
@@ -128,7 +128,7 @@ struct SidebarView: View {
             }
             .buttonStyle(.borderedProminent)
             .sidebarActionButtonShape()
-            .disabled(model.selectedFolders.isEmpty)
+            .disabled(model.selectedFolders.isEmpty || model.isBusy)
         }
     }
 
@@ -176,7 +176,7 @@ struct SidebarView: View {
                 Image(systemName: "xmark.circle.fill")
             }
             .buttonStyle(.plain)
-            .disabled(model.isScanning)
+            .disabled(model.isBusy)
             .foregroundStyle(.secondary)
             .help(L10n.removeFolder(language))
         }

@@ -33,8 +33,9 @@ final class MainToolbarPlacementTests: XCTestCase {
         XCTAssertLessThan(clearCache.lowerBound, intensity.lowerBound)
         XCTAssertLessThan(intensity.lowerBound, language.lowerBound)
         let browseBlock = source[browse.lowerBound..<clearCache.lowerBound]
-        XCTAssertTrue(browseBlock.contains(".disabled(model.selectedFolders.isEmpty || model.isScanning)"))
-        XCTAssertTrue(source.contains("guard !model.isScanning else { return }"))
+        XCTAssertTrue(browseBlock.contains(".disabled(model.selectedFolders.isEmpty || model.isBusy)"))
+        XCTAssertTrue(source.contains("guard !model.isBusy else { return }"))
+        XCTAssertTrue(source.contains("guard !model.isBusy else { return }\n                        cacheMB = stats"))
     }
 
     func testBrowseToolbarDoesNotOwnClearCacheAction() throws {

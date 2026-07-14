@@ -133,7 +133,7 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(original, updated)
     }
 
-    func testScanRelationSignatureUsesFingerprintInsteadOfModifiedDateAsContentIdentity() {
+    func testScanRelationSignatureChangesWhenModifiedDateChanges() {
         let first = MediaItem(
             kind: .video,
             url: URL(fileURLWithPath: "/tmp/fingerprint-stable.mp4"),
@@ -167,7 +167,7 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
             algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false)
         )
 
-        XCTAssertEqual(original, updated)
+        XCTAssertNotEqual(original, updated)
     }
 
     func testScanRelationSignatureChangesWhenFingerprintChanges() {

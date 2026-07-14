@@ -25,6 +25,7 @@ enum ImagePerceptualHasher {
     static let coefficientSize = 8
 
     static func hash(for url: URL, id: UUID = UUID()) throws -> ImagePerceptualHash? {
+        try Task.checkCancellation()
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [
             kCGImageSourceShouldCache: false
         ] as CFDictionary) else { return nil }
@@ -35,6 +36,7 @@ enum ImagePerceptualHasher {
             kCGImageSourceShouldCacheImmediately: true
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        try Task.checkCancellation()
         return hash(image: image, id: id)
     }
 

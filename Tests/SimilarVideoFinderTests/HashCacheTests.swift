@@ -134,17 +134,29 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func testLookupAcceptsTinyDateDifferences() async {
-        let record = makeRecord(path: "/tmp/foo.mp4", size: 100, date: Date(timeIntervalSince1970: 1000))
+    func testLookupAcceptsModificationDatesWithinSameMillisecond() async {
+        let record = makeRecord(path: "/tmp/foo.mp4", size: 100, date: Date(timeIntervalSince1970: 1000.123_1))
         await cache.upsert(record)
 
-        // Differences under one second are accepted.
         let result = await cache.lookup(
             filePath: "/tmp/foo.mp4",
             fileSize: 100,
-            modifiedAt: Date(timeIntervalSince1970: 1000.5)
+            modifiedAt: Date(timeIntervalSince1970: 1000.123_3)
         )
         XCTAssertNotNil(result)
+    }
+
+    func testLookupRejectsHalfSecondModificationDateDifference() async {
+        let date = Date(timeIntervalSince1970: 1000)
+        await cache.upsert(makeRecord(path: "/tmp/foo.mp4", size: 100, date: date))
+
+        let result = await cache.lookup(
+            filePath: "/tmp/foo.mp4",
+            fileSize: 100,
+            modifiedAt: date.addingTimeInterval(0.5)
+        )
+
+        XCTAssertNil(result)
     }
 
     func testMoveLookupDoesNotReusePerceptualHashWithoutContentProof() async throws {
@@ -392,6 +404,108 @@ final class HashCacheTests: XCTestCase {
             mediaKind: .video
         )
         XCTAssertNil(sha)
+    }
+
+    func testAllPrimaryCachesRejectSameSizeFileChangedWithinOneSecond() async {
+        let path = tempDir.appendingPathComponent("rapid-change.mp4").path
+        let originalDate = Date(timeIntervalSince1970: 5_540)
+        let changedDate = originalDate.addingTimeInterval(0.5)
+        await cache.upsert(makeRecord(path: path, size: 4, date: originalDate))
+        await cache.upsertMetadata(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: originalDate,
+            mediaKind: .video,
+            duration: 10,
+            width: 640,
+            height: 360
+        )
+        await cache.upsertSHA256(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: originalDate,
+            mediaKind: .video,
+            sha256: "stale-sha"
+        )
+        await cache.upsertImageFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: originalDate,
+            featureData: Data([1])
+        )
+        await cache.upsertFrameFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: originalDate,
+            featureData: Data([2])
+        )
+
+        let fingerprint = await cache.lookup(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate
+        )
+        let metadata = await cache.lookupMetadata(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate,
+            mediaKind: .video
+        )
+        let sha = await cache.lookupSHA256(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate,
+            mediaKind: .video
+        )
+        let imageFeature = await cache.lookupImageFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate
+        )
+        let frameFeature = await cache.lookupFrameFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate
+        )
+
+        XCTAssertNil(fingerprint)
+        XCTAssertNil(metadata)
+        XCTAssertNil(sha)
+        XCTAssertNil(imageFeature)
+        XCTAssertNil(frameFeature)
+    }
+
+    func testInMemoryFeatureCachesValidateFileIdentity() async {
+        let inMemory = InMemoryHashCache()
+        let path = "/tmp/in-memory-feature.mp4"
+        let originalDate = Date(timeIntervalSince1970: 5_550)
+        let changedDate = originalDate.addingTimeInterval(0.5)
+        await inMemory.upsertImageFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: originalDate,
+            featureData: Data([1])
+        )
+        await inMemory.upsertFrameFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: originalDate,
+            featureData: Data([2])
+        )
+
+        let imageFeature = await inMemory.lookupImageFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate
+        )
+        let frameFeature = await inMemory.lookupFrameFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: changedDate
+        )
+
+        XCTAssertNil(imageFeature)
+        XCTAssertNil(frameFeature)
     }
 
     func testBatchMetadataLookupReturnsOnlyMatchingPrimaryEntries() async {
@@ -771,7 +885,7 @@ final class HashCacheTests: XCTestCase {
         XCTAssertEqual(remainingCount, 0)
     }
 
-    func testClearAllRemovesRowsAndCompactsDatabaseFile() async {
+    func testClearAllRemovesRowsAndCompactsDatabaseFile() async throws {
         let record = CacheRecord(
             filePath: "/tmp/large-cache-entry.mp4",
             fileSize: 2_000_000,
@@ -787,7 +901,7 @@ final class HashCacheTests: XCTestCase {
         let populatedSize = await cache.sizeInBytes()
         XCTAssertGreaterThan(populatedSize, 1_000_000)
 
-        await cache.clearAll()
+        try await cache.clearAll()
 
         let remainingCount = await cache.count()
         let clearedSize = await cache.sizeInBytes()

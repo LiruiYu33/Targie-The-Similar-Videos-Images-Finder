@@ -67,7 +67,7 @@ typealias SimilarityGroupBuilder = @Sendable (
     [MediaItem],
     [SimilarityRelation],
     Double
-) async -> [SimilarityGroup]
+) async throws -> [SimilarityGroup]
 
 enum ScanProgressLane: CaseIterable, Hashable, Sendable {
     case video
@@ -329,7 +329,7 @@ final class ScanViewModel: ObservableObject {
             let relations = self.allRelations
             let previousGroups = self.groups
             let groupBuilder = self.groupBuilder
-            let rebuilt = await groupBuilder(items, relations, threshold)
+            guard let rebuilt = try? await groupBuilder(items, relations, threshold) else { return }
 
             guard
                 !Task.isCancelled,
@@ -364,6 +364,7 @@ final class ScanViewModel: ObservableObject {
     @Published private(set) var sortedGroupItems: [MediaItem] = []
     @Published private(set) var progress = ScanProgress()
     @Published private(set) var isScanning = false
+    @Published private(set) var isClearingCache = false
     @Published private(set) var itemsRevision = 0
     @Published private(set) var issues: [ScanIssue] = []
     @Published var presentedError: PresentedError?
@@ -425,10 +426,19 @@ final class ScanViewModel: ObservableObject {
         items: [MediaItem],
         relations: [SimilarityRelation],
         threshold: Double
-    ) async -> [SimilarityGroup] {
-        await Task.detached(priority: .userInitiated) {
-            SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
-        }.value
+    ) async throws -> [SimilarityGroup] {
+        let worker = Task.detached(priority: .userInitiated) {
+            try SimilarityGrouper.cancellableGroups(
+                items: items,
+                relations: relations,
+                threshold: threshold
+            )
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     private func beginScanRun(reason: String) -> UUID {
@@ -462,6 +472,8 @@ final class ScanViewModel: ObservableObject {
     /// All media items discovered during scanning or file discovery.
     var items: [MediaItem] { allItems }
 
+    var isBusy: Bool { isScanning || isClearingCache }
+
     /// Whether browse mode has data to show.
     var hasDiscoveredItems: Bool { !allItems.isEmpty }
 
@@ -486,7 +498,7 @@ final class ScanViewModel: ObservableObject {
 
     @discardableResult
     func addFolders(_ urls: [URL]) -> Bool {
-        guard !isScanning else { return false }
+        guard !isBusy else { return false }
         let directories = urls.compactMap { url -> URL? in
             let normalized = url.standardizedFileURL
             guard (try? normalized.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
@@ -506,7 +518,7 @@ final class ScanViewModel: ObservableObject {
     }
 
     func removeFolder(_ folder: URL) {
-        guard !isScanning else { return }
+        guard !isBusy else { return }
         let path = folder.standardizedFileURL.path
         guard selectedFolders.contains(where: { $0.standardizedFileURL.path == path }) else { return }
         selectedFolders.removeAll { $0.standardizedFileURL.path == path }
@@ -515,14 +527,14 @@ final class ScanViewModel: ObservableObject {
 
     @discardableResult
     func clearFolders() -> Bool {
-        guard !isScanning, !selectedFolders.isEmpty else { return false }
+        guard !isBusy, !selectedFolders.isEmpty else { return false }
         selectedFolders.removeAll()
         resetResults()
         return true
     }
 
     func startScan() {
-        guard !selectedFolders.isEmpty, !isScanning else { return }
+        guard !selectedFolders.isEmpty, !isBusy else { return }
         let folders = selectedFolders
         scanTask?.cancel()
         invalidatePendingGroupBuild()
@@ -713,7 +725,7 @@ final class ScanViewModel: ObservableObject {
     /// Lightweight file discovery — populates `allItems` without running
     /// similarity pipelines.  Used by Browse mode.
     func discoverFiles() {
-        guard !selectedFolders.isEmpty, !isScanning else { return }
+        guard !selectedFolders.isEmpty, !isBusy else { return }
         guard allItems.isEmpty else { return }
 
         let folders = selectedFolders
@@ -1010,10 +1022,30 @@ final class ScanViewModel: ObservableObject {
     /// Clears both the on-disk thumbnail cache and the perceptual-hash cache.
     /// The next scan re-derives everything, so it'll be slower — used by the
     /// "Clear Cache" button in the main toolbar.
-    func clearAllCaches() async {
+    @discardableResult
+    func clearAllCaches() async -> Bool {
+        guard !isBusy else { return false }
+        isClearingCache = true
+        defer { isClearingCache = false }
+
         MediaThumbnailImageCache.shared.removeAll()
-        try? await thumbnailStore.clearAll()
-        await hashCache?.clearAll()
+        var failures: [String] = []
+        do {
+            try await thumbnailStore.clearAll()
+        } catch {
+            failures.append(error.localizedDescription)
+        }
+        do {
+            try await hashCache?.clearAll()
+        } catch {
+            failures.append(error.localizedDescription)
+        }
+
+        guard failures.isEmpty else {
+            presentedError = .message(failures.joined(separator: "\n"))
+            return false
+        }
+        return true
     }
 
     /// Remove a media item from allItems (and related relations/groups).
@@ -1094,7 +1126,7 @@ final class ScanViewModel: ObservableObject {
         while true {
             try Task.checkCancellation()
             let targetThreshold = threshold
-            let rebuilt = await groupBuilder(items, relations, targetThreshold)
+            let rebuilt = try await groupBuilder(items, relations, targetThreshold)
             try Task.checkCancellation()
             if threshold == targetThreshold {
                 return rebuilt

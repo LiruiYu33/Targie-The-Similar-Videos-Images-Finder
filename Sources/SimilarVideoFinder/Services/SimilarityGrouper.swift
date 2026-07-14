@@ -27,22 +27,66 @@ enum SimilarityGrouper {
         relations: [SimilarityRelation],
         threshold: Double
     ) -> [SimilarityGroup] {
-        let accepted = relations.filter { $0.score >= threshold }
+        buildGroups(
+            items: items,
+            relations: relations,
+            threshold: threshold,
+            cancellationCheck: {}
+        )
+    }
+
+    static func cancellableGroups(
+        items: [MediaItem],
+        relations: [SimilarityRelation],
+        threshold: Double
+    ) throws -> [SimilarityGroup] {
+        try buildGroups(
+            items: items,
+            relations: relations,
+            threshold: threshold,
+            cancellationCheck: { try Task.checkCancellation() }
+        )
+    }
+
+    private static func buildGroups(
+        items: [MediaItem],
+        relations: [SimilarityRelation],
+        threshold: Double,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> [SimilarityGroup] {
+        try cancellationCheck()
+        var accepted: [SimilarityRelation] = []
+        accepted.reserveCapacity(relations.count)
+        for (index, relation) in relations.enumerated() {
+            if index.isMultiple(of: 256) { try cancellationCheck() }
+            if relation.score >= threshold { accepted.append(relation) }
+        }
+
         var adjacency: [UUID: Set<UUID>] = [:]
-        for relation in accepted {
+        for (index, relation) in accepted.enumerated() {
+            if index.isMultiple(of: 256) { try cancellationCheck() }
             adjacency[relation.firstID, default: []].insert(relation.secondID)
             adjacency[relation.secondID, default: []].insert(relation.firstID)
         }
 
-        let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        var byID: [UUID: MediaItem] = [:]
+        byID.reserveCapacity(items.count)
+        for (index, item) in items.enumerated() {
+            if index.isMultiple(of: 256) { try cancellationCheck() }
+            byID[item.id] = item
+        }
         var visited = Set<UUID>()
         var components: [Set<UUID>] = []
         var componentIndexByItemID: [UUID: Int] = [:]
 
-        for item in items where !visited.contains(item.id) && adjacency[item.id] != nil {
+        for (index, item) in items.enumerated() where !visited.contains(item.id) && adjacency[item.id] != nil {
+            if index.isMultiple(of: 256) { try cancellationCheck() }
             var stack = [item.id]
             var component = Set<UUID>()
+            var traversed = 0
             while let current = stack.popLast() {
+                if traversed.isMultiple(of: 256) { try cancellationCheck() }
+                traversed += 1
                 guard visited.insert(current).inserted else { continue }
                 component.insert(current)
                 stack.append(contentsOf: adjacency[current, default: []])
@@ -55,7 +99,8 @@ enum SimilarityGrouper {
         }
 
         var relationBuckets = Array(repeating: [SimilarityRelation](), count: components.count)
-        for relation in accepted {
+        for (index, relation) in accepted.enumerated() {
+            if index.isMultiple(of: 256) { try cancellationCheck() }
             guard
                 let firstIndex = componentIndexByItemID[relation.firstID],
                 firstIndex == componentIndexByItemID[relation.secondID]
@@ -66,6 +111,7 @@ enum SimilarityGrouper {
         var result: [(group: SimilarityGroup, orderingKey: String)] = []
         result.reserveCapacity(components.count)
         for (index, component) in components.enumerated() {
+            try cancellationCheck()
             let groupItems = component.compactMap { byID[$0] }.sorted {
                 if $0.filename != $1.filename { return $0.filename < $1.filename }
                 if $0.url.path != $1.url.path { return $0.url.path < $1.url.path }
@@ -80,6 +126,7 @@ enum SimilarityGrouper {
             }
         }
 
+        try cancellationCheck()
         return result.sorted {
             if $0.group.maximumScore != $1.group.maximumScore {
                 return $0.group.maximumScore > $1.group.maximumScore
