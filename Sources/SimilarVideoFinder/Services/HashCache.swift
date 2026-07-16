@@ -96,6 +96,7 @@ struct ImageFeatureRecord: Codable, Sendable, FetchableRecord, PersistableRecord
     var filePath: String    // PRIMARY KEY
     var fileSize: Int64
     var modifiedAt: Date?
+    var algorithmVersion: String
     var featureData: Data   // NSKeyedArchiver archive of VNFeaturePrintObservation
 
     static var databaseTableName: String { "image_features" }
@@ -354,8 +355,8 @@ protocol HashCaching: Sendable {
 
     // Image feature cache — persists VNFeaturePrintObservation so the comparing
     // phase skips Vision neural-network inference on re-scan.
-    func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async
-    func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data?
+    func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, algorithmVersion: String, featureData: Data) async
+    func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, algorithmVersion: String) async -> Data?
 
     // Video frame feature cache — persists sampled frame feature prints so
     // optional frame verification can survive process restarts.
@@ -434,8 +435,25 @@ extension HashCaching {
         await lookupSHA256(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: .video)
     }
 
-    func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {}
-    func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? { nil }
+    func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, algorithmVersion: String, featureData: Data) async {}
+    func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, algorithmVersion: String) async -> Data? { nil }
+    func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {
+        await upsertImageFeature(
+            filePath: filePath,
+            fileSize: fileSize,
+            modifiedAt: modifiedAt,
+            algorithmVersion: ImageFeatureExtractor.algorithmVersion,
+            featureData: featureData
+        )
+    }
+    func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
+        await lookupImageFeature(
+            filePath: filePath,
+            fileSize: fileSize,
+            modifiedAt: modifiedAt,
+            algorithmVersion: ImageFeatureExtractor.algorithmVersion
+        )
+    }
     func upsertFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {}
     func lookupFrameFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? { nil }
     func upsertPairRelation(first: MediaItem, second: MediaItem, algorithmVersion: String, relation: SimilarityRelation?) async {}
@@ -887,32 +905,60 @@ actor HashCache: HashCaching {
 
     // MARK: - Image Feature Cache
 
-    func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {
+    func upsertImageFeature(
+        filePath: String,
+        fileSize: Int64,
+        modifiedAt: Date?,
+        algorithmVersion: String,
+        featureData: Data
+    ) async {
         try? await dbQueue.write { db in
             let record = ImageFeatureRecord(
                 filePath: filePath,
                 fileSize: fileSize,
                 modifiedAt: modifiedAt,
+                algorithmVersion: algorithmVersion,
                 featureData: featureData
             )
             try record.save(db)
         }
     }
 
-    func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
+    func lookupImageFeature(
+        filePath: String,
+        fileSize: Int64,
+        modifiedAt: Date?,
+        algorithmVersion: String
+    ) async -> Data? {
         // Primary path lookup.
-        if let data = primaryImageFeatureLookup(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt) {
+        if let data = primaryImageFeatureLookup(
+            filePath: filePath,
+            fileSize: fileSize,
+            modifiedAt: modifiedAt,
+            algorithmVersion: algorithmVersion
+        ) {
             return data
         }
         // Move support — only reuse after SHA-256 confirms content identity.
-        return await moveImageFeatureLookup(filePath: filePath, fileSize: fileSize, modifiedAt: modifiedAt)
+        return await moveImageFeatureLookup(
+            filePath: filePath,
+            fileSize: fileSize,
+            modifiedAt: modifiedAt,
+            algorithmVersion: algorithmVersion
+        )
     }
 
-    private func primaryImageFeatureLookup(filePath: String, fileSize: Int64, modifiedAt: Date?) -> Data? {
+    private func primaryImageFeatureLookup(
+        filePath: String,
+        fileSize: Int64,
+        modifiedAt: Date?,
+        algorithmVersion: String
+    ) -> Data? {
         try? dbQueue.read { db in
             guard let record = try ImageFeatureRecord
                 .filter(Column("filePath") == filePath)
                 .filter(Column("fileSize") == fileSize)
+                .filter(Column("algorithmVersion") == algorithmVersion)
                 .fetchOne(db),
                 modifiedAtMatches(record.modifiedAt, modifiedAt)
             else { return nil }
@@ -920,10 +966,16 @@ actor HashCache: HashCaching {
         }
     }
 
-    private func moveImageFeatureLookup(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
+    private func moveImageFeatureLookup(
+        filePath: String,
+        fileSize: Int64,
+        modifiedAt: Date?,
+        algorithmVersion: String
+    ) async -> Data? {
         let candidates = (try? await dbQueue.read { db in
             try ImageFeatureRecord
                 .filter(Column("fileSize") == fileSize)
+                .filter(Column("algorithmVersion") == algorithmVersion)
                 .filter(Column("filePath") != filePath)
                 .order(Column("filePath"))
                 .fetchAll(db)
@@ -1347,6 +1399,13 @@ actor HashCache: HashCaching {
                 )
                 """)
         }
+        migrator.registerMigration("v9_version_image_features") { db in
+            try db.alter(table: "image_features") { table in
+                table.add(column: "algorithmVersion", .text)
+                    .notNull()
+                    .defaults(to: "vision-image-feature-v1")
+            }
+        }
         try migrator.migrate(dbQueue)
     }
 
@@ -1417,7 +1476,7 @@ actor InMemoryHashCache: HashCaching {
     private var storage: [String: CacheRecord] = [:]
     private var metadata: [String: (key: MediaMetadataCacheKey, entry: MediaMetadataCacheEntry)] = [:]
     private var sha256Store: [String: (key: MediaMetadataCacheKey, value: String)] = [:]
-    private var imageFeatures: [String: (fileSize: Int64, modifiedAt: Date?, data: Data)] = [:]
+    private var imageFeatures: [String: (fileSize: Int64, modifiedAt: Date?, algorithmVersion: String, data: Data)] = [:]
     private var frameFeatures: [String: (fileSize: Int64, modifiedAt: Date?, data: Data)] = [:]
     private var pairRelations: [PairRelationCacheKey: PairRelationRecord] = [:]
     private var scanRelationIndexes: [String: CachedScanRelationIndex] = [:]
@@ -1522,13 +1581,25 @@ actor InMemoryHashCache: HashCaching {
         return cached.value
     }
 
-    func upsertImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?, featureData: Data) async {
-        imageFeatures[filePath] = (fileSize, modifiedAt, featureData)
+    func upsertImageFeature(
+        filePath: String,
+        fileSize: Int64,
+        modifiedAt: Date?,
+        algorithmVersion: String,
+        featureData: Data
+    ) async {
+        imageFeatures[filePath] = (fileSize, modifiedAt, algorithmVersion, featureData)
     }
 
-    func lookupImageFeature(filePath: String, fileSize: Int64, modifiedAt: Date?) async -> Data? {
+    func lookupImageFeature(
+        filePath: String,
+        fileSize: Int64,
+        modifiedAt: Date?,
+        algorithmVersion: String
+    ) async -> Data? {
         guard let cached = imageFeatures[filePath],
               cached.fileSize == fileSize,
+              cached.algorithmVersion == algorithmVersion,
               datesMatch(cached.modifiedAt, modifiedAt)
         else { return nil }
         return cached.data

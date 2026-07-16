@@ -74,7 +74,7 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(SimilarityPipeline.hashConcurrencyLimit(processorCount: 12, thermalState: .nominal), 4)
     }
 
-    func testCurrentVideoAlgorithmVersionsAreV2() {
+    func testCurrentAlgorithmVersions() {
         XCTAssertEqual(PerceptualHasher.algorithmVersion, "video-dct3d-v2")
         XCTAssertEqual(
             SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false),
@@ -85,7 +85,8 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
             "video-pair-relation-v2-frame"
         )
         XCTAssertEqual(ImageSimilarityPipeline.algorithmVersion, "image-phash-v1")
-        XCTAssertEqual(ImageSimilarityPipeline.pairRelationAlgorithmVersion, "image-pair-relation-v1")
+        XCTAssertEqual(ImageFeatureExtractor.algorithmVersion, "vision-image-feature-v2")
+        XCTAssertEqual(ImageSimilarityPipeline.pairRelationAlgorithmVersion, "image-pair-relation-v2")
     }
 
     func testVideoComparisonConcurrencyDropsWhenThermalStateIsHigh() {

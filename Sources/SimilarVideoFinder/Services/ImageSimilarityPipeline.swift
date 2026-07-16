@@ -10,7 +10,7 @@ struct ImagePipelineResult: Sendable {
 
 struct ImageSimilarityPipeline: Sendable {
     static let algorithmVersion = "image-phash-v1"
-    static let pairRelationAlgorithmVersion = "image-pair-relation-v1"
+    static let pairRelationAlgorithmVersion = "image-pair-relation-v2"
     static let maxDistance = 20
     fileprivate static let relationStorageFloor = 0.60
     private static let pairRelationWriteBatchSize = 512
@@ -125,7 +125,11 @@ struct ImageSimilarityPipeline: Sendable {
             comparisonTotal: max(images.count, 1)
         ))
         let byID = Dictionary(uniqueKeysWithValues: images.map { ($0.id, $0) })
-        let featureCache = ImageFeatureCache(extractor: featureExtractor, persistentCache: cache)
+        let featureCache = ImageFeatureCache(
+            extractor: featureExtractor,
+            persistentCache: cache,
+            maxConcurrentExtractions: scanIntensity.visionFeatureConcurrencyLimit()
+        )
         defer {
             Task { await featureCache.cancelAll() }
         }

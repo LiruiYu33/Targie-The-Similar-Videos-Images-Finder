@@ -181,6 +181,31 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         )
     }
 
+    func testV1ImagePairRelationDoesNotSkipV2FeatureExtraction() async throws {
+        let first = image(path: "/missing/v1-pair-first.jpg", size: 1_000)
+        let second = image(path: "/missing/v1-pair-second.jpg", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, image: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, image: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        await cache.upsertPairRelation(
+            first: first,
+            second: second,
+            algorithmVersion: "image-pair-relation-v1",
+            relation: SimilarityRelation(
+                firstID: first.id,
+                secondID: second.id,
+                score: 0.99,
+                evidence: [.similarFrames]
+            )
+        )
+        let extractor = CountingThrowingImageFeatureExtractor()
+        let pipeline = ImageSimilarityPipeline(cache: cache, featureExtractor: extractor)
+
+        _ = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+
+        XCTAssertGreaterThan(extractor.extractionCount, 0)
+    }
+
     func testImageFeatureCacheCoalescesConcurrentRequestsForSameURL() async {
         let extractor = CountingThrowingImageFeatureExtractor(delayNanoseconds: 50_000_000)
         let cache = ImageFeatureCache(extractor: extractor)

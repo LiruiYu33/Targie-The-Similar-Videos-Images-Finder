@@ -63,4 +63,12 @@ final class ScanIntensityTests: XCTestCase {
             6
         )
     }
+
+    func testVisionFeatureConcurrencyProtectsMemoryAcrossProfilesAndThermalStates() {
+        XCTAssertEqual(ScanIntensity.cool.visionFeatureConcurrencyLimit(thermalState: .nominal), 1)
+        XCTAssertEqual(ScanIntensity.balanced.visionFeatureConcurrencyLimit(thermalState: .nominal), 2)
+        XCTAssertEqual(ScanIntensity.fast.visionFeatureConcurrencyLimit(thermalState: .nominal), 3)
+        XCTAssertEqual(ScanIntensity.fast.visionFeatureConcurrencyLimit(thermalState: .serious), 2)
+        XCTAssertEqual(ScanIntensity.fast.visionFeatureConcurrencyLimit(thermalState: .critical), 1)
+    }
 }

@@ -15,10 +15,12 @@ protocol ImageFeatureExtracting: Sendable {
 }
 
 struct ImageFeatureExtractor: ImageFeatureExtracting {
+    static let algorithmVersion = "vision-image-feature-v2"
+    static let maximumInputPixelSize = 1_536
+
     func feature(for url: URL) async throws -> ImageFeature {
         try Task.checkCancellation()
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: true] as CFDictionary) else {
+        guard let image = Self.inputImage(for: url) else {
             throw CocoaError(.fileReadCorruptFile)
         }
         try Task.checkCancellation()
@@ -31,6 +33,19 @@ struct ImageFeatureExtractor: ImageFeatureExtracting {
             throw CocoaError(.featureUnsupported)
         }
         return ImageFeature(observation: observation)
+    }
+
+    static func inputImage(for url: URL) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [
+            kCGImageSourceShouldCache: false
+        ] as CFDictionary) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumInputPixelSize,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     func similarity(between first: ImageFeature, and second: ImageFeature) throws -> Double {
@@ -59,6 +74,53 @@ enum ImageFeatureSerializer {
     }
 }
 
+private actor ImageFeatureExtractionLimiter {
+    private let limit: Int
+    private var activeCount = 0
+    private var waiterOrder: [UUID] = []
+    private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func acquire() async throws {
+        try Task.checkCancellation()
+        if activeCount < limit {
+            activeCount += 1
+            return
+        }
+
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiterOrder.append(waiterID)
+                waiters[waiterID] = continuation
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(waiterID)
+            }
+        }
+    }
+
+    func release() {
+        while !waiterOrder.isEmpty {
+            let waiterID = waiterOrder.removeFirst()
+            guard let continuation = waiters.removeValue(forKey: waiterID) else { continue }
+            continuation.resume()
+            return
+        }
+        precondition(activeCount > 0)
+        activeCount -= 1
+    }
+
+    private func cancelWaiter(_ waiterID: UUID) {
+        guard let continuation = waiters.removeValue(forKey: waiterID) else { return }
+        continuation.resume(throwing: CancellationError())
+    }
+}
+
 actor ImageFeatureCache {
     private struct CachedTask {
         let id: UUID
@@ -75,13 +137,19 @@ actor ImageFeatureCache {
     private let extractor: any ImageFeatureExtracting
     private var storage: [URL: CachedTask] = [:]
     private let persistentCache: (any HashCaching)?
+    private let algorithmVersion: String
+    private let extractionLimiter: ImageFeatureExtractionLimiter
 
     init(
         extractor: any ImageFeatureExtracting = ImageFeatureExtractor(),
-        persistentCache: (any HashCaching)? = nil
+        persistentCache: (any HashCaching)? = nil,
+        algorithmVersion: String = ImageFeatureExtractor.algorithmVersion,
+        maxConcurrentExtractions: Int = 2
     ) {
         self.extractor = extractor
         self.persistentCache = persistentCache
+        self.algorithmVersion = algorithmVersion
+        self.extractionLimiter = ImageFeatureExtractionLimiter(limit: maxConcurrentExtractions)
     }
 
     func feature(for url: URL) async throws -> ImageFeature {
@@ -124,11 +192,15 @@ actor ImageFeatureCache {
 
         let extractor = self.extractor
         let persistentCache = self.persistentCache
+        let algorithmVersion = self.algorithmVersion
+        let extractionLimiter = self.extractionLimiter
         let task = Task.detached(priority: .utility) {
             try await Self.loadFeature(
                 for: url,
                 extractor: extractor,
-                persistentCache: persistentCache
+                persistentCache: persistentCache,
+                algorithmVersion: algorithmVersion,
+                extractionLimiter: extractionLimiter
             )
         }
         let taskID = UUID()
@@ -160,7 +232,9 @@ actor ImageFeatureCache {
     private static func loadFeature(
         for url: URL,
         extractor: any ImageFeatureExtracting,
-        persistentCache: (any HashCaching)?
+        persistentCache: (any HashCaching)?,
+        algorithmVersion: String,
+        extractionLimiter: ImageFeatureExtractionLimiter
     ) async throws -> ImageFeature {
         try Task.checkCancellation()
         // Check persistent SQLite cache — avoids Vision neural-network inference
@@ -170,14 +244,23 @@ actor ImageFeatureCache {
            let data = await pc.lookupImageFeature(
                filePath: url.path,
                fileSize: Int64(values.fileSize ?? 0),
-               modifiedAt: values.contentModificationDate
+               modifiedAt: values.contentModificationDate,
+               algorithmVersion: algorithmVersion
            ),
            let observation = try? ImageFeatureSerializer.deserialize(data) {
             try Task.checkCancellation()
             return ImageFeature(observation: observation)
         }
 
-        let feature = try await extractor.feature(for: url)
+        try await extractionLimiter.acquire()
+        let feature: ImageFeature
+        do {
+            feature = try await extractor.feature(for: url)
+            await extractionLimiter.release()
+        } catch {
+            await extractionLimiter.release()
+            throw error
+        }
         try Task.checkCancellation()
         // Persist to SQLite for next launch.
         if let pc = persistentCache,
@@ -187,6 +270,7 @@ actor ImageFeatureCache {
                 filePath: url.path,
                 fileSize: Int64(values.fileSize ?? 0),
                 modifiedAt: values.contentModificationDate,
+                algorithmVersion: algorithmVersion,
                 featureData: data
             )
         }
