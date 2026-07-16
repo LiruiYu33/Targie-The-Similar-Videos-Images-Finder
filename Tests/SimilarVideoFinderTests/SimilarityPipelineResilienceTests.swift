@@ -20,6 +20,38 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(extractionCount, 0)
     }
 
+    func testCancellingFrameVerificationPropagatesCancellation() async throws {
+        let first = video(path: "/missing/cancel-frame-first.mp4", size: 1_000)
+        let second = video(path: "/missing/cancel-frame-second.mp4", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, video: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, video: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        let extractor = BlockingCancellationFrameExtractor()
+        let pipeline = SimilarityPipeline(
+            cache: cache,
+            extractor: extractor,
+            usesFrameVerification: true
+        )
+        let task = Task {
+            try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+        }
+
+        for _ in 0..<100 {
+            if await extractor.hasStarted { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let hasStarted = await extractor.hasStarted
+        XCTAssertTrue(hasStarted)
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Frame verification cancellation should reach the pipeline caller")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
     func testMissingSameSizeFilesDoNotAbortComparison() async throws {
         let first = video(path: "/missing/first.mp4", size: 1_000)
         let second = video(path: "/missing/second.mp4", size: 1_000)
@@ -31,7 +63,10 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
 
         let result = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
 
-        XCTAssertEqual(result.groups.count, 1)
+        XCTAssertEqual(
+            SimilarityGrouper.groups(items: result.videos, relations: result.relations, threshold: 0.88).count,
+            1
+        )
     }
 
     func testHashConcurrencyIsCappedForLargeProcessorCounts() {
@@ -292,7 +327,10 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         let extractionCount = await extractor.extractionCount
         XCTAssertEqual(extractionCount, 0)
         XCTAssertEqual(result.relations, [relation])
-        XCTAssertEqual(result.groups.count, 1)
+        XCTAssertEqual(
+            SimilarityGrouper.groups(items: result.videos, relations: result.relations, threshold: 0.88).count,
+            1
+        )
         let comparingUpdates = await progress.updates(for: .comparing)
         let relationCacheUpdate = comparingUpdates.first { $0.cacheTotal == 1 }
         let cachedComparing = try XCTUnwrap(relationCacheUpdate)
@@ -321,7 +359,10 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
 
         let result = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
 
-        XCTAssertEqual(result.groups.count, 1)
+        XCTAssertEqual(
+            SimilarityGrouper.groups(items: result.videos, relations: result.relations, threshold: 0.88).count,
+            1
+        )
         let pairBatchLookupCount = await cache.pairBatchLookupCount
         let pairSingleLookupCount = await cache.pairSingleLookupCount
         XCTAssertEqual(pairBatchLookupCount, 1)
@@ -370,7 +411,10 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         let result = try await pipeline.process(videos: videos, threshold: 0.88) { _ in }
 
         XCTAssertEqual(result.relations.count, 6)
-        XCTAssertEqual(result.groups.count, 1)
+        XCTAssertEqual(
+            SimilarityGrouper.groups(items: result.videos, relations: result.relations, threshold: 0.88).count,
+            1
+        )
         let pairBatchLookupCount = await cache.pairBatchLookupCount
         let pairSingleLookupCount = await cache.pairSingleLookupCount
         XCTAssertEqual(pairBatchLookupCount, 1)
@@ -611,6 +655,23 @@ private actor CountingThrowingExtractor: FrameFeatureExtracting {
 
     func similarity(between first: FrameFeatures, and second: FrameFeatures) async throws -> Double? {
         nil
+    }
+}
+
+private actor BlockingCancellationFrameExtractor: FrameFeatureExtracting {
+    private(set) var hasStarted = false
+
+    func features(for url: URL) async throws -> FrameFeatures {
+        _ = url
+        hasStarted = true
+        try await Task.sleep(for: .seconds(30))
+        return FrameFeatures(observations: [])
+    }
+
+    func similarity(between first: FrameFeatures, and second: FrameFeatures) async throws -> Double? {
+        _ = first
+        _ = second
+        return nil
     }
 }
 

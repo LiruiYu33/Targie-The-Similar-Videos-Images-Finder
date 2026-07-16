@@ -84,8 +84,9 @@ enum PerceptualHasher {
         var sampleSlots: [GrayFrame?] = []
         sampleSlots.reserveCapacity(sampleCount)
         for position in samplePositions {
+            try Task.checkCancellation()
             let time = CMTime(seconds: duration * position, preferredTimescale: 600)
-            sampleSlots.append(extractGrayFrame(at: time, using: generator))
+            sampleSlots.append(try await extractGrayFrame(at: time, using: generator))
         }
         return normalizeSampleSlots(sampleSlots) ?? []
     }
@@ -93,28 +94,38 @@ enum PerceptualHasher {
     private static func extractGrayFrame(
         at time: CMTime,
         using generator: AVAssetImageGenerator
-    ) -> GrayFrame? {
+    ) async throws -> GrayFrame? {
         generator.requestedTimeToleranceBefore = standardFrameTolerance
         generator.requestedTimeToleranceAfter = standardFrameTolerance
-        if let frame = decodeGrayFrame(at: time, using: generator) {
+        if let frame = try await decodeGrayFrame(at: time, using: generator) {
             return frame
         }
 
+        try Task.checkCancellation()
         generator.requestedTimeToleranceBefore = .positiveInfinity
         generator.requestedTimeToleranceAfter = .positiveInfinity
         defer {
             generator.requestedTimeToleranceBefore = standardFrameTolerance
             generator.requestedTimeToleranceAfter = standardFrameTolerance
         }
-        return decodeGrayFrame(at: time, using: generator)
+        return try await decodeGrayFrame(at: time, using: generator)
     }
 
     private static func decodeGrayFrame(
         at time: CMTime,
         using generator: AVAssetImageGenerator
-    ) -> GrayFrame? {
-        guard let image = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+    ) async throws -> GrayFrame? {
+        let image: CGImage
+        do {
+            image = try await CancellableAssetImageGenerator.image(at: time, using: generator)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
+        try Task.checkCancellation()
         let pixels = downsampleToGray(image, size: dctSize)
+        try Task.checkCancellation()
         guard pixels.count == dctSize * dctSize else { return nil }
         return GrayFrame(pixels: pixels)
     }

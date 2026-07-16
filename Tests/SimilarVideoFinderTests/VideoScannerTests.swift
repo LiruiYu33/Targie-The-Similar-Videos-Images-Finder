@@ -53,6 +53,23 @@ final class VideoScannerTests: XCTestCase {
         XCTAssertEqual(found.map(\.lastPathComponent), ["real.mp4"])
     }
 
+    func testDiscoveryStopsWhenTaskIsAlreadyCancelled() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try VideoScanner.discoverVideoURLs(in: root)
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled discovery should stop before enumeration")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
     func testScanLoadsMetadataConcurrentlyAndKeepsStableOrder() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

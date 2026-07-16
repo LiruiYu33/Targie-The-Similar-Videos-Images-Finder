@@ -63,6 +63,27 @@ private struct ScanSideResult: Sendable {
     let issues: [ScanIssue]
 }
 
+private struct DeletionRebuildResult: Sendable {
+    let items: [MediaItem]
+    let relations: [SimilarityRelation]
+    let groups: [SimilarityGroup]
+}
+
+private struct MediaPairIdentity: Hashable, Sendable {
+    let firstID: UUID
+    let secondID: UUID
+
+    init(_ firstID: UUID, _ secondID: UUID) {
+        if firstID.uuidString < secondID.uuidString {
+            self.firstID = firstID
+            self.secondID = secondID
+        } else {
+            self.firstID = secondID
+            self.secondID = firstID
+        }
+    }
+}
+
 typealias SimilarityGroupBuilder = @Sendable (
     [MediaItem],
     [SimilarityRelation],
@@ -316,6 +337,7 @@ final class ScanViewModel: ObservableObject {
     private var resultsRevision = 0
 
     private func scheduleThresholdRebuild() {
+        guard !isDeleting else { return }
         thresholdRebuildTask?.cancel()
         thresholdRebuildGeneration &+= 1
         let generation = thresholdRebuildGeneration
@@ -365,6 +387,7 @@ final class ScanViewModel: ObservableObject {
     @Published private(set) var progress = ScanProgress()
     @Published private(set) var isScanning = false
     @Published private(set) var isClearingCache = false
+    @Published private(set) var isDeleting = false
     @Published private(set) var itemsRevision = 0
     @Published private(set) var issues: [ScanIssue] = []
     @Published var presentedError: PresentedError?
@@ -472,7 +495,7 @@ final class ScanViewModel: ObservableObject {
     /// All media items discovered during scanning or file discovery.
     var items: [MediaItem] { allItems }
 
-    var isBusy: Bool { isScanning || isClearingCache }
+    var isBusy: Bool { isScanning || isClearingCache || isDeleting }
 
     /// Whether browse mode has data to show.
     var hasDiscoveredItems: Bool { !allItems.isEmpty }
@@ -972,7 +995,11 @@ final class ScanViewModel: ObservableObject {
     }
 
     func confirmPromptDeletion(mode: DeletionMode) async {
-        guard let targets = deletePrompt?.media else { return }
+        guard !isDeleting, let targets = deletePrompt?.media else { return }
+        isDeleting = true
+        defer { isDeleting = false }
+
+        invalidatePendingGroupBuild()
         let groupsBeforeDeletion = groups
         var deletedIDs = Set<UUID>()
         var failures: [String] = []
@@ -980,17 +1007,27 @@ final class ScanViewModel: ObservableObject {
             do {
                 try await deletionService.delete(url: media.url, mode: mode)
                 deletedIDs.insert(media.id)
-                allItems.removeAll { $0.id == media.id }
-                allRelations.removeAll { $0.contains(media.id) }
-                checkedMediaIDs.remove(media.id)
             } catch { failures.append("\(media.filename): \(error.localizedDescription)") }
         }
+
         if !deletedIDs.isEmpty {
-            invalidatePendingGroupBuild()
-            noteItemsChanged()
+            let threshold = threshold
+            let rebuilt = await Self.rebuildAfterDeletionOffMain(
+                items: allItems,
+                relations: allRelations,
+                previousGroups: groupsBeforeDeletion,
+                deletedIDs: deletedIDs,
+                threshold: threshold
+            )
+            replaceItems(with: rebuilt.items)
+            allRelations = rebuilt.relations
+            checkedMediaIDs.subtract(deletedIDs)
+            applyRebuiltGroups(
+                rebuilt.groups,
+                preserving: groupsBeforeDeletion,
+                stableIDsAlreadyApplied: true
+            )
         }
-        preserveGroupContinuity(groupsBeforeDeletion, deletedIDs: deletedIDs)
-        rebuildGroups(preserving: groupsBeforeDeletion)
         deletePrompt = nil
         if !failures.isEmpty { presentedError = .message(failures.joined(separator: "\n")) }
     }
@@ -1060,7 +1097,13 @@ final class ScanViewModel: ObservableObject {
             invalidatePendingGroupBuild()
             noteItemsChanged()
         }
-        preserveGroupContinuity(groupsBeforeRemoval, deletedIDs: [id])
+        allRelations = Self.relationsByPreservingGroupContinuity(
+            items: allItems,
+            relations: allRelations,
+            previousGroups: groupsBeforeRemoval,
+            deletedIDs: [id],
+            threshold: threshold
+        )
         rebuildGroups(preserving: groupsBeforeRemoval)
     }
 
@@ -1087,7 +1130,8 @@ final class ScanViewModel: ObservableObject {
 
     private func applyRebuiltGroups(
         _ rebuilt: [SimilarityGroup],
-        preserving beforeRebuild: [SimilarityGroup]
+        preserving beforeRebuild: [SimilarityGroup],
+        stableIDsAlreadyApplied: Bool = false
     ) {
         // Remember where the selected group sat in the *visible* list before the
         // rebuild, so if it dissolves we can keep the cursor near that spot.
@@ -1096,7 +1140,9 @@ final class ScanViewModel: ObservableObject {
             visibleBefore.firstIndex(where: { $0.id == id })
         }
         let dissolvedGroupKind = selectedGroup?.kind
-        groups = groupsByPreservingStableIDs(rebuilt, previousGroups: beforeRebuild)
+        groups = stableIDsAlreadyApplied
+            ? rebuilt
+            : Self.groupsByPreservingStableIDs(rebuilt, previousGroups: beforeRebuild)
         checkedMediaIDs.formIntersection(Set(allItems.map(\.id)))
         if let selectedGroupID, groups.contains(where: { $0.id == selectedGroupID }) {
             // Group still exists; recompute the cached sort so the fallback below
@@ -1265,7 +1311,7 @@ final class ScanViewModel: ObservableObject {
         return items.filter { seen.insert($0.url.standardizedFileURL.path).inserted }
     }
 
-    private func groupsByPreservingStableIDs(
+    private nonisolated static func groupsByPreservingStableIDs(
         _ rebuiltGroups: [SimilarityGroup],
         previousGroups: [SimilarityGroup]
     ) -> [SimilarityGroup] {
@@ -1304,9 +1350,48 @@ final class ScanViewModel: ObservableObject {
         }
     }
 
-    private func preserveGroupContinuity(_ previousGroups: [SimilarityGroup], deletedIDs: Set<UUID>) {
-        guard !deletedIDs.isEmpty else { return }
-        let remainingIDs = Set(allItems.map(\.id))
+    private nonisolated static func rebuildAfterDeletionOffMain(
+        items: [MediaItem],
+        relations: [SimilarityRelation],
+        previousGroups: [SimilarityGroup],
+        deletedIDs: Set<UUID>,
+        threshold: Double
+    ) async -> DeletionRebuildResult {
+        await Task.detached(priority: .userInitiated) {
+            let remainingItems = items.filter { !deletedIDs.contains($0.id) }
+            let remainingRelations = Self.relationsByPreservingGroupContinuity(
+                items: remainingItems,
+                relations: relations.filter {
+                    !deletedIDs.contains($0.firstID) && !deletedIDs.contains($0.secondID)
+                },
+                previousGroups: previousGroups,
+                deletedIDs: deletedIDs,
+                threshold: threshold
+            )
+            let rebuilt = SimilarityGrouper.groups(
+                items: remainingItems,
+                relations: remainingRelations,
+                threshold: threshold
+            )
+            return DeletionRebuildResult(
+                items: remainingItems,
+                relations: remainingRelations,
+                groups: Self.groupsByPreservingStableIDs(rebuilt, previousGroups: previousGroups)
+            )
+        }.value
+    }
+
+    private nonisolated static func relationsByPreservingGroupContinuity(
+        items: [MediaItem],
+        relations: [SimilarityRelation],
+        previousGroups: [SimilarityGroup],
+        deletedIDs: Set<UUID>,
+        threshold: Double
+    ) -> [SimilarityRelation] {
+        guard !deletedIDs.isEmpty else { return relations }
+        let remainingIDs = Set(items.map(\.id))
+        var updatedRelations = relations
+        var existingPairs = Set(relations.map { MediaPairIdentity($0.firstID, $0.secondID) })
 
         for group in previousGroups where group.items.contains(where: { deletedIDs.contains($0.id) }) {
             let survivors = group.items.filter { remainingIDs.contains($0.id) }
@@ -1321,12 +1406,9 @@ final class ScanViewModel: ObservableObject {
             }
 
             for (first, second) in zip(survivors, survivors.dropFirst()) {
-                let pairExists = allRelations.contains {
-                    ($0.firstID == first.id && $0.secondID == second.id)
-                        || ($0.firstID == second.id && $0.secondID == first.id)
-                }
-                if !pairExists {
-                    allRelations.append(SimilarityRelation(
+                let pair = MediaPairIdentity(first.id, second.id)
+                if existingPairs.insert(pair).inserted {
+                    updatedRelations.append(SimilarityRelation(
                         firstID: first.id,
                         secondID: second.id,
                         score: score,
@@ -1335,5 +1417,6 @@ final class ScanViewModel: ObservableObject {
                 }
             }
         }
+        return updatedRelations
     }
 }

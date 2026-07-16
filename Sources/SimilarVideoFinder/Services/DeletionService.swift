@@ -39,50 +39,94 @@ enum DeletionError: Error, Equatable {
     }
 }
 
-@MainActor
-protocol DeletionServicing: AnyObject {
+protocol DeletionServicing: AnyObject, Sendable {
     func delete(url: URL, mode: DeletionMode) async throws
+    @MainActor
     func reveal(_ url: URL)
+    @MainActor
     func open(_ url: URL)
 }
 
-@MainActor
 final class DeletionService: DeletionServicing {
+    typealias DeleteOperation = @Sendable (URL, DeletionMode) throws -> Void
+
+    private let worker: DeletionWorker
+
+    init() {
+        self.worker = DeletionWorker(operation: Self.deleteSynchronously)
+    }
+
+    init(operation: @escaping DeleteOperation) {
+        self.worker = DeletionWorker(operation: operation)
+    }
+
     func delete(url: URL, mode: DeletionMode) async throws {
+        try Task.checkCancellation()
+        try await worker.delete(url: url, mode: mode)
+    }
+
+    @MainActor
+    func reveal(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    @MainActor
+    func open(_ url: URL) {
+        NSWorkspace.shared.open(url)
+    }
+
+    private static func deleteSynchronously(url: URL, mode: DeletionMode) throws {
         guard FileManager.default.fileExists(atPath: url.path) else { throw DeletionError.fileMissing }
         do {
             switch mode {
             case .trash:
                 let resolved = url.standardizedFileURL
                 var coordinatorError: NSError?
-                var trashError: Error?
+                let result = CoordinatedDeletionResult()
                 NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: resolved, options: .forDeleting, error: &coordinatorError) { coordinatedURL in
                     do {
                         var resultingURL: NSURL?
                         try FileManager.default.trashItem(at: coordinatedURL, resultingItemURL: &resultingURL)
                     } catch {
-                        trashError = error
+                        result.error = error
                     }
                 }
                 if let error = coordinatorError {
                     throw DeletionError.operationFailed(error.localizedDescription)
                 }
-                if let error = trashError {
+                if let error = result.error {
                     throw DeletionError.operationFailed(error.localizedDescription)
                 }
             case .permanent:
                 try FileManager.default.removeItem(at: url)
             }
+        } catch let error as DeletionError {
+            throw error
         } catch {
             throw DeletionError.operationFailed(error.localizedDescription)
         }
     }
+}
 
-    func reveal(_ url: URL) {
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+private final class CoordinatedDeletionResult: @unchecked Sendable {
+    var error: Error?
+}
+
+private final class DeletionWorker: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "local.aaronyu.Targie.deletion", qos: .utility)
+    private let operation: DeletionService.DeleteOperation
+
+    init(operation: @escaping DeletionService.DeleteOperation) {
+        self.operation = operation
     }
 
-    func open(_ url: URL) {
-        NSWorkspace.shared.open(url)
+    func delete(url: URL, mode: DeletionMode) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { [operation] in
+                continuation.resume(with: Result {
+                    try operation(url, mode)
+                })
+            }
+        }
     }
 }

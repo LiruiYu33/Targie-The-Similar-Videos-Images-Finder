@@ -60,6 +60,7 @@ struct ImageScanner: Sendable {
     }
 
     static func discoverImageURLs(in folder: URL) throws -> [URL] {
+        try Task.checkCancellation()
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
             includingPropertiesForKeys: [.isRegularFileKey, .isHiddenKey],
@@ -69,12 +70,14 @@ struct ImageScanner: Sendable {
             throw CocoaError(.fileReadUnknown)
         }
 
-        return enumerator.compactMap { element -> URL? in
-            guard let url = element as? URL,
-                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
-                  supportedExtensions.contains(url.pathExtension.lowercased()) else { return nil }
-            return url
-        }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        var urls: [URL] = []
+        for case let url as URL in enumerator {
+            try Task.checkCancellation()
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  supportedExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            urls.append(url)
+        }
+        return urls.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
     func scan(
@@ -83,10 +86,13 @@ struct ImageScanner: Sendable {
     ) async throws -> ImageScanResult {
         let urls = try Self.discoverImageURLs(in: folder)
         let reportsMetadataCache = metadataCache != nil && usesDefaultLoader
-        let metadataKeysByPath = reportsMetadataCache ? Self.metadataKeysByPath(urls: urls, mediaKind: .image) : [:]
+        let metadataKeysByPath = reportsMetadataCache
+            ? try Self.metadataKeysByPath(urls: urls, mediaKind: .image)
+            : [:]
         let prefetchedMetadata = reportsMetadataCache
             ? await metadataCache?.lookupMetadata(keys: Array(metadataKeysByPath.values)) ?? [:]
             : [:]
+        try Task.checkCancellation()
         await progress(ScanProgress(
             stage: .readingMetadata,
             fraction: 0,
@@ -206,9 +212,13 @@ struct ImageScanner: Sendable {
         }
     }
 
-    private static func metadataKeysByPath(urls: [URL], mediaKind: MediaKind) -> [String: MediaMetadataCacheKey] {
-        urls.reduce(into: [:]) { result, url in
-            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
+    private static func metadataKeysByPath(urls: [URL], mediaKind: MediaKind) throws -> [String: MediaMetadataCacheKey] {
+        try Task.checkCancellation()
+        var result: [String: MediaMetadataCacheKey] = [:]
+        result.reserveCapacity(urls.count)
+        for url in urls {
+            try Task.checkCancellation()
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { continue }
             result[url.path] = MediaMetadataCacheKey(
                 filePath: url.path,
                 fileSize: Int64(values.fileSize ?? 0),
@@ -216,6 +226,7 @@ struct ImageScanner: Sendable {
                 mediaKind: mediaKind
             )
         }
+        return result
     }
 
     private static func cachedMetadata(
@@ -228,6 +239,7 @@ struct ImageScanner: Sendable {
     }
 
     private static func loadImage(at url: URL, thumbnailStore: ThumbnailStore, metadataCache: (any HashCaching)?) async throws -> LoadedImageMedia {
+        try Task.checkCancellation()
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         let fileSize = Int64(values.fileSize ?? 0)
         let modifiedAt = values.contentModificationDate
@@ -264,6 +276,7 @@ struct ImageScanner: Sendable {
         ] as CFDictionary) else {
             throw ImageScannerError.unreadableImage
         }
+        try Task.checkCancellation()
 
         let width: Int
         let height: Int
@@ -357,6 +370,7 @@ struct ImageScanner: Sendable {
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
             throw ImageScannerError.unreadableImage
         }
+        try Task.checkCancellation()
         let representation = NSBitmapImageRep(cgImage: thumbnail)
         let thumbnailData = representation.representation(using: .jpeg, properties: [.compressionFactor: 0.78])
         let thumbnailURL = thumbnailData.flatMap {

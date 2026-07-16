@@ -25,7 +25,6 @@ import Foundation
 struct PipelineResult: Sendable {
     let videos: [MediaItem]
     let relations: [SimilarityRelation]
-    let groups: [SimilarityGroup]
 }
 
 protocol SimilarityProcessing: Sendable {
@@ -249,11 +248,8 @@ struct SimilarityPipeline: SimilarityProcessing {
                 cacheKind: .relation,
                 comparisonPhase: .checkingPairCache
             ))
-            return PipelineResult(
-                videos: videos,
-                relations: cachedRelations,
-                groups: SimilarityGrouper.groups(items: videos, relations: cachedRelations, threshold: threshold)
-            )
+            try Task.checkCancellation()
+            return PipelineResult(videos: videos, relations: cachedRelations)
         }
 
         // Build a BK-Tree for nearest-neighbor search.
@@ -277,6 +273,9 @@ struct SimilarityPipeline: SimilarityProcessing {
         var fileHashes: [UUID: String] = [:]
         var processedPairs = Set<PairKey>()
         let frameFeatureCache = FrameFeatureCache(extractor: extractor, persistentCache: cache)
+        defer {
+            Task { await frameFeatureCache.cancelAll() }
+        }
         var pairCacheHits = 0
         var pairCacheTotal = 0
         var pendingPairRelationUpserts: [PairRelationCacheUpsert] = []
@@ -311,8 +310,22 @@ struct SimilarityPipeline: SimilarityProcessing {
                     continue
                 }
             }
-            let firstHash = try? await fileSHA256(for: candidate.first, memoizedHashes: &fileHashes)
-            let secondHash = try? await fileSHA256(for: candidate.second, memoizedHashes: &fileHashes)
+            let firstHash: String?
+            let secondHash: String?
+            do {
+                firstHash = try await fileSHA256(for: candidate.first, memoizedHashes: &fileHashes)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                firstHash = nil
+            }
+            do {
+                secondHash = try await fileSHA256(for: candidate.second, memoizedHashes: &fileHashes)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                secondHash = nil
+            }
             guard let firstHash, firstHash == secondHash else { continue }
             processedPairs.insert(candidate.key)
             let relation = SimilarityRelation(
@@ -492,6 +505,7 @@ struct SimilarityPipeline: SimilarityProcessing {
             await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
         }
 
+        try Task.checkCancellation()
         let scanIndexRelations = relations.compactMap { relation -> CachedScanRelation? in
             guard let first = videosByID[relation.firstID],
                   let second = videosByID[relation.secondID]
@@ -513,11 +527,8 @@ struct SimilarityPipeline: SimilarityProcessing {
             relations: scanIndexRelations
         )
 
-        return PipelineResult(
-            videos: videos,
-            relations: relations,
-            groups: SimilarityGrouper.groups(items: videos, relations: relations, threshold: threshold)
-        )
+        try Task.checkCancellation()
+        return PipelineResult(videos: videos, relations: relations)
     }
 
     /// Extracts every video that needs perceptual hashing from candidate pairs, removing duplicates.
@@ -732,8 +743,22 @@ private func compareVideoCandidate(
     let perceptualHashesMatch = candidate.firstHash.hammingDistance(to: candidate.secondHash) == 0
     var hashMatch = false
     if sameSize && perceptualHashesMatch {
-        let firstHash = try? await FileHasher.sha256(of: candidate.first.url, mediaKind: .video, cache: cache)
-        let secondHash = try? await FileHasher.sha256(of: candidate.second.url, mediaKind: .video, cache: cache)
+        let firstHash: String?
+        let secondHash: String?
+        do {
+            firstHash = try await FileHasher.sha256(of: candidate.first.url, mediaKind: .video, cache: cache)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            firstHash = nil
+        }
+        do {
+            secondHash = try await FileHasher.sha256(of: candidate.second.url, mediaKind: .video, cache: cache)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            secondHash = nil
+        }
         hashMatch = firstHash != nil && firstHash == secondHash
     }
 
@@ -741,10 +766,16 @@ private func compareVideoCandidate(
     if !usesFrameVerification || hashMatch || percSimilarity >= 0.92 {
         frameScore = nil
     } else {
-        frameScore = try? await frameFeatureCache.similarity(
-            between: candidate.first.url,
-            and: candidate.second.url
-        )
+        do {
+            frameScore = try await frameFeatureCache.similarity(
+                between: candidate.first.url,
+                and: candidate.second.url
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            frameScore = nil
+        }
     }
 
     let score = SimilarityScorer.score(

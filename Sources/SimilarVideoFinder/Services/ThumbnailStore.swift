@@ -279,35 +279,45 @@ struct ThumbnailStore: Sendable {
     }
 
     static func makeVideoThumbnailData(sourceURL: URL, duration: Double?) async -> Data? {
-        await Task.detached(priority: .utility) {
-            let asset = AVURLAsset(url: sourceURL)
-            let resolvedDuration: Double
-            if let duration, duration.isFinite, duration > 0 {
-                resolvedDuration = duration
-            } else {
-                resolvedDuration = (try? await asset.load(.duration).seconds) ?? 0
+        guard !Task.isCancelled else { return nil }
+        let asset = AVURLAsset(url: sourceURL)
+        let resolvedDuration: Double
+        if let duration, duration.isFinite, duration > 0 {
+            resolvedDuration = duration
+        } else {
+            do {
+                resolvedDuration = try await asset.load(.duration).seconds
+            } catch {
+                if Task.isCancelled { return nil }
+                resolvedDuration = 0
             }
+        }
 
-            let generator = AVAssetImageGenerator(asset: asset)
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 720, height: 405)
-            generator.requestedTimeToleranceBefore = .positiveInfinity
-            generator.requestedTimeToleranceAfter = .positiveInfinity
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 720, height: 405)
+        generator.requestedTimeToleranceBefore = .positiveInfinity
+        generator.requestedTimeToleranceAfter = .positiveInfinity
 
-            for time in videoThumbnailCandidateTimes(duration: resolvedDuration) {
-                guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else {
-                    continue
-                }
-                let representation = NSBitmapImageRep(cgImage: cgImage)
-                if let data = representation.representation(
-                    using: .jpeg,
-                    properties: [.compressionFactor: 0.78]
-                ) {
-                    return data
-                }
+        for time in videoThumbnailCandidateTimes(duration: resolvedDuration) {
+            guard !Task.isCancelled else { return nil }
+            let cgImage: CGImage
+            do {
+                cgImage = try await CancellableAssetImageGenerator.image(at: time, using: generator)
+            } catch is CancellationError {
+                return nil
+            } catch {
+                continue
             }
-            return nil
-        }.value
+            let representation = NSBitmapImageRep(cgImage: cgImage)
+            if let data = representation.representation(
+                using: .jpeg,
+                properties: [.compressionFactor: 0.78]
+            ) {
+                return data
+            }
+        }
+        return nil
     }
 
     private static func videoThumbnailCandidateTimes(duration: Double) -> [CMTime] {

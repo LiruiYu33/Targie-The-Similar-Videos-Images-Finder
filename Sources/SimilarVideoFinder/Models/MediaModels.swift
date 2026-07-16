@@ -130,11 +130,34 @@ struct SimilarityGroup: Identifiable, Hashable, Sendable {
     let id: UUID
     let items: [MediaItem]
     let relations: [SimilarityRelation]
+    private let maximumScoreValue: Double
+    private let reclaimableBytesValue: Int64
+    private let scoresByItemID: [UUID: Double]
+    private let evidenceByItemID: [UUID: Set<SimilarityEvidence>]
 
     init(id: UUID = UUID(), items: [MediaItem], relations: [SimilarityRelation]) {
         self.id = id
         self.items = items
         self.relations = relations
+
+        let maximumScore = relations.lazy.map(\.score).max() ?? 0
+        var scoresByItemID: [UUID: Double] = [:]
+        var evidenceByItemID: [UUID: Set<SimilarityEvidence>] = [:]
+        scoresByItemID.reserveCapacity(items.count)
+        evidenceByItemID.reserveCapacity(items.count)
+        for relation in relations {
+            scoresByItemID[relation.firstID] = max(scoresByItemID[relation.firstID] ?? 0, relation.score)
+            scoresByItemID[relation.secondID] = max(scoresByItemID[relation.secondID] ?? 0, relation.score)
+            evidenceByItemID[relation.firstID, default: []].formUnion(relation.evidence)
+            evidenceByItemID[relation.secondID, default: []].formUnion(relation.evidence)
+        }
+
+        self.maximumScoreValue = maximumScore
+        self.reclaimableBytesValue = items.count > 1
+            ? items.map(\.fileSize).sorted().dropFirst().reduce(0, +)
+            : 0
+        self.scoresByItemID = scoresByItemID
+        self.evidenceByItemID = evidenceByItemID
     }
 
     /// Factory method: rejects mixed-media groups by returning nil.
@@ -148,19 +171,26 @@ struct SimilarityGroup: Identifiable, Hashable, Sendable {
     /// Group media kind, inferred from the first item; direct-initializer callers must enforce homogeneity.
     var kind: MediaKind? { items.first?.kind }
 
-    var maximumScore: Double { relations.map(\.score).max() ?? 0 }
+    var maximumScore: Double { maximumScoreValue }
 
-    var reclaimableBytes: Int64 {
-        guard items.count > 1 else { return 0 }
-        return items.map(\.fileSize).sorted().dropFirst().reduce(0, +)
-    }
+    var reclaimableBytes: Int64 { reclaimableBytesValue }
 
     func score(for itemID: UUID) -> Double {
-        relations.filter { $0.contains(itemID) }.map(\.score).max() ?? maximumScore
+        scoresByItemID[itemID] ?? maximumScore
     }
 
     func evidence(for itemID: UUID) -> Set<SimilarityEvidence> {
-        relations.filter { $0.contains(itemID) }.reduce(into: []) { $0.formUnion($1.evidence) }
+        evidenceByItemID[itemID] ?? []
+    }
+
+    static func == (lhs: SimilarityGroup, rhs: SimilarityGroup) -> Bool {
+        lhs.id == rhs.id && lhs.items == rhs.items && lhs.relations == rhs.relations
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(items)
+        hasher.combine(relations)
     }
 }
 

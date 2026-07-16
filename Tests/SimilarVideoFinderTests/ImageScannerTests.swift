@@ -44,6 +44,22 @@ final class ImageScannerTests: XCTestCase {
         XCTAssertEqual(found.map(\.lastPathComponent), ["real.jpg"])
     }
 
+    func testDiscoveryStopsWhenTaskIsAlreadyCancelled() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try ImageScanner.discoverImageURLs(in: root)
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled discovery should stop before enumeration")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
     func testLoadsPNGDimensionsAndThumbnail() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

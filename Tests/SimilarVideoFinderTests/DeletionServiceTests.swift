@@ -41,4 +41,32 @@ final class DeletionServiceTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    @MainActor
+    func testDeleteOperationRunsOffMainThread() async throws {
+        let recorder = ThreadRecorder()
+        let service = DeletionService { _, _ in
+            recorder.recordCurrentThread()
+        }
+
+        try await service.delete(
+            url: URL(fileURLWithPath: "/tmp/background-delete-test"),
+            mode: .permanent
+        )
+
+        XCTAssertEqual(recorder.wasMainThread, false)
+    }
+}
+
+private final class ThreadRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool?
+
+    var wasMainThread: Bool? {
+        lock.withLock { value }
+    }
+
+    func recordCurrentThread() {
+        lock.withLock { value = Thread.isMainThread }
+    }
 }

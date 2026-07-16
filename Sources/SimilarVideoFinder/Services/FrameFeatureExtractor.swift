@@ -83,13 +83,26 @@ extension FrameFeatureExtractor: FrameFeatureExtracting {
         generator.requestedTimeToleranceBefore = CMTime(seconds: 0.35, preferredTimescale: 600)
         generator.requestedTimeToleranceAfter = CMTime(seconds: 0.35, preferredTimescale: 600)
 
-        let observations: [VNFeaturePrintObservation?] = try Self.samplePositions.map { position in
+        var observations: [VNFeaturePrintObservation?] = []
+        observations.reserveCapacity(Self.samplePositions.count)
+        for position in Self.samplePositions {
             try Task.checkCancellation()
             let time = CMTime(seconds: duration * position, preferredTimescale: 600)
-            guard let image = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+            let image: CGImage
+            do {
+                image = try await CancellableAssetImageGenerator.image(at: time, using: generator)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                observations.append(nil)
+                continue
+            }
             let request = VNGenerateImageFeaturePrintRequest()
-            try VNImageRequestHandler(cgImage: image).perform([request])
-            return request.results?.first as? VNFeaturePrintObservation
+            try await CancellableVisionRequest.perform(
+                request,
+                handler: VNImageRequestHandler(cgImage: image)
+            )
+            observations.append(request.results?.first as? VNFeaturePrintObservation)
         }
         return FrameFeatures(observations: observations)
     }
@@ -115,6 +128,13 @@ actor FrameFeatureCache {
     private struct CachedTask {
         let id: UUID
         let task: Task<FrameFeatures, Error>
+        var waiterIDs: Set<UUID>
+    }
+
+    private struct TaskLease: Sendable {
+        let taskID: UUID
+        let waiterID: UUID
+        let task: Task<FrameFeatures, Error>
     }
 
     private let extractor: any FrameFeatureExtracting
@@ -130,32 +150,75 @@ actor FrameFeatureCache {
     }
 
     func features(for url: URL) async throws -> FrameFeatures {
-        if let cached = storage[url] {
-            return try await value(from: cached, for: url)
+        try Task.checkCancellation()
+        let lease = acquireTask(for: url)
+        return try await withTaskCancellationHandler {
+            do {
+                let value = try await lease.task.value
+                try Task.checkCancellation()
+                finishWaiter(lease, for: url, removeTask: false)
+                return value
+            } catch is CancellationError {
+                finishWaiter(lease, for: url, removeTask: !Task.isCancelled)
+                throw CancellationError()
+            } catch {
+                finishWaiter(lease, for: url, removeTask: true)
+                throw error
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(lease, for: url)
+            }
+        }
+    }
+
+    func cancelAll() {
+        for cached in storage.values {
+            cached.task.cancel()
+        }
+        storage.removeAll()
+    }
+
+    private func acquireTask(for url: URL) -> TaskLease {
+        let waiterID = UUID()
+        if var cached = storage[url] {
+            cached.waiterIDs.insert(waiterID)
+            storage[url] = cached
+            return TaskLease(taskID: cached.id, waiterID: waiterID, task: cached.task)
         }
 
         let extractor = self.extractor
         let persistentCache = self.persistentCache
-        let task = Task<FrameFeatures, Error>(priority: .utility) {
+        let task = Task.detached(priority: .utility) {
             try await Self.loadFeatures(
                 for: url,
                 extractor: extractor,
                 persistentCache: persistentCache
             )
         }
-        let cached = CachedTask(id: UUID(), task: task)
-        storage[url] = cached
-        return try await value(from: cached, for: url)
+        let taskID = UUID()
+        storage[url] = CachedTask(id: taskID, task: task, waiterIDs: [waiterID])
+        return TaskLease(taskID: taskID, waiterID: waiterID, task: task)
     }
 
-    private func value(from cached: CachedTask, for url: URL) async throws -> FrameFeatures {
-        do {
-            return try await cached.task.value
-        } catch {
-            if storage[url]?.id == cached.id {
-                storage.removeValue(forKey: url)
-            }
-            throw error
+    private func finishWaiter(_ lease: TaskLease, for url: URL, removeTask: Bool) {
+        guard var cached = storage[url], cached.id == lease.taskID else { return }
+        cached.waiterIDs.remove(lease.waiterID)
+        if removeTask {
+            storage.removeValue(forKey: url)
+        } else {
+            storage[url] = cached
+        }
+    }
+
+    private func cancelWaiter(_ lease: TaskLease, for url: URL) {
+        guard var cached = storage[url], cached.id == lease.taskID else { return }
+        cached.waiterIDs.remove(lease.waiterID)
+        if cached.waiterIDs.isEmpty {
+            cached.task.cancel()
+            storage.removeValue(forKey: url)
+        } else {
+            storage[url] = cached
         }
     }
 
@@ -164,6 +227,7 @@ actor FrameFeatureCache {
         extractor: any FrameFeatureExtracting,
         persistentCache: (any HashCaching)?
     ) async throws -> FrameFeatures {
+        try Task.checkCancellation()
         if let persistentCache,
            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
            let data = await persistentCache.lookupFrameFeature(
@@ -172,10 +236,12 @@ actor FrameFeatureCache {
                modifiedAt: values.contentModificationDate
            ),
            let cached = try? FrameFeatureSerializer.deserialize(data) {
+            try Task.checkCancellation()
             return cached
         }
 
         let value = try await extractor.features(for: url)
+        try Task.checkCancellation()
         if let persistentCache,
            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
            let data = try? FrameFeatureSerializer.serialize(value) {
@@ -186,6 +252,7 @@ actor FrameFeatureCache {
                 featureData: data
             )
         }
+        try Task.checkCancellation()
         return value
     }
 

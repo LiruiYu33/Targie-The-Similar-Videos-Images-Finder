@@ -24,11 +24,18 @@ final class MediaThumbnailImageCache {
     private struct InFlightLoad {
         let id: UUID
         let task: Task<ThumbnailImageBox?, Never>
+        var waiterIDs: Set<UUID>
+    }
+
+    private struct LoadLease: Sendable {
+        let loadID: UUID
+        let waiterID: UUID
+        let task: Task<ThumbnailImageBox?, Never>
     }
 
     private let cache = NSCache<NSString, NSImage>()
     private let dataLoader: MediaThumbnailDataLoader
-    private var inFlightLoads: [NSString: InFlightLoad] = [:]
+    private var inFlightLoads: [String: InFlightLoad] = [:]
 
     init(dataLoader: MediaThumbnailDataLoader? = nil) {
         self.dataLoader = dataLoader ?? MediaThumbnailImageCache.loadThumbnailData
@@ -38,13 +45,13 @@ final class MediaThumbnailImageCache {
 
     func image(for item: MediaItem) -> NSImage? {
         let key = cacheKey(for: item)
-        if let image = cache.object(forKey: key) {
+        if let image = cache.object(forKey: key as NSString) {
             return image
         }
         guard let data = item.thumbnailData, let image = NSImage(data: data) else {
             return nil
         }
-        cache.setObject(image, forKey: key, cost: data.count)
+        cache.setObject(image, forKey: key as NSString, cost: data.count)
         return image
     }
 
@@ -54,24 +61,27 @@ final class MediaThumbnailImageCache {
         }
 
         let key = cacheKey(for: item)
-        if let existing = inFlightLoads[key] {
-            return await cacheImage(from: existing.task, loadID: existing.id, forKey: key)
-        }
-
-        let loadID = UUID()
-        let dataLoader = self.dataLoader
-        let task = Task<ThumbnailImageBox?, Never> {
-            guard let data = await dataLoader(item, repairingMissingVideoThumbnail) else {
-                return nil
+        let lease = acquireLoad(
+            for: item,
+            repairingMissingVideoThumbnail: repairingMissingVideoThumbnail,
+            key: key
+        )
+        let box = await withTaskCancellationHandler {
+            await lease.task.value
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelWaiter(lease, forKey: key)
             }
-            return await MediaThumbnailImageCache.decodeImage(data)
         }
-        inFlightLoads[key] = InFlightLoad(id: loadID, task: task)
-        let image = await cacheImage(from: task, loadID: loadID, forKey: key)
-        if inFlightLoads[key]?.id == loadID {
-            inFlightLoads.removeValue(forKey: key)
+        guard !Task.isCancelled else {
+            finishWaiter(lease, forKey: key)
+            return nil
         }
-        return image
+        if let box {
+            cache.setObject(box.image, forKey: key as NSString, cost: box.cost)
+        }
+        finishWaiter(lease, forKey: key)
+        return box?.image
     }
 
     func removeAll() {
@@ -82,17 +92,46 @@ final class MediaThumbnailImageCache {
         cache.removeAllObjects()
     }
 
-    private func cacheImage(
-        from task: Task<ThumbnailImageBox?, Never>,
-        loadID: UUID,
-        forKey key: NSString
-    ) async -> NSImage? {
-        guard let box = await task.value else { return nil }
-        guard inFlightLoads[key]?.id == loadID else {
-            return cache.object(forKey: key)
+    private func acquireLoad(
+        for item: MediaItem,
+        repairingMissingVideoThumbnail: Bool,
+        key: String
+    ) -> LoadLease {
+        let waiterID = UUID()
+        if var existing = inFlightLoads[key] {
+            existing.waiterIDs.insert(waiterID)
+            inFlightLoads[key] = existing
+            return LoadLease(loadID: existing.id, waiterID: waiterID, task: existing.task)
         }
-        cache.setObject(box.image, forKey: key, cost: box.cost)
-        return box.image
+
+        let loadID = UUID()
+        let dataLoader = self.dataLoader
+        let task = Task<ThumbnailImageBox?, Never> {
+            guard !Task.isCancelled,
+                  let data = await dataLoader(item, repairingMissingVideoThumbnail),
+                  !Task.isCancelled
+            else { return nil }
+            return await MediaThumbnailImageCache.decodeImage(data)
+        }
+        inFlightLoads[key] = InFlightLoad(id: loadID, task: task, waiterIDs: [waiterID])
+        return LoadLease(loadID: loadID, waiterID: waiterID, task: task)
+    }
+
+    private func finishWaiter(_ lease: LoadLease, forKey key: String) {
+        guard var existing = inFlightLoads[key], existing.id == lease.loadID else { return }
+        existing.waiterIDs.remove(lease.waiterID)
+        inFlightLoads.removeValue(forKey: key)
+    }
+
+    private func cancelWaiter(_ lease: LoadLease, forKey key: String) {
+        guard var existing = inFlightLoads[key], existing.id == lease.loadID else { return }
+        existing.waiterIDs.remove(lease.waiterID)
+        if existing.waiterIDs.isEmpty {
+            existing.task.cancel()
+            inFlightLoads.removeValue(forKey: key)
+        } else {
+            inFlightLoads[key] = existing
+        }
     }
 
     private nonisolated static func loadThumbnailData(
@@ -123,7 +162,8 @@ final class MediaThumbnailImageCache {
     }
 
     private nonisolated static func decodeImage(_ data: Data) async -> ThumbnailImageBox? {
-        await Task.detached(priority: .utility) {
+        let worker = Task.detached(priority: .utility) { () -> ThumbnailImageBox? in
+            guard !Task.isCancelled else { return nil }
             guard
                 let source = CGImageSourceCreateWithData(data as CFData, [
                     kCGImageSourceShouldCache: false
@@ -132,18 +172,24 @@ final class MediaThumbnailImageCache {
                     kCGImageSourceShouldCacheImmediately: true
                 ] as CFDictionary)
             else { return nil }
+            guard !Task.isCancelled else { return nil }
             let nsImage = NSImage(
                 cgImage: image,
                 size: NSSize(width: image.width, height: image.height)
             )
             return ThumbnailImageBox(image: nsImage, cost: data.count)
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
-    private func cacheKey(for item: MediaItem) -> NSString {
+    private func cacheKey(for item: MediaItem) -> String {
         if let thumbnailURL = item.thumbnailURL {
-            return thumbnailURL.path as NSString
+            return thumbnailURL.path
         }
-        return item.id.uuidString as NSString
+        return item.id.uuidString
     }
 }

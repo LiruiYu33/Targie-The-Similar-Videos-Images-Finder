@@ -6,7 +6,6 @@ import Foundation
 struct ImagePipelineResult: Sendable {
     let images: [MediaItem]
     let relations: [SimilarityRelation]
-    let groups: [SimilarityGroup]
 }
 
 struct ImageSimilarityPipeline: Sendable {
@@ -109,11 +108,8 @@ struct ImageSimilarityPipeline: Sendable {
                 cacheKind: .relation,
                 comparisonPhase: .checkingPairCache
             ))
-            return ImagePipelineResult(
-                images: images,
-                relations: cachedRelations,
-                groups: SimilarityGrouper.groups(items: images, relations: cachedRelations, threshold: threshold)
-            )
+            try Task.checkCancellation()
+            return ImagePipelineResult(images: images, relations: cachedRelations)
         }
 
         var tree = BKTree<ImagePerceptualHash>()
@@ -130,6 +126,9 @@ struct ImageSimilarityPipeline: Sendable {
         ))
         let byID = Dictionary(uniqueKeysWithValues: images.map { ($0.id, $0) })
         let featureCache = ImageFeatureCache(extractor: featureExtractor, persistentCache: cache)
+        defer {
+            Task { await featureCache.cancelAll() }
+        }
         var seen = Set<ImagePairKey>()
         var relations: [SimilarityRelation] = []
         var pairCacheHits = 0
@@ -265,6 +264,7 @@ struct ImageSimilarityPipeline: Sendable {
             }
             await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
         }
+        try Task.checkCancellation()
         let scanIndexRelations = relations.compactMap { relation -> CachedScanRelation? in
             guard let first = byID[relation.firstID],
                   let second = byID[relation.secondID]
@@ -285,7 +285,8 @@ struct ImageSimilarityPipeline: Sendable {
             candidateCount: pairCacheTotal,
             relations: scanIndexRelations
         )
-        return ImagePipelineResult(images: images, relations: relations, groups: SimilarityGrouper.groups(items: images, relations: relations, threshold: threshold))
+        try Task.checkCancellation()
+        return ImagePipelineResult(images: images, relations: relations)
     }
 
     private func computeHashes(
@@ -409,14 +410,28 @@ private func compareImageCandidate(
     var exact = false
     if candidate.first.fileSize > 0,
        candidate.first.fileSize == candidate.second.fileSize,
-       candidate.neighborDistance == 0,
-       let firstHash = try? await FileHasher.sha256(of: candidate.first.url, mediaKind: .image, cache: cache),
-       let secondHash = try? await FileHasher.sha256(of: candidate.second.url, mediaKind: .image, cache: cache) {
-        exact = firstHash == secondHash
+       candidate.neighborDistance == 0 {
+        let firstHash: String?
+        let secondHash: String?
+        do {
+            firstHash = try await FileHasher.sha256(of: candidate.first.url, mediaKind: .image, cache: cache)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            firstHash = nil
+        }
+        do {
+            secondHash = try await FileHasher.sha256(of: candidate.second.url, mediaKind: .image, cache: cache)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            secondHash = nil
+        }
+        exact = firstHash != nil && firstHash == secondHash
     }
 
     let feature = !exact && perceptual >= 0.72
-        ? await featureCache.similarity(between: candidate.first.url, and: candidate.second.url)
+        ? try await featureCache.similarity(between: candidate.first.url, and: candidate.second.url)
         : nil
     let score = SimilarityScorer.score(
         candidate.first,
