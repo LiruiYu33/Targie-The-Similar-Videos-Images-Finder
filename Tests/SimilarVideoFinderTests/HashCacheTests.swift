@@ -269,6 +269,34 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNil(result)
     }
 
+    func testImageFeatureCacheSeparatesAlgorithmVersions() async {
+        let date = Date(timeIntervalSince1970: 5_350)
+        let path = tempDir.appendingPathComponent("versioned-feature.jpg").path
+        await cache.upsertImageFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: date,
+            algorithmVersion: "vision-image-feature-v1",
+            featureData: Data([1, 2, 3])
+        )
+
+        let oldFeature = await cache.lookupImageFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: date,
+            algorithmVersion: "vision-image-feature-v1"
+        )
+        let currentFeature = await cache.lookupImageFeature(
+            filePath: path,
+            fileSize: 4,
+            modifiedAt: date,
+            algorithmVersion: ImageFeatureExtractor.algorithmVersion
+        )
+
+        XCTAssertEqual(oldFeature, Data([1, 2, 3]))
+        XCTAssertNil(currentFeature)
+    }
+
     func testDetectMoveDoesNotReportOldPathWithoutContentProof() async throws {
         let date = Date(timeIntervalSince1970: 5_400)
         let current = try writeFixture(named: "current-thumbnail.jpg", data: Data("BBBB".utf8), modifiedAt: date)

@@ -207,6 +207,34 @@ final class MediaThumbnailImageCacheTests: XCTestCase {
         XCTAssertNil(cache.image(for: item))
     }
 
+    func testCancellingOnlyThumbnailWaiterCancelsUnderlyingLoad() async throws {
+        let probe = CancellationAwareThumbnailDataLoader()
+        let cache = MediaThumbnailImageCache { item, _ in
+            await probe.load(item)
+        }
+        let item = MediaItem(
+            kind: .image,
+            url: URL(fileURLWithPath: "/tmp/cancel-thumbnail.png"),
+            fileSize: 100,
+            duration: nil,
+            width: 64,
+            height: 64,
+            modifiedAt: nil,
+            thumbnailData: nil
+        )
+        let loadTask = Task { @MainActor in
+            await cache.image(for: item, repairingMissingVideoThumbnail: true)
+        }
+
+        try await waitUntilAsync { await probe.hasStarted }
+        loadTask.cancel()
+        let image = await loadTask.value
+        try await waitUntilAsync { await probe.cancellationCount == 1 }
+
+        XCTAssertNil(image)
+        XCTAssertNil(cache.image(for: item))
+    }
+
     private func waitUntilAsync(
         timeoutIterations: Int = 200,
         condition: () async -> Bool
@@ -255,5 +283,24 @@ private actor BlockingThumbnailDataLoader {
     func releaseFirstLoad() {
         firstLoadContinuation?.resume()
         firstLoadContinuation = nil
+    }
+}
+
+private actor CancellationAwareThumbnailDataLoader {
+    private(set) var hasStarted = false
+    private(set) var cancellationCount = 0
+
+    func load(_ item: MediaItem) async -> Data? {
+        _ = item
+        hasStarted = true
+        do {
+            try await Task.sleep(for: .seconds(30))
+            return nil
+        } catch is CancellationError {
+            cancellationCount += 1
+            return nil
+        } catch {
+            return nil
+        }
     }
 }

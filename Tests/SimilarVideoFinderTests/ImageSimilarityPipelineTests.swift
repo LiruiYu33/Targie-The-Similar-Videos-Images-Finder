@@ -34,10 +34,11 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         let scan = try await ImageScanner().scan(folder: root) { _ in }
 
         let result = try await ImageSimilarityPipeline(cache: InMemoryHashCache()).process(images: scan.images, threshold: 0.88) { _ in }
+        let groups = SimilarityGrouper.groups(items: result.images, relations: result.relations, threshold: 0.88)
 
-        XCTAssertEqual(result.groups.count, 1)
-        XCTAssertEqual(result.groups[0].items.count, 2)
-        XCTAssertEqual(result.groups[0].kind, .image)
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups[0].items.count, 2)
+        XCTAssertEqual(groups[0].kind, .image)
     }
 
     func testCachedImageHashesAdvanceHashingProgress() async throws {
@@ -109,6 +110,33 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         }
     }
 
+    func testCancellingImageFeatureComparisonPropagatesCancellation() async throws {
+        let first = image(path: "/missing/cancel-feature-first.jpg", size: 1_000)
+        let second = image(path: "/missing/cancel-feature-second.jpg", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, image: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, image: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        let extractor = CountingThrowingImageFeatureExtractor(delayNanoseconds: 30_000_000_000)
+        let pipeline = ImageSimilarityPipeline(cache: cache, featureExtractor: extractor)
+        let task = Task {
+            try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+        }
+
+        for _ in 0..<100 {
+            if extractor.extractionCount > 0 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertGreaterThan(extractor.extractionCount, 0)
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Image feature comparison cancellation should reach the pipeline caller")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
     func testCachedPairRelationSkipsImageFeatureExtraction() async throws {
         let first = image(path: "/missing/pair-cache-first.jpg", size: 1_000)
         let second = image(path: "/missing/pair-cache-second.jpg", size: 1_100)
@@ -137,7 +165,10 @@ final class ImageSimilarityPipelineTests: XCTestCase {
 
         XCTAssertEqual(extractor.extractionCount, 0)
         XCTAssertEqual(result.relations, [relation])
-        XCTAssertEqual(result.groups.count, 1)
+        XCTAssertEqual(
+            SimilarityGrouper.groups(items: result.images, relations: result.relations, threshold: 0.88).count,
+            1
+        )
         let comparingUpdates = await progress.updates(for: .comparing)
         let relationCacheUpdate = comparingUpdates.first { $0.cacheTotal == 1 }
         let cachedComparing = try XCTUnwrap(relationCacheUpdate)
@@ -148,6 +179,31 @@ final class ImageSimilarityPipelineTests: XCTestCase {
             L10n.scanProgressDetail(cachedComparing, .english),
             "Checking pair cache: hits 1 of 1 - pair-cache-first.jpg"
         )
+    }
+
+    func testV1ImagePairRelationDoesNotSkipV2FeatureExtraction() async throws {
+        let first = image(path: "/missing/v1-pair-first.jpg", size: 1_000)
+        let second = image(path: "/missing/v1-pair-second.jpg", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, image: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, image: second, hash: [0xff] + [UInt8](repeating: 0, count: 7))
+        await cache.upsertPairRelation(
+            first: first,
+            second: second,
+            algorithmVersion: "image-pair-relation-v1",
+            relation: SimilarityRelation(
+                firstID: first.id,
+                secondID: second.id,
+                score: 0.99,
+                evidence: [.similarFrames]
+            )
+        )
+        let extractor = CountingThrowingImageFeatureExtractor()
+        let pipeline = ImageSimilarityPipeline(cache: cache, featureExtractor: extractor)
+
+        _ = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+
+        XCTAssertGreaterThan(extractor.extractionCount, 0)
     }
 
     func testImageFeatureCacheCoalescesConcurrentRequestsForSameURL() async {
@@ -211,7 +267,10 @@ final class ImageSimilarityPipelineTests: XCTestCase {
 
         let result = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
 
-        XCTAssertEqual(result.groups.count, 1)
+        XCTAssertEqual(
+            SimilarityGrouper.groups(items: result.images, relations: result.relations, threshold: 0.88).count,
+            1
+        )
         let pairBatchLookupCount = await cache.pairBatchLookupCount
         let pairSingleLookupCount = await cache.pairSingleLookupCount
         XCTAssertEqual(pairBatchLookupCount, 1)
@@ -260,7 +319,10 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         let result = try await pipeline.process(images: images, threshold: 0.88) { _ in }
 
         XCTAssertEqual(result.relations.count, 6)
-        XCTAssertEqual(result.groups.count, 1)
+        XCTAssertEqual(
+            SimilarityGrouper.groups(items: result.images, relations: result.relations, threshold: 0.88).count,
+            1
+        )
         let pairBatchLookupCount = await cache.pairBatchLookupCount
         let pairSingleLookupCount = await cache.pairSingleLookupCount
         XCTAssertEqual(pairBatchLookupCount, 1)

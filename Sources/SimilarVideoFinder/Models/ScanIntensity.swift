@@ -33,6 +33,18 @@ enum ScanIntensity: String, CaseIterable, Identifiable, Sendable {
         thermallyAdjusted(base: comparisonBase(processorCount: processorCount), thermalState: thermalState)
     }
 
+    func visionFeatureConcurrencyLimit(
+        thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+    ) -> Int {
+        let base: Int
+        switch self {
+        case .cool: base = 1
+        case .balanced: base = 2
+        case .fast: base = 3
+        }
+        return thermallyAdjusted(base: base, thermalState: thermalState)
+    }
+
     private func metadataBase(processorCount: Int) -> Int {
         switch self {
         case .cool:

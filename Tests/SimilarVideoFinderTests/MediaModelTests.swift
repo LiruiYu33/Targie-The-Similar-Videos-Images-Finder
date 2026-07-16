@@ -145,6 +145,40 @@ final class MediaModelTests: XCTestCase {
         XCTAssertEqual(group?.kind, .image)
     }
 
+    func testSimilarityGroupCachesPerItemScoresEvidenceAndTotals() {
+        let first = makeItem(kind: .video, name: "first")
+        let second = makeItem(kind: .video, name: "second")
+        let third = makeItem(kind: .video, name: "third")
+        let relations = [
+            SimilarityRelation(
+                firstID: first.id,
+                secondID: second.id,
+                score: 0.96,
+                evidence: [.similarPerceptualHash]
+            ),
+            SimilarityRelation(
+                firstID: first.id,
+                secondID: third.id,
+                score: 0.91,
+                evidence: [.similarFrames, .similarDuration]
+            )
+        ]
+
+        let group = SimilarityGroup(items: [first, second, third], relations: relations)
+
+        XCTAssertEqual(group.maximumScore, 0.96)
+        XCTAssertEqual(group.reclaimableBytes, 2)
+        XCTAssertEqual(group.score(for: first.id), 0.96)
+        XCTAssertEqual(group.score(for: second.id), 0.96)
+        XCTAssertEqual(group.score(for: third.id), 0.91)
+        XCTAssertEqual(
+            group.evidence(for: first.id),
+            [.similarPerceptualHash, .similarFrames, .similarDuration]
+        )
+        XCTAssertEqual(group.evidence(for: second.id), [.similarPerceptualHash])
+        XCTAssertEqual(group.evidence(for: third.id), [.similarFrames, .similarDuration])
+    }
+
     // MARK: - Helpers
 
     private func makeItem(kind: MediaKind, name: String = "f") -> MediaItem {

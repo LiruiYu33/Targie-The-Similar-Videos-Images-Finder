@@ -78,6 +78,7 @@ struct VideoScanner {
     }
 
     static func discoverVideoURLs(in folder: URL) throws -> [URL] {
+        try Task.checkCancellation()
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
             includingPropertiesForKeys: [.isRegularFileKey, .isHiddenKey],
@@ -86,12 +87,14 @@ struct VideoScanner {
         ) else {
             throw CocoaError(.fileReadUnknown)
         }
-        return enumerator.compactMap { element -> URL? in
-            guard let url = element as? URL,
-                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
-                  Self.supportedExtensions.contains(url.pathExtension.lowercased()) else { return nil }
-            return url
-        }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        var urls: [URL] = []
+        for case let url as URL in enumerator {
+            try Task.checkCancellation()
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  Self.supportedExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            urls.append(url)
+        }
+        return urls.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
     func scan(
@@ -100,10 +103,13 @@ struct VideoScanner {
     ) async throws -> VideoScanResult {
         let urls = try Self.discoverVideoURLs(in: folder)
         let reportsMetadataCache = metadataCache != nil && usesDefaultLoader
-        let metadataKeysByPath = reportsMetadataCache ? Self.metadataKeysByPath(urls: urls, mediaKind: .video) : [:]
+        let metadataKeysByPath = reportsMetadataCache
+            ? try Self.metadataKeysByPath(urls: urls, mediaKind: .video)
+            : [:]
         let prefetchedMetadata = reportsMetadataCache
             ? await metadataCache?.lookupMetadata(keys: Array(metadataKeysByPath.values)) ?? [:]
             : [:]
+        try Task.checkCancellation()
         await progress(ScanProgress(
             stage: .readingMetadata,
             fraction: 0,
@@ -221,9 +227,13 @@ struct VideoScanner {
         }
     }
 
-    private static func metadataKeysByPath(urls: [URL], mediaKind: MediaKind) -> [String: MediaMetadataCacheKey] {
-        urls.reduce(into: [:]) { result, url in
-            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
+    private static func metadataKeysByPath(urls: [URL], mediaKind: MediaKind) throws -> [String: MediaMetadataCacheKey] {
+        try Task.checkCancellation()
+        var result: [String: MediaMetadataCacheKey] = [:]
+        result.reserveCapacity(urls.count)
+        for url in urls {
+            try Task.checkCancellation()
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { continue }
             result[url.path] = MediaMetadataCacheKey(
                 filePath: url.path,
                 fileSize: Int64(values.fileSize ?? 0),
@@ -231,6 +241,7 @@ struct VideoScanner {
                 mediaKind: mediaKind
             )
         }
+        return result
     }
 
     private static func cachedMetadata(
@@ -322,7 +333,7 @@ struct VideoScanner {
             thumbnailURL = migrated
         } else {
             let asset = AVURLAsset(url: url)
-            thumbnail = await thumbnailData(asset: asset, duration: duration)
+            thumbnail = try await thumbnailData(asset: asset, duration: duration)
             thumbnailURL = thumbnail.flatMap {
                 try? thumbnailStore.persist($0, sourceURL: url, modifiedAt: modifiedAt)
             }
@@ -340,12 +351,19 @@ struct VideoScanner {
         )
     }
 
-    private static func thumbnailData(asset: AVAsset, duration: Double) async -> Data? {
+    private static func thumbnailData(asset: AVAsset, duration: Double) async throws -> Data? {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 720, height: 405)
         let time = CMTime(seconds: max(0, duration * 0.35), preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+        let cgImage: CGImage
+        do {
+            cgImage = try await CancellableAssetImageGenerator.image(at: time, using: generator)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
         let representation = NSBitmapImageRep(cgImage: cgImage)
         return representation.representation(using: .jpeg, properties: [.compressionFactor: 0.78])
     }

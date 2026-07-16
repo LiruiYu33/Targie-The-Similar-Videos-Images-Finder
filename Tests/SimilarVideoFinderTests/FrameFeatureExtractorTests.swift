@@ -83,6 +83,32 @@ final class FrameFeatureExtractorTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
+    func testCancellingOnlyFeatureWaiterCancelsWorkAndAllowsRetry() async throws {
+        let extractor = CountingFrameFeatureExtractor(delayNanoseconds: 100_000_000)
+        let cache = FrameFeatureCache(extractor: extractor)
+        let url = URL(fileURLWithPath: "/tmp/cancelled-feature-video.mp4")
+        let firstRequest = Task {
+            try await cache.features(for: url)
+        }
+
+        for _ in 0..<100 {
+            if await extractor.count(for: url) == 1 { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        firstRequest.cancel()
+
+        do {
+            _ = try await firstRequest.value
+            XCTFail("Cancelling the only waiter should cancel feature extraction")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        _ = try await cache.features(for: url)
+        let count = await extractor.count(for: url)
+        XCTAssertEqual(count, 2)
+    }
+
     func testFeatureCachePersistsFeaturesAcrossCacheInstances() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("FrameFeatureCachePersistence-\(UUID().uuidString)", isDirectory: true)

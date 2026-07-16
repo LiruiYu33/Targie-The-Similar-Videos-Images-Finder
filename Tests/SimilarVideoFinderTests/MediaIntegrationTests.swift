@@ -51,8 +51,9 @@ final class MediaIntegrationTests: XCTestCase {
         XCTAssertTrue(scan.issues.isEmpty)
 
         let result = try await SimilarityPipeline().process(videos: scan.videos, threshold: 0.88) { _ in }
-        XCTAssertEqual(result.groups.count, 1)
-        XCTAssertEqual(result.groups[0].items.count, 2)
-        XCTAssertEqual(result.groups[0].maximumScore, 1)
+        let groups = SimilarityGrouper.groups(items: result.videos, relations: result.relations, threshold: 0.88)
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups[0].items.count, 2)
+        XCTAssertEqual(groups[0].maximumScore, 1)
     }
 }

@@ -81,10 +81,15 @@ struct DeleteConfirmationView: View {
                         }
                     }
                 }
+                if model.isDeleting {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
         }
         .padding(24)
         .frame(width: 480)
+        .disabled(model.isDeleting)
     }
 
     private func cancel() {

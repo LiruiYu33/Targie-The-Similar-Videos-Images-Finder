@@ -573,6 +573,41 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(deletion.deletedURLs, [b.url])
     }
 
+    func testDeletionSetsBusyStateAndRejectsDuplicateConfirmation() async throws {
+        let first = SimilarityScoringTests.video(name: "first.mov")
+        let second = SimilarityScoringTests.video(name: "second.mov")
+        let relation = SimilarityRelation(
+            firstID: first.id,
+            secondID: second.id,
+            score: 0.95,
+            evidence: [.similarFrames]
+        )
+        let deletion = SuspendingDeletionService()
+        let model = ScanViewModel(deletionService: deletion)
+        model.replaceResultsForTesting(items: [first, second], relations: [relation])
+        model.requestDeletion(of: second)
+
+        let deletionTask = Task { await model.confirmPromptDeletion(mode: .trash) }
+        try await waitUntilAsync { await deletion.hasStarted }
+
+        XCTAssertTrue(model.isDeleting)
+        XCTAssertTrue(model.isBusy)
+        await model.confirmPromptDeletion(mode: .trash)
+        let deletionCallCount = await deletion.callCount
+        XCTAssertEqual(deletionCallCount, 1)
+
+        let heartbeat = expectation(description: "main actor remains responsive during deletion")
+        Task { @MainActor in heartbeat.fulfill() }
+        await fulfillment(of: [heartbeat], timeout: 1)
+
+        await deletion.resume()
+        await deletionTask.value
+
+        XCTAssertFalse(model.isDeleting)
+        XCTAssertFalse(model.isBusy)
+        XCTAssertTrue(model.groups.isEmpty)
+    }
+
     func testDeletingBridgeItemKeepsGroupWhenTwoFilesRemain() async {
         let a = SimilarityScoringTests.video(name: "a.mov")
         let b = SimilarityScoringTests.video(name: "b.mov")
@@ -1444,7 +1479,7 @@ private struct ExactDuplicatePipeline: SimilarityProcessing {
         progress: @escaping @Sendable (ScanProgress) async -> Void
     ) async throws -> PipelineResult {
         guard videos.count == 2 else {
-            return PipelineResult(videos: videos, relations: [], groups: [])
+            return PipelineResult(videos: videos, relations: [])
         }
         let relation = SimilarityRelation(
             firstID: videos[0].id,
@@ -1452,11 +1487,7 @@ private struct ExactDuplicatePipeline: SimilarityProcessing {
             score: 1,
             evidence: [.identicalContentHash]
         )
-        return PipelineResult(
-            videos: videos,
-            relations: [relation],
-            groups: SimilarityGrouper.groups(items: videos, relations: [relation], threshold: threshold)
-        )
+        return PipelineResult(videos: videos, relations: [relation])
     }
 }
 
@@ -1470,7 +1501,7 @@ private struct ProgressReportingPipeline: SimilarityProcessing {
     ) async throws -> PipelineResult {
         await progress(ScanProgress(stage: .comparing, fraction: 0.8, discoveredCount: videos.count))
         await tracker.videoComparingProgressReported()
-        return PipelineResult(videos: videos, relations: [], groups: [])
+        return PipelineResult(videos: videos, relations: [])
     }
 }
 
@@ -1551,6 +1582,37 @@ private final class FakeDeletionService: DeletionServicing {
     }
 
     func open(_ url: URL) {}
+}
+
+private actor SuspendingDeletionService: DeletionServicing {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var callCount = 0
+    private(set) var hasStarted = false
+
+    func delete(url: URL, mode: DeletionMode) async throws {
+        _ = url
+        _ = mode
+        callCount += 1
+        hasStarted = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    @MainActor
+    func reveal(_ url: URL) {
+        _ = url
+    }
+
+    @MainActor
+    func open(_ url: URL) {
+        _ = url
+    }
 }
 
 private actor PruneRecordingCache: HashCaching {
