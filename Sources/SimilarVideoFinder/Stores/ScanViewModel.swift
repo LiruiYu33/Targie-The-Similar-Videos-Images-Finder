@@ -394,6 +394,13 @@ final class ScanViewModel: ObservableObject {
     @Published var deletePrompt: DeletePrompt?
     @Published var scanMode: ScanMode = .all
     @Published var scanIntensity: ScanIntensity
+    @Published var excludeSubfolders = false {
+        didSet {
+            guard oldValue != excludeSubfolders else { return }
+            noteItemsChanged()
+            rebuildGroups()
+        }
+    }
     @Published var checkedMediaIDs = Set<UUID>()
 
     private var allItems: [MediaItem] = []
@@ -493,7 +500,9 @@ final class ScanViewModel: ObservableObject {
     }
 
     /// All media items discovered during scanning or file discovery.
-    var items: [MediaItem] { allItems }
+    var items: [MediaItem] {
+        excludeSubfolders ? allItems.filter(isTopLevelItem) : allItems
+    }
 
     var isBusy: Bool { isScanning || isClearingCache || isDeleting }
 
@@ -592,11 +601,12 @@ final class ScanViewModel: ObservableObject {
                         scanner: scanner,
                         pipeline: pipeline,
                         threshold: threshold,
-                        scanIntensity: scanIntensity
-                    ) { [weak self] update in
-                        let aggregate = await progressAggregator.update(.video, with: update)
-                        await MainActor.run { self?.updateProgress(aggregate, for: scanID) }
-                    }
+                        scanIntensity: scanIntensity,
+                        progress: { [weak self] update in
+                            let aggregate = await progressAggregator.update(.video, with: update)
+                            await MainActor.run { self?.updateProgress(aggregate, for: scanID) }
+                        }
+                    )
                     if let aggregate = await progressAggregator.complete(.video, discoveredCount: result.items.count) {
                         await MainActor.run { [weak self] in self?.updateProgress(aggregate, for: scanID) }
                     }
@@ -608,11 +618,12 @@ final class ScanViewModel: ObservableObject {
                         imageScanner: imageScanner,
                         imagePipeline: imagePipeline,
                         threshold: threshold,
-                        scanIntensity: scanIntensity
-                    ) { [weak self] update in
-                        let aggregate = await progressAggregator.update(.image, with: update)
-                        await MainActor.run { self?.updateProgress(aggregate, for: scanID) }
-                    }
+                        scanIntensity: scanIntensity,
+                        progress: { [weak self] update in
+                            let aggregate = await progressAggregator.update(.image, with: update)
+                            await MainActor.run { self?.updateProgress(aggregate, for: scanID) }
+                        }
+                    )
                     if let aggregate = await progressAggregator.complete(.image, discoveredCount: result.items.count) {
                         await MainActor.run { [weak self] in self?.updateProgress(aggregate, for: scanID) }
                     }
@@ -1124,8 +1135,18 @@ final class ScanViewModel: ObservableObject {
 
     private func rebuildGroups(preserving previousGroups: [SimilarityGroup]? = nil) {
         let beforeRebuild = previousGroups ?? groups
-        let rebuilt = SimilarityGrouper.groups(items: allItems, relations: allRelations, threshold: threshold)
+        let items = excludeSubfolders ? allItems.filter(isTopLevelItem) : allItems
+        let visibleIDs = Set(items.map(\.id))
+        let relations = allRelations.filter { visibleIDs.contains($0.firstID) && visibleIDs.contains($0.secondID) }
+        let rebuilt = SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
         applyRebuiltGroups(rebuilt, preserving: beforeRebuild)
+    }
+
+    /// Returns true when `item.url`'s parent is one of the selected folders
+    /// (i.e. the file lives directly inside a selected folder, not a subfolder).
+    private func isTopLevelItem(_ item: MediaItem) -> Bool {
+        let parentPath = item.url.deletingLastPathComponent().standardizedFileURL.path
+        return selectedFolders.contains { $0.standardizedFileURL.path == parentPath }
     }
 
     private func applyRebuiltGroups(

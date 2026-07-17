@@ -51,6 +51,13 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.pictureInPicture(.simplifiedChinese), "画中画")
         XCTAssertEqual(L10n.pictureInPicture(.japanese), "ピクチャ・イン・ピクチャ")
         XCTAssertEqual(L10n.pictureInPicture(.korean), "화면 속 화면")
+        XCTAssertEqual(L10n.excludeSubfolders(.english), "Exclude Subfolders")
+        XCTAssertEqual(L10n.excludeSubfolders(.simplifiedChinese), "不包含子文件夹")
+        XCTAssertEqual(L10n.excludeSubfolders(.traditionalChinese), "不包含子資料夾")
+        XCTAssertEqual(L10n.excludeSubfolders(.spanish), "Excluir subcarpetas")
+        XCTAssertEqual(L10n.excludeSubfolders(.french), "Exclure les sous-dossiers")
+        XCTAssertEqual(L10n.excludeSubfolders(.japanese), "サブフォルダを含めない")
+        XCTAssertEqual(L10n.excludeSubfolders(.korean), "하위 폴더 제외")
     }
 
     func testScanProgressDetailShowsCacheHitContext() {

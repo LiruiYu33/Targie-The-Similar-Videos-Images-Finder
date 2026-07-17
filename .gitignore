@@ -6,3 +6,4 @@ dist/
 .build/home/
 issues.md
 docs/superpowers/
+.zcode/

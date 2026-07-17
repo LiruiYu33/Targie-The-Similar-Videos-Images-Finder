@@ -76,6 +76,15 @@ struct SidebarView: View {
             .sidebarActionButtonShape()
             .disabled(model.isBusy || model.selectedFolders.isEmpty)
 
+        case .excludeSubfolders:
+            Toggle(isOn: $model.excludeSubfolders) {
+                Text(L10n.excludeSubfolders(language))
+                    .font(.caption)
+            }
+            .toggleStyle(.checkbox)
+            .disabled(model.isBusy)
+            .help(L10n.excludeSubfolders(language))
+
         case .folderStatus:
             folderStatus
 
@@ -144,7 +153,7 @@ struct SidebarView: View {
             selectedFolderList
         case .skippedFiles:
             skippedFilesButton
-        case .addFolders, .clearFolders, .folderStatus, .scanAction, .displayThreshold:
+        case .addFolders, .clearFolders, .excludeSubfolders, .folderStatus, .scanAction, .displayThreshold:
             EmptyView()
         }
     }

@@ -26,7 +26,7 @@ final class SidebarControlPlacementTests: XCTestCase {
     func testPrimaryControlsStayInStableTopOrder() {
         XCTAssertEqual(
             SidebarControlPlacement.primaryControls,
-            [.scanAction, .addFolders, .clearFolders, .displayThreshold, .folderStatus]
+            [.scanAction, .addFolders, .clearFolders, .excludeSubfolders, .displayThreshold, .folderStatus]
         )
     }
 

@@ -84,6 +84,7 @@ enum L10n {
     static func changeFolder(_ l: AppLanguage) -> String { text(l, "Change Folder", "更换文件夹", "更換資料夾", "Cambiar carpeta", "Changer de dossier", "フォルダを変更", "폴더 변경") }
     static func addFolders(_ l: AppLanguage) -> String { text(l, "Add Folders", "添加文件夹", "新增資料夾", "Añadir carpetas", "Ajouter des dossiers", "フォルダを追加", "폴더 추가") }
     static func clearFolders(_ l: AppLanguage) -> String { text(l, "Clear Folder Selection", "清除文件夹选择", "清除資料夾選擇", "Borrar selección de carpetas", "Effacer la sélection de dossiers", "フォルダ選択をクリア", "폴더 선택 지우기") }
+    static func excludeSubfolders(_ l: AppLanguage) -> String { text(l, "Exclude Subfolders", "不包含子文件夹", "不包含子資料夾", "Excluir subcarpetas", "Exclure les sous-dossiers", "サブフォルダを含めない", "하위 폴더 제외") }
     static func removeFolder(_ l: AppLanguage) -> String { text(l, "Remove Folder", "移除文件夹", "移除資料夾", "Quitar carpeta", "Supprimer le dossier", "フォルダを削除", "폴더 제거") }
     static func foldersSelected(_ count: Int, _ l: AppLanguage) -> String { text(l, "\(count) folders selected", "已添加 \(count) 个文件夹", "已新增 \(count) 個資料夾", "\(count) carpetas seleccionadas", "\(count) dossiers sélectionnés", "\(count)個のフォルダを選択", "\(count)개 폴더 선택됨") }
     static func dragFoldersHint(_ l: AppLanguage) -> String { text(l, "Drag one or more folders into this window.", "可将一个或多个文件夹拖入此窗口。", "可將一個或多個資料夾拖入此視窗。", "Arrastra una o más carpetas a esta ventana.", "Faites glisser un ou plusieurs dossiers dans cette fenêtre.", "1つ以上のフォルダをこのウィンドウにドラッグしてください。", "하나 이상의 폴더를 이 창으로 끌어오세요.") }

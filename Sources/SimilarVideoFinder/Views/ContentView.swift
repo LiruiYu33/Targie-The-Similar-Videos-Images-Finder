@@ -26,6 +26,7 @@ struct ContentView: View {
     @AppStorage("appLanguage") private var languageRawValue = AppLanguage.defaultLanguage.rawValue
     @AppStorage("scanMode") private var scanModeRawValue = ScanMode.all.rawValue
     @AppStorage("scanIntensity") private var scanIntensityRawValue = ScanIntensity.defaultIntensity.rawValue
+    @AppStorage("excludeSubfolders") private var excludeSubfolders = false
 
     @State private var appMode: AppMode = .scan
     @StateObject private var browseSession = BrowseSessionCoordinator()
@@ -80,10 +81,14 @@ struct ContentView: View {
         .onAppear {
             model.setScanMode(ScanMode(rawValue: scanModeRawValue) ?? .all)
             model.setScanIntensity(scanIntensity)
+            model.excludeSubfolders = excludeSubfolders
             browseSession.prepareIfPossible(scanModel: model)
         }
         .onChange(of: scanIntensityRawValue) { _, _ in
             model.setScanIntensity(scanIntensity)
+        }
+        .onChange(of: excludeSubfolders) { _, value in
+            model.excludeSubfolders = value
         }
         .onChange(of: model.items.count) { _, _ in
             browseSession.prepareIfPossible(scanModel: model)
