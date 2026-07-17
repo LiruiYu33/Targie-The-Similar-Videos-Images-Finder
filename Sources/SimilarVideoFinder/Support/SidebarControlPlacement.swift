@@ -22,6 +22,7 @@
 enum SidebarControlKind: Hashable {
     case addFolders
     case clearFolders
+    case excludeSubfolders
     case folderStatus
     case scanAction
     case displayThreshold
@@ -40,6 +41,7 @@ enum SidebarControlPlacement {
         .scanAction,
         .addFolders,
         .clearFolders,
+        .excludeSubfolders,
         .displayThreshold,
         .folderStatus
     ]

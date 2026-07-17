@@ -80,23 +80,8 @@ final class DeletionService: DeletionServicing {
         do {
             switch mode {
             case .trash:
-                let resolved = url.standardizedFileURL
-                var coordinatorError: NSError?
-                let result = CoordinatedDeletionResult()
-                NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: resolved, options: .forDeleting, error: &coordinatorError) { coordinatedURL in
-                    do {
-                        var resultingURL: NSURL?
-                        try FileManager.default.trashItem(at: coordinatedURL, resultingItemURL: &resultingURL)
-                    } catch {
-                        result.error = error
-                    }
-                }
-                if let error = coordinatorError {
-                    throw DeletionError.operationFailed(error.localizedDescription)
-                }
-                if let error = result.error {
-                    throw DeletionError.operationFailed(error.localizedDescription)
-                }
+                var resultingURL: NSURL?
+                try FileManager.default.trashItem(at: url.standardizedFileURL, resultingItemURL: &resultingURL)
             case .permanent:
                 try FileManager.default.removeItem(at: url)
             }
@@ -106,10 +91,6 @@ final class DeletionService: DeletionServicing {
             throw DeletionError.operationFailed(error.localizedDescription)
         }
     }
-}
-
-private final class CoordinatedDeletionResult: @unchecked Sendable {
-    var error: Error?
 }
 
 private final class DeletionWorker: @unchecked Sendable {
