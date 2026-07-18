@@ -117,19 +117,8 @@ jobs:
             gh release upload "$TAG" "$ZIP" "$SHA256" --clobber
             echo "Uploaded assets without changing the existing release title or notes."
           else
-            cat > release-notes.md <<EOF
-          Automated draft release for ${TAG}.
-
-          Validation:
-          - ./script/release.sh ${TAG#v}
-          - Universal macOS app with arm64 and x86_64 slices
-
-          Publish this draft after manually checking the generated assets.
-          EOF
-
             gh release create "$TAG" "$ZIP" "$SHA256" \
-              --draft \
+              --generate-notes \
               --verify-tag \
-              --title "Targie ${TAG}" \
-              --notes-file release-notes.md
+              --title "Targie ${TAG}"
           fi
