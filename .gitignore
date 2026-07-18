@@ -2,8 +2,6 @@
 .swiftpm/
 dist/
 .DS_Store
-.superpowers/
 .build/home/
 issues.md
-docs/superpowers/
-.zcode/
+docs/
