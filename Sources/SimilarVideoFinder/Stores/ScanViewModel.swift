@@ -979,7 +979,7 @@ final class ScanViewModel: ObservableObject {
     }
 
     func requestCheckedDeletion() {
-        let selected = allItems.filter { checkedMediaIDs.contains($0.id) }
+        let selected = items.filter { checkedMediaIDs.contains($0.id) }
         if !selected.isEmpty { deletePrompt = DeletePrompt(media: selected, step: .choosingMethod) }
     }
 
@@ -1038,6 +1038,11 @@ final class ScanViewModel: ObservableObject {
                 preserving: groupsBeforeDeletion,
                 stableIDsAlreadyApplied: true
             )
+            // Re-apply the excludeSubfolders filter so groups stay consistent
+            // with what the user sees when the toggle is on.
+            if excludeSubfolders {
+                rebuildGroups(preserving: groupsBeforeDeletion)
+            }
         }
         deletePrompt = nil
         if !failures.isEmpty { presentedError = .message(failures.joined(separator: "\n")) }
