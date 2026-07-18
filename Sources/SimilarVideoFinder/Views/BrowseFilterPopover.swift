@@ -23,10 +23,20 @@ import SwiftUI
 
 struct BrowseFilterPopover: View {
     @ObservedObject var browseModel: BrowseViewModel
+    @Binding var excludeSubfolders: Bool
     @Environment(\.appLanguage) private var language
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            Toggle(isOn: $excludeSubfolders) {
+                Text(L10n.excludeSubfolders(language))
+            }
+            .toggleStyle(.checkbox)
+            .disabled(browseModel.scanModel.isBusy)
+            .help(L10n.excludeSubfolders(language))
+
+            Divider()
+
             // Media type filter
             VStack(alignment: .leading, spacing: 8) {
                 Text(L10n.mediaType(language))

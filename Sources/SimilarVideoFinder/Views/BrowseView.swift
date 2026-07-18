@@ -23,6 +23,7 @@ import SwiftUI
 
 struct BrowseView: View {
     @ObservedObject var browseModel: BrowseViewModel
+    @Binding var excludeSubfolders: Bool
     let onBack: () -> Void
     @Environment(\.appLanguage) private var language
 
@@ -102,14 +103,17 @@ struct BrowseView: View {
 
                 ToolbarLabeledButton(
                     title: L10n.filter(language),
-                    systemImage: browseModel.hasActiveFilter
+                    systemImage: browseModel.hasActiveFilter || excludeSubfolders
                         ? "line.3.horizontal.decrease.circle.fill"
                         : "line.3.horizontal.decrease.circle"
                 ) {
                     browseModel.isFilterPresented.toggle()
                 }
                 .popover(isPresented: $browseModel.isFilterPresented) {
-                    BrowseFilterPopover(browseModel: browseModel)
+                    BrowseFilterPopover(
+                        browseModel: browseModel,
+                        excludeSubfolders: $excludeSubfolders
+                    )
                 }
 
                 if !browseModel.isBatchSelectionMode {
