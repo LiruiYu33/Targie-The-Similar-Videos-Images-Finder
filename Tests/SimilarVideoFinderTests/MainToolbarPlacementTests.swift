@@ -45,6 +45,27 @@ final class MainToolbarPlacementTests: XCTestCase {
         XCTAssertFalse(source.contains("clearAllCaches()"))
     }
 
+    func testExcludeSubfoldersPreferenceBindingFeedsScanAndBrowseControls() throws {
+        let content = try sourceText("Sources/SimilarVideoFinder/Views/ContentView.swift")
+        let sidebar = try sourceText("Sources/SimilarVideoFinder/Views/SidebarView.swift")
+        let browse = try sourceText("Sources/SimilarVideoFinder/Views/BrowseView.swift")
+        let filter = try sourceText("Sources/SimilarVideoFinder/Views/BrowseFilterPopover.swift")
+
+        XCTAssertTrue(content.contains("@AppStorage(\"excludeSubfolders\") private var excludeSubfolders"))
+        XCTAssertTrue(content.contains("SidebarView(model: model, excludeSubfolders: $excludeSubfolders)"))
+        XCTAssertTrue(content.contains("excludeSubfolders: $excludeSubfolders"))
+        XCTAssertTrue(content.contains(".onChange(of: excludeSubfolders)"))
+
+        XCTAssertTrue(sidebar.contains("@Binding var excludeSubfolders: Bool"))
+        XCTAssertTrue(sidebar.contains("Toggle(isOn: $excludeSubfolders)"))
+        XCTAssertFalse(sidebar.contains("Toggle(isOn: $model.excludeSubfolders)"))
+
+        XCTAssertTrue(browse.contains("@Binding var excludeSubfolders: Bool"))
+        XCTAssertTrue(browse.contains("BrowseFilterPopover("))
+        XCTAssertTrue(filter.contains("@Binding var excludeSubfolders: Bool"))
+        XCTAssertTrue(filter.contains("Toggle(isOn: $excludeSubfolders)"))
+    }
+
     private func sourceText(_ relativePath: String) throws -> String {
         let testsDirectory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

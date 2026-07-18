@@ -48,7 +48,11 @@ struct ContentView: View {
                 scanView
             case .browse:
                 if let browseModel = browseSession.browseModel {
-                    BrowseView(browseModel: browseModel, onBack: exitBrowseMode)
+                    BrowseView(
+                        browseModel: browseModel,
+                        excludeSubfolders: $excludeSubfolders,
+                        onBack: exitBrowseMode
+                    )
                         .sheet(item: $model.deletePrompt) { _ in
                             DeleteConfirmationView(model: model)
                         }
@@ -113,7 +117,7 @@ struct ContentView: View {
 
     private var scanView: some View {
         NavigationSplitView {
-            SidebarView(model: model)
+            SidebarView(model: model, excludeSubfolders: $excludeSubfolders)
                 .navigationSplitViewColumnWidth(
                     min: SplitColumnConfiguration.sidebar.minWidth,
                     ideal: SplitColumnConfiguration.sidebar.idealWidth,

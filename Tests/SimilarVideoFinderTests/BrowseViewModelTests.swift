@@ -218,6 +218,49 @@ final class BrowseViewModelTests: XCTestCase {
         XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
     }
 
+    func testExcludeSubfoldersRecomputesBrowseItemsWithoutStartingScan() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrowseExcludeSubfolders-\(UUID().uuidString)", isDirectory: true)
+        let nested = root.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let topLevel = makeItem(
+            name: "top.mov",
+            width: 1920,
+            height: 1080,
+            directory: root.path
+        )
+        let nestedItem = makeItem(
+            name: "nested.mov",
+            width: 1920,
+            height: 1080,
+            directory: nested.path
+        )
+        let scanModel = ScanViewModel(hashCache: nil)
+        XCTAssertTrue(scanModel.addFolders([root]))
+        scanModel.replaceResultsForTesting(items: [topLevel, nestedItem], relations: [])
+        let browse = BrowseViewModel(scanModel: scanModel)
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        XCTAssertEqual(Set(browse.displayedItems.map(\.id)), [topLevel.id, nestedItem.id])
+        XCTAssertFalse(scanModel.isScanning)
+
+        scanModel.excludeSubfolders = true
+        try await waitUntil { browse.displayedItems.map(\.id) == [topLevel.id] }
+
+        XCTAssertFalse(scanModel.isScanning)
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
+
+        scanModel.excludeSubfolders = false
+        try await waitUntil {
+            Set(browse.displayedItems.map(\.id)) == [topLevel.id, nestedItem.id]
+        }
+
+        XCTAssertFalse(scanModel.isScanning)
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 2)
+    }
+
     func testEqualSortKeysUseDeterministicPathOrderInBothDirections() {
         let date = Date(timeIntervalSince1970: 1_000)
         let first = makeItem(

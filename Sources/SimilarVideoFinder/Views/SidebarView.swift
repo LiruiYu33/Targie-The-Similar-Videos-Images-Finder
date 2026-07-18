@@ -23,6 +23,7 @@ import SwiftUI
 
 struct SidebarView: View {
     @ObservedObject var model: ScanViewModel
+    @Binding var excludeSubfolders: Bool
     @Environment(\.appLanguage) private var language
     @State private var showSkippedFiles = false
 
@@ -77,7 +78,7 @@ struct SidebarView: View {
             .disabled(model.isBusy || model.selectedFolders.isEmpty)
 
         case .excludeSubfolders:
-            Toggle(isOn: $model.excludeSubfolders) {
+            Toggle(isOn: $excludeSubfolders) {
                 Text(L10n.excludeSubfolders(language))
                     .font(.caption)
             }
