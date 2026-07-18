@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (for example, 4.3.1)"
+        required: true
+        type: string
+
+run-name: Release ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 permissions:
   contents: write
@@ -30,41 +38,87 @@ jobs:
           swift --version
           xcodebuild -version
 
-      - name: Build release artifact
+      - name: Resolve release version
+        id: release
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$REF_TYPE" != "branch" ] || [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+              echo "error: manual releases must run from the default branch '$DEFAULT_BRANCH'" >&2
+              exit 1
+            fi
+            VERSION="${INPUT_VERSION#v}"
+          else
+            VERSION="${REF_NAME#v}"
+          fi
+
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.+-]+)?$ ]]; then
+            echo "error: version must look like 4.3.1 or 4.3.1-rc1, got '$VERSION'" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build release artifact
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
           ./script/release.sh "$VERSION"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: Targie-${{ github.ref_name }}-macos-universal
+          name: Targie-${{ steps.release.outputs.tag }}-macos-universal
           path: |
-            dist/release/Targie-${{ github.ref_name }}-macos-universal.zip
-            dist/release/Targie-${{ github.ref_name }}-macos-universal.zip.sha256
+            dist/release/Targie-${{ steps.release.outputs.tag }}-macos-universal.zip
+            dist/release/Targie-${{ steps.release.outputs.tag }}-macos-universal.zip.sha256
           if-no-files-found: error
 
-      - name: Create draft GitHub release
+      - name: Create release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+            if [ "$TAG_COMMIT" != "$GITHUB_SHA" ]; then
+              echo "error: tag '$TAG' already points to $TAG_COMMIT" >&2
+              exit 1
+            fi
+            echo "Tag '$TAG' already points to this commit; reusing it."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Targie $TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
+
+      - name: Create release or upload assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
           ZIP="dist/release/Targie-${TAG}-macos-universal.zip"
           SHA256="${ZIP}.sha256"
-          cat > release-notes.md <<EOF
-          Automated draft release for ${TAG}.
 
-          Validation:
-          - ./script/release.sh ${TAG#v}
-          - Universal macOS app with arm64 and x86_64 slices
-
-          Publish this draft after manually checking the generated assets.
-          EOF
-
-          gh release create "$TAG" "$ZIP" "$SHA256" \
-            --draft \
-            --verify-tag \
-            --title "Targie ${TAG}" \
-            --notes-file release-notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" "$SHA256" --clobber
+            echo "Uploaded assets without changing the existing release title or notes."
+          else
+            gh release create "$TAG" "$ZIP" "$SHA256" \
+              --generate-notes \
+              --verify-tag \
+              --title "Targie ${TAG}"
+          fi
