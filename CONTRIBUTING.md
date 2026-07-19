@@ -59,4 +59,4 @@ Before opening a PR:
 - [ ] `./script/build_app.sh` produces a working `dist/Targie.app`.
 - [ ] Every commit has a `Signed-off-by` line (`git commit -s`).
 - [ ] New `.swift` files carry the GPL-3.0 file header.
-- [ ] User-facing strings are added to both English and Simplified Chinese in [Sources/SimilarVideoFinder/Support/Localization.swift](Sources/SimilarVideoFinder/Support/Localization.swift).
+- [ ] User-facing strings are added to **all supported languages** (English, Simplified Chinese, Traditional Chinese, Spanish, French, Japanese, Korean) in [Sources/SimilarVideoFinder/Support/Localization.swift](Sources/SimilarVideoFinder/Support/Localization.swift). This is enforced at compile time by `L10n.text` - omitting any language is a build error.
