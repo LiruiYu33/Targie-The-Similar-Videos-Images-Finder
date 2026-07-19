@@ -62,20 +62,20 @@ enum L10n {
         _ language: AppLanguage,
         _ english: String,
         _ simplifiedChinese: String,
-        _ traditionalChinese: String? = nil,
-        _ spanish: String? = nil,
-        _ french: String? = nil,
-        _ japanese: String? = nil,
-        _ korean: String? = nil
+        _ traditionalChinese: String,
+        _ spanish: String,
+        _ french: String,
+        _ japanese: String,
+        _ korean: String
     ) -> String {
         switch language {
         case .english: english
         case .simplifiedChinese: simplifiedChinese
-        case .traditionalChinese: traditionalChinese ?? simplifiedChinese
-        case .spanish: spanish ?? english
-        case .french: french ?? english
-        case .japanese: japanese ?? english
-        case .korean: korean ?? english
+        case .traditionalChinese: traditionalChinese
+        case .spanish: spanish
+        case .french: french
+        case .japanese: japanese
+        case .korean: korean
         }
     }
 
