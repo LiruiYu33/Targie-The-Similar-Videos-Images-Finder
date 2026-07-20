@@ -409,7 +409,13 @@ final class ScanViewModel: ObservableObject {
     private let scanner: VideoScanner
     private let imageScanner: ImageScanner
     private let imagePipeline: ImageSimilarityPipeline
-    private let pipeline: any SimilarityProcessing
+    private var pipeline: any SimilarityProcessing
+    /// Whether Vision frame verification runs on the video pipeline. Toggled
+    /// via Settings; applies to the next scan (startScan captures the pipeline
+    /// reference at scan start, so mid-scan toggles don't affect the in-flight
+    /// scan). Images always use Vision FeaturePrint and have no equivalent.
+    private(set) var deepVerification: Bool = false
+    private let usesDefaultPipeline: Bool
     private let deletionService: any DeletionServicing
     private let hashCache: (any HashCaching)?
     private let thumbnailStore: ThumbnailStore
@@ -436,7 +442,8 @@ final class ScanViewModel: ObservableObject {
         self.activityManager = activityManager
         self.scanIntensity = scanIntensity
         self.groupBuilder = groupBuilder ?? ScanViewModel.buildGroupsOffMain
-        self.pipeline = pipeline ?? SimilarityPipeline(cache: hashCache)
+        self.usesDefaultPipeline = pipeline == nil
+        self.pipeline = pipeline ?? SimilarityPipeline(cache: hashCache, usesFrameVerification: self.deepVerification)
         self.imagePipeline = ImageSimilarityPipeline(cache: hashCache)
         // Use caller-provided scanners, but if they used the default loader,
         // replace it with a cache-equipped default so re-scan skips media I/O.
@@ -849,6 +856,23 @@ final class ScanViewModel: ObservableObject {
     func setScanIntensity(_ intensity: ScanIntensity) {
         guard scanIntensity != intensity else { return }
         scanIntensity = intensity
+    }
+
+    /// Toggles Vision frame verification for the video pipeline. Like scan
+    /// intensity, it applies to the next scan. Rebuilds the default pipeline;
+    /// an injected pipeline (tests) is left in place and only the flag moves,
+    /// so the algorithm-version accessor still reflects the new setting.
+    func setDeepVerification(_ enabled: Bool) {
+        guard deepVerification != enabled else { return }
+        deepVerification = enabled
+        guard usesDefaultPipeline else { return }
+        pipeline = SimilarityPipeline(cache: hashCache, usesFrameVerification: enabled)
+    }
+
+    /// Algorithm-version string the video pipeline uses for pair-relation
+    /// caching under the current deep-verification setting. Exposed for tests.
+    var videoPairRelationAlgorithmVersion: String {
+        SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: deepVerification)
     }
 
     private func kind(for mode: ScanMode) -> MediaKind? {

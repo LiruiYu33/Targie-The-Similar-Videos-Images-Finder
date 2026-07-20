@@ -22,20 +22,37 @@
 import XCTest
 
 final class MainToolbarPlacementTests: XCTestCase {
-    func testCacheAndIntensityControlsLiveInMainToolbarBeforeLanguage() throws {
+    func testMainToolbarIsScanModeBrowseThenSettings() throws {
         let source = try sourceText("Sources/SimilarVideoFinder/Views/ContentView.swift")
         let browse = try XCTUnwrap(source.range(of: "title: L10n.browse(language)"))
-        let clearCache = try XCTUnwrap(source.range(of: "title: L10n.clearCache(language)"))
-        let intensity = try XCTUnwrap(source.range(of: "title: L10n.scanIntensity(language)"))
-        let language = try XCTUnwrap(source.range(of: "title: L10n.language(language)"))
+        let settings = try XCTUnwrap(source.range(of: "title: L10n.settings(language)"))
 
-        XCTAssertLessThan(browse.lowerBound, clearCache.lowerBound)
-        XCTAssertLessThan(clearCache.lowerBound, intensity.lowerBound)
-        XCTAssertLessThan(intensity.lowerBound, language.lowerBound)
-        let browseBlock = source[browse.lowerBound..<clearCache.lowerBound]
-        XCTAssertTrue(browseBlock.contains(".disabled(model.selectedFolders.isEmpty || model.isBusy)"))
-        XCTAssertTrue(source.contains("guard !model.isBusy else { return }"))
-        XCTAssertTrue(source.contains("guard !model.isBusy else { return }\n                        cacheMB = stats"))
+        // Settings must follow Browse in the toolbar, and be the only other
+        // toolbar button beside the ScanMode picker.
+        XCTAssertLessThan(browse.lowerBound, settings.lowerBound)
+
+        // The infrequent controls used to be toolbar buttons; they must no
+        // longer appear directly in ContentView's toolbar.
+        XCTAssertFalse(source.contains("ToolbarLabeledPopover"))
+        XCTAssertFalse(source.contains("title: L10n.clearCache(language)"))
+        XCTAssertFalse(source.contains("title: L10n.scanIntensity(language)"))
+        XCTAssertFalse(source.contains("title: L10n.language(language)"))
+
+        // The Settings popover hosts them instead.
+        let popover = try sourceText("Sources/SimilarVideoFinder/Views/SettingsPopover.swift")
+        XCTAssertTrue(popover.contains("L10n.deepVerification(language)"))
+        XCTAssertTrue(popover.contains("L10n.scanIntensity(language)"))
+        XCTAssertTrue(popover.contains("L10n.language(language)"))
+        XCTAssertTrue(popover.contains("onClearCache"))
+    }
+
+    func testDeepVerificationPreferenceFeedsScanViewModel() throws {
+        let content = try sourceText("Sources/SimilarVideoFinder/Views/ContentView.swift")
+
+        XCTAssertTrue(content.contains("@AppStorage(\"deepVerification\") private var deepVerification = false"))
+        XCTAssertTrue(content.contains("model.setDeepVerification(deepVerification)"))
+        XCTAssertTrue(content.contains(".onChange(of: deepVerification)"))
+        XCTAssertTrue(content.contains("deepVerification: $deepVerification"))
     }
 
     func testBrowseToolbarDoesNotOwnClearCacheAction() throws {

@@ -27,10 +27,12 @@ struct ContentView: View {
     @AppStorage("scanMode") private var scanModeRawValue = ScanMode.all.rawValue
     @AppStorage("scanIntensity") private var scanIntensityRawValue = ScanIntensity.defaultIntensity.rawValue
     @AppStorage("excludeSubfolders") private var excludeSubfolders = false
+    @AppStorage("deepVerification") private var deepVerification = false
 
     @State private var appMode: AppMode = .scan
     @StateObject private var browseSession = BrowseSessionCoordinator()
     @State private var isClearCacheConfirmPresented = false
+    @State private var isSettingsPresented = false
     @State private var cacheMB = (thumbnailMB: "0", hashMB: "0")
 
     private var language: AppLanguage {
@@ -85,11 +87,15 @@ struct ContentView: View {
         .onAppear {
             model.setScanMode(ScanMode(rawValue: scanModeRawValue) ?? .all)
             model.setScanIntensity(scanIntensity)
+            model.setDeepVerification(deepVerification)
             model.excludeSubfolders = excludeSubfolders
             browseSession.prepareIfPossible(scanModel: model)
         }
         .onChange(of: scanIntensityRawValue) { _, _ in
             model.setScanIntensity(scanIntensity)
+        }
+        .onChange(of: deepVerification) { _, value in
+            model.setDeepVerification(value)
         }
         .onChange(of: excludeSubfolders) { _, value in
             model.excludeSubfolders = value
@@ -162,72 +168,26 @@ struct ContentView: View {
                 .disabled(model.selectedFolders.isEmpty || model.isBusy)
 
                 ToolbarLabeledButton(
-                    title: L10n.clearCache(language),
-                    systemImage: "arrow.triangle.2.circlepath"
-                ) {
-                    Task {
-                        let stats = await model.cacheStats()
-                        guard !model.isBusy else { return }
-                        cacheMB = stats
-                        isClearCacheConfirmPresented = true
-                    }
-                }
-                .disabled(model.isBusy)
-
-                ToolbarLabeledPopover(
-                    title: L10n.scanIntensity(language),
-                    systemImage: "speedometer"
-                ) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(ScanIntensity.allCases) { option in
-                            Button {
-                                scanIntensityRawValue = option.rawValue
-                                model.setScanIntensity(option)
-                            } label: {
-                                HStack {
-                                    Text(L10n.scanIntensityName(option, language))
-                                    Spacer(minLength: 16)
-                                    if option == scanIntensity {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .frame(minWidth: 140, alignment: .leading)
-                                .contentShape(Rectangle())
+                    title: L10n.settings(language),
+                    systemImage: "gearshape",
+                    action: { isSettingsPresented.toggle() }
+                )
+                .popover(isPresented: $isSettingsPresented, arrowEdge: .bottom) {
+                    SettingsPopover(
+                        model: model,
+                        scanIntensityRawValue: $scanIntensityRawValue,
+                        languageRawValue: $languageRawValue,
+                        deepVerification: $deepVerification,
+                        onClearCache: {
+                            isSettingsPresented = false
+                            Task {
+                                let stats = await model.cacheStats()
+                                guard !model.isBusy else { return }
+                                cacheMB = stats
+                                isClearCacheConfirmPresented = true
                             }
-                            .buttonStyle(.plain)
                         }
-                    }
-                }
-                .disabled(model.isBusy)
-
-                ToolbarLabeledPopover(
-                    title: L10n.language(language),
-                    systemImage: "globe"
-                ) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(AppLanguage.allCases) { option in
-                            Button {
-                                languageRawValue = option.rawValue
-                            } label: {
-                                HStack {
-                                    Text(option.menuLabel)
-                                    Spacer(minLength: 16)
-                                    if option == language {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .frame(minWidth: 140, alignment: .leading)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                    )
                 }
             }
         }
