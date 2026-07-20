@@ -36,6 +36,9 @@ struct SettingsPopover: View {
 
     @Environment(\.appLanguage) private var language
 
+    @State private var isIntensityExpanded = false
+    @State private var isLanguageExpanded = false
+
     private var scanIntensity: ScanIntensity {
         ScanIntensity(rawValue: scanIntensityRawValue) ?? .defaultIntensity
     }
@@ -75,22 +78,29 @@ struct SettingsPopover: View {
     // MARK: - Scan Intensity
 
     private var intensitySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(L10n.scanIntensity(language)).font(.headline)
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(ScanIntensity.allCases) { option in
-                    Button {
-                        scanIntensityRawValue = option.rawValue
-                        model.setScanIntensity(option)
-                    } label: {
-                        selectionRow(
-                            label: L10n.scanIntensityName(option, language),
-                            isSelected: option == scanIntensity
-                        )
+        VStack(alignment: .leading, spacing: 0) {
+            disclosureHeader(
+                title: L10n.scanIntensity(language),
+                value: L10n.scanIntensityName(scanIntensity, language),
+                isExpanded: $isIntensityExpanded
+            )
+            if isIntensityExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(ScanIntensity.allCases) { option in
+                        Button {
+                            scanIntensityRawValue = option.rawValue
+                            model.setScanIntensity(option)
+                        } label: {
+                            selectionRow(
+                                label: L10n.scanIntensityName(option, language),
+                                isSelected: option == scanIntensity
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isBusy)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(model.isBusy)
                 }
+                .transition(.opacity)
             }
         }
     }
@@ -98,22 +108,56 @@ struct SettingsPopover: View {
     // MARK: - Language
 
     private var languageSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(L10n.language(language)).font(.headline)
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(AppLanguage.allCases) { option in
-                    Button {
-                        languageRawValue = option.rawValue
-                    } label: {
-                        selectionRow(
-                            label: option.menuLabel,
-                            isSelected: option == language
-                        )
+        VStack(alignment: .leading, spacing: 0) {
+            disclosureHeader(
+                title: L10n.language(language),
+                value: language.menuLabel,
+                isExpanded: $isLanguageExpanded
+            )
+            if isLanguageExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(AppLanguage.allCases) { option in
+                        Button {
+                            languageRawValue = option.rawValue
+                        } label: {
+                            selectionRow(
+                                label: option.menuLabel,
+                                isSelected: option == language
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+                .transition(.opacity)
             }
         }
+    }
+
+    // MARK: - Disclosure Header
+
+    @ViewBuilder
+    private func disclosureHeader(title: String, value: String, isExpanded: Binding<Bool>) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isExpanded.wrappedValue.toggle()
+            }
+        } label: {
+            HStack {
+                Image(systemName: isExpanded.wrappedValue ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                Text(value)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Clear Cache
@@ -126,7 +170,7 @@ struct SettingsPopover: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.bordered)
-        .controlSize(.small)
+        .controlSize(.large)
         .disabled(model.isBusy)
     }
 
