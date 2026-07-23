@@ -278,22 +278,25 @@ struct VideoPlaybackPreview: View {
     @State private var isPlaying = false
 
     var body: some View {
-        ZStack(alignment: isPlaying ? .bottomTrailing : .center) {
+        ZStack {
             videoPlaceholder
             NativeVideoPlayerView(url: media.url, volume: $playerVolume, isPlaying: $isPlaying)
                 .opacity(isPlaying ? 1 : 0)
 
-            Button {
-                isPlaying.toggle()
-            } label: {
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: isPlaying ? 16 : 28, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: isPlaying ? 34 : 58, height: isPlaying ? 34 : 58)
-                    .background(.regularMaterial, in: Circle())
+            // Centered Play button to start playback. Once playing, the native
+            // AVPlayerView controls take over - there is no overlay pause button.
+            if !isPlaying {
+                Button {
+                    isPlaying.toggle()
+                } label: {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 58, height: 58)
+                        .background(.regularMaterial, in: Circle())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-            .padding(isPlaying ? 12 : 0)
         }
         .background(Color.black.opacity(0.88))
         .onChange(of: media.id) { _, _ in
