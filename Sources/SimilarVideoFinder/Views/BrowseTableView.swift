@@ -104,6 +104,7 @@ struct BrowseTableView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .focusable()
+            .focusEffectDisabled()
             .onKeyPress(.upArrow) {
                 browseModel.moveSelection(by: -1, extend: NSEvent.modifierFlags.contains(.shift))
                 return .handled
