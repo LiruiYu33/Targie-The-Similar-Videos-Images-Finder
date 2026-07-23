@@ -103,6 +103,15 @@ struct BrowseTableView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .focusable()
+            .onKeyPress(.upArrow) {
+                browseModel.moveSelection(by: -1, extend: NSEvent.modifierFlags.contains(.shift))
+                return .handled
+            }
+            .onKeyPress(.downArrow) {
+                browseModel.moveSelection(by: 1, extend: NSEvent.modifierFlags.contains(.shift))
+                return .handled
+            }
         }
     }
 
