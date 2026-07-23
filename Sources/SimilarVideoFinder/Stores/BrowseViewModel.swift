@@ -356,6 +356,46 @@ final class BrowseViewModel: ObservableObject {
         primarySelectionID = id
     }
 
+    /// Keyboard arrow navigation. Moves the primary selection by `offset`
+    /// rows (−1 up, +1 down), clamped to the displayed list bounds. When
+    /// `extend` is true (Shift held), the selection grows/shrinks from the
+    /// anchor toward the new row, mirroring a click-Shift-click range.
+    /// If nothing is selected, the first item becomes the selection.
+    func moveSelection(by offset: Int, extend: Bool) {
+        guard !displayedItems.isEmpty else { return }
+        if extend {
+            moveExtendSelection(by: offset)
+        } else {
+            moveReplaceSelection(by: offset)
+        }
+    }
+
+    private func moveReplaceSelection(by offset: Int) {
+        let currentIndex = primarySelectedID.flatMap { id in
+            displayedItems.firstIndex(where: { $0.id == id })
+        } ?? -1
+        // When nothing is selected, pressing Down selects the first row;
+        // pressing Up from nothing selects the last row - matches NSTableView.
+        let baseIndex = currentIndex < 0 ? (offset > 0 ? -1 : displayedItems.count) : currentIndex
+        let targetIndex = min(max(baseIndex + offset, 0), displayedItems.count - 1)
+        guard targetIndex != currentIndex else { return }
+        selectMedia(displayedItems[targetIndex].id)
+    }
+
+    private func moveExtendSelection(by offset: Int) {
+        let anchorID = selectionAnchorID ?? primarySelectionID ?? displayedItems.first?.id
+        guard let anchorID,
+              let anchorIndex = displayedItems.firstIndex(where: { $0.id == anchorID })
+        else { return }
+        let current = primarySelectedID.flatMap { id in
+            displayedItems.firstIndex(where: { $0.id == id })
+        } ?? anchorIndex
+        let targetIndex = min(max(current + offset, 0), displayedItems.count - 1)
+        guard targetIndex != current else { return }
+        let targetID = displayedItems[targetIndex].id
+        extendSelection(to: targetID)
+    }
+
     func selectAllDisplayed() {
         selectedMediaIDs = Set(displayedItems.map(\.id))
         if primarySelectionID == nil || !selectedMediaIDs.contains(primarySelectionID!) {

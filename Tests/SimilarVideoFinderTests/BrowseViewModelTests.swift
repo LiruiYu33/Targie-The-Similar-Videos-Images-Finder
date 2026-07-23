@@ -359,4 +359,92 @@ final class BrowseViewModelTests: XCTestCase {
         }
         XCTFail("Timed out waiting for browse state")
     }
+
+    // MARK: - Keyboard Arrow Navigation
+
+    private func makeThreeItemModel() -> (ScanViewModel, BrowseViewModel, [MediaItem]) {
+        let scanModel = ScanViewModel(hashCache: nil)
+        let items = [
+            makeItem(name: "a.mp4", width: 1920, height: 1080),
+            makeItem(name: "b.mp4", width: 1920, height: 1080),
+            makeItem(name: "c.mp4", width: 1920, height: 1080)
+        ]
+        scanModel.replaceResultsForTesting(items: items, relations: [])
+        let browse = BrowseViewModel(scanModel: scanModel)
+        return (scanModel, browse, browse.displayedItems)
+    }
+
+    func testArrowDownMovesSelectionOneRow() {
+        let (_, browse, items) = makeThreeItemModel()
+        browse.selectMedia(items[0].id)
+
+        browse.moveSelection(by: 1, extend: false)
+
+        XCTAssertEqual(browse.primarySelectedID, items[1].id)
+        XCTAssertEqual(browse.selectedMediaIDs, [items[1].id])
+    }
+
+    func testArrowUpMovesSelectionOneRow() {
+        let (_, browse, items) = makeThreeItemModel()
+        browse.selectMedia(items[2].id)
+
+        browse.moveSelection(by: -1, extend: false)
+
+        XCTAssertEqual(browse.primarySelectedID, items[1].id)
+        XCTAssertEqual(browse.selectedMediaIDs, [items[1].id])
+    }
+
+    func testArrowDownFromNoSelectionSelectsFirstRow() {
+        let (_, browse, items) = makeThreeItemModel()
+
+        browse.moveSelection(by: 1, extend: false)
+
+        XCTAssertEqual(browse.primarySelectedID, items[0].id)
+    }
+
+    func testArrowUpFromNoSelectionSelectsLastRow() {
+        let (_, browse, items) = makeThreeItemModel()
+
+        browse.moveSelection(by: -1, extend: false)
+
+        XCTAssertEqual(browse.primarySelectedID, items[2].id)
+    }
+
+    func testArrowClampsAtBounds() {
+        let (_, browse, items) = makeThreeItemModel()
+        browse.selectMedia(items[0].id)
+
+        browse.moveSelection(by: -1, extend: false)
+        XCTAssertEqual(browse.primarySelectedID, items[0].id)
+
+        browse.selectMedia(items[2].id)
+        browse.moveSelection(by: 1, extend: false)
+        XCTAssertEqual(browse.primarySelectedID, items[2].id)
+    }
+
+    func testShiftArrowDownExtendsSelection() {
+        let (_, browse, items) = makeThreeItemModel()
+        browse.selectMedia(items[0].id)
+
+        browse.moveSelection(by: 1, extend: true)
+        XCTAssertEqual(browse.selectedMediaIDs, Set([items[0].id, items[1].id]))
+        XCTAssertEqual(browse.primarySelectedID, items[1].id)
+
+        browse.moveSelection(by: 1, extend: true)
+        XCTAssertEqual(browse.selectedMediaIDs, Set([items[0].id, items[1].id, items[2].id]))
+        XCTAssertEqual(browse.primarySelectedID, items[2].id)
+    }
+
+    func testShiftArrowUpShrinksExtensionBackTowardAnchor() {
+        let (_, browse, items) = makeThreeItemModel()
+        browse.selectMedia(items[0].id)
+        browse.moveSelection(by: 2, extend: true) // selected 0,1,2; primary at 2
+
+        browse.moveSelection(by: -1, extend: true)
+
+        // Anchor stayed at row 0; extending up from row 2 back to row 1
+        // narrows the range to 0...1.
+        XCTAssertEqual(browse.selectedMediaIDs, Set([items[0].id, items[1].id]))
+        XCTAssertEqual(browse.primarySelectedID, items[1].id)
+    }
 }
