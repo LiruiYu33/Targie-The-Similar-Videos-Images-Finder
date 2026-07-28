@@ -36,6 +36,12 @@ struct BrowseView: View {
     /// Track whether the user is currently dragging the divider.
     @State private var isDraggingDivider = false
 
+    /// Whether the resize cursor is currently pushed onto the NSCursor stack.
+    /// Kept explicit so every push is paired with exactly one pop, even when
+    /// the cursor leaves the divider mid-drag (which fires onHover(false)
+    /// while we still want the resize cursor) or the drag ends off the divider.
+    @State private var isResizeCursorPushed = false
+
     var body: some View {
         GeometryReader { geo in
             let totalWidth = geo.size.width
@@ -65,14 +71,11 @@ struct BrowseView: View {
                             .onEnded { _ in
                                 isDraggingDivider = false
                                 dragStartFraction = nil
+                                updateResizeCursor(hovering: false)
                             }
                     )
                     .onHover { inside in
-                        if inside || isDraggingDivider {
-                            NSCursor.resizeLeftRight.push()
-                        } else {
-                            NSCursor.pop()
-                        }
+                        updateResizeCursor(hovering: inside)
                     }
 
                 // ── Right: preview panel ──
@@ -155,5 +158,21 @@ struct BrowseView: View {
             .frame(width: 1)
             .frame(width: 8)       // wider hit target for dragging
             .contentShape(Rectangle())
+    }
+
+    /// Pushes the resize cursor when the divider is hovered or being dragged,
+    /// and pops it otherwise. State is tracked explicitly so pushes and pops
+    /// stay balanced - the previous logic pushed on every hover event while
+    /// the OR condition held, leaking a cursor onto the stack each time the
+    /// cursor slipped off the 8px divider mid-drag.
+    private func updateResizeCursor(hovering: Bool) {
+        let shouldShow = hovering || isDraggingDivider
+        if shouldShow && !isResizeCursorPushed {
+            NSCursor.resizeLeftRight.push()
+            isResizeCursorPushed = true
+        } else if !shouldShow && isResizeCursorPushed {
+            NSCursor.pop()
+            isResizeCursorPushed = false
+        }
     }
 }
