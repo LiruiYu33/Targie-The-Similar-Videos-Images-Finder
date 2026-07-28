@@ -238,6 +238,33 @@ final class HashCacheTests: XCTestCase {
         XCTAssertNil(result)
     }
 
+    /// Regression: a metadata move-hit used to migrate the media_metadata row
+    /// to the new path, which erased the SHA-256 proof at the old path that
+    /// every other move detection relies on. After a metadata move-hit, the
+    /// hash_cache move detection must still succeed for the same moved file.
+    func testHashCacheMoveDetectionSurvivesMetadataMoveHit() async throws {
+        let date = Date(timeIntervalSince1970: 5_150)
+        let data = Data("SAME".utf8)
+        let current = try writeFixture(named: "after-metadata-move.mp4", data: data, modifiedAt: date)
+        let oldPath = tempDir.appendingPathComponent("before-metadata-move.mp4").path
+        let oldSHA = try await FileHasher.sha256(of: current)
+        let size = Int64(data.count)
+
+        await cache.upsert(makeRecord(path: oldPath, size: size, date: date))
+        await cache.upsertMetadata(filePath: oldPath, fileSize: size, modifiedAt: date, mediaKind: .video, duration: 12, width: 1920, height: 1080)
+        await cache.upsertSHA256(filePath: oldPath, fileSize: size, modifiedAt: date, sha256: oldSHA)
+
+        // Scanner calls lookupMetadata first (move-hit reuses metadata)...
+        let metadata = await cache.lookupMetadata(filePath: current.path, fileSize: size, modifiedAt: date, mediaKind: .video)
+        XCTAssertEqual(metadata?.duration, 12)
+
+        // ...then the pipeline calls lookup for the perceptual hash. This must
+        // still move-hit; before the fix the migrated row broke the SHA proof.
+        let hash = await cache.lookup(filePath: current.path, fileSize: size, modifiedAt: date, mediaKind: .video, algorithmVersion: PerceptualHasher.algorithmVersion)
+        XCTAssertNotNil(hash)
+        XCTAssertEqual(hash?.filePath, current.path)
+    }
+
     func testMoveSHA256LookupDoesNotReturnHashForDifferentContent() async throws {
         let date = Date(timeIntervalSince1970: 5_200)
         let current = try writeFixture(named: "current-sha.mp4", data: Data("BBBB".utf8), modifiedAt: date)
