@@ -245,6 +245,11 @@ private struct ColumnResizeHandle: View {
     @Binding var width: CGFloat
     let dividerWidth: CGFloat
     @State private var startWidth: CGFloat?
+    /// Whether the resize cursor is currently pushed, tracked explicitly so
+    /// push/pop stay balanced even when the handle is removed from the
+    /// hierarchy while hovered (SwiftUI does not guarantee a final
+    /// onHover(false) on removal).
+    @State private var isCursorPushed = false
 
     private let minWidth: CGFloat = 50
     private let maxWidth: CGFloat = 400
@@ -259,7 +264,19 @@ private struct ColumnResizeHandle: View {
         .frame(width: dividerWidth)
         .contentShape(Rectangle())
         .onHover { inside in
-            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            if inside && !isCursorPushed {
+                NSCursor.resizeLeftRight.push()
+                isCursorPushed = true
+            } else if !inside && isCursorPushed {
+                NSCursor.pop()
+                isCursorPushed = false
+            }
+        }
+        .onDisappear {
+            if isCursorPushed {
+                NSCursor.pop()
+                isCursorPushed = false
+            }
         }
         .gesture(
             DragGesture(minimumDistance: 1)
