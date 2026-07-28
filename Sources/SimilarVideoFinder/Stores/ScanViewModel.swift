@@ -1441,7 +1441,18 @@ final class ScanViewModel: ObservableObject {
         guard !deletedIDs.isEmpty else { return relations }
         let remainingIDs = Set(items.map(\.id))
         var updatedRelations = relations
-        var existingPairs = Set(relations.map { MediaPairIdentity($0.firstID, $0.secondID) })
+        // Track the best existing score per pair so we only add a synthetic
+        // continuity relation when the pair is missing OR only has a
+        // below-threshold relation. A pair that already has a relation at or
+        // above the threshold is already connected and needs no help; but a
+        // pair whose only relation is below threshold would be filtered out by
+        // the grouper, so it must be upgraded with a synthetic high score to
+        // keep the surviving group connected.
+        var existingPairScores: [MediaPairIdentity: Double] = [:]
+        for relation in relations {
+            let key = MediaPairIdentity(relation.firstID, relation.secondID)
+            existingPairScores[key] = max(existingPairScores[key] ?? -1, relation.score)
+        }
 
         for group in previousGroups where group.items.contains(where: { deletedIDs.contains($0.id) }) {
             let survivors = group.items.filter { remainingIDs.contains($0.id) }
@@ -1457,14 +1468,15 @@ final class ScanViewModel: ObservableObject {
 
             for (first, second) in zip(survivors, survivors.dropFirst()) {
                 let pair = MediaPairIdentity(first.id, second.id)
-                if existingPairs.insert(pair).inserted {
-                    updatedRelations.append(SimilarityRelation(
-                        firstID: first.id,
-                        secondID: second.id,
-                        score: score,
-                        evidence: evidence
-                    ))
-                }
+                let existing = existingPairScores[pair] ?? -1
+                guard existing < threshold else { continue }
+                updatedRelations.append(SimilarityRelation(
+                    firstID: first.id,
+                    secondID: second.id,
+                    score: score,
+                    evidence: evidence
+                ))
+                existingPairScores[pair] = score
             }
         }
         return updatedRelations

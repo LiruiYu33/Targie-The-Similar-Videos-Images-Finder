@@ -625,6 +625,30 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(Set(model.groups[0].items.map(\.id)), [a.id, c.id])
     }
 
+    /// Regression: when the only relation between two survivors is below the
+    /// display threshold, deleting the bridge item used to dissolve the group
+    /// because the synthetic continuity relation was skipped (the pair already
+    /// existed in allRelations with a sub-threshold score). The synthetic
+    /// relation must upgrade the pair so the survivors stay grouped.
+    func testDeletingBridgeItemKeepsGroupWhenSurvivorsOnlyHaveBelowThresholdRelation() async {
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: b.id, secondID: c.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: a.id, secondID: c.id, score: 0.65, evidence: [.similarPerceptualHash])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [a, b, c], relations: relations)
+        XCTAssertEqual(model.groups.count, 1)
+
+        await model.confirmDeletion(of: b, mode: .permanent)
+
+        XCTAssertEqual(model.groups.count, 1)
+        XCTAssertEqual(Set(model.groups[0].items.map(\.id)), [a.id, c.id])
+    }
+
     func testDeletingOneOfThreeFilesKeepsSelectedGroupIdentityWhenPairRemains() async {
         let a = SimilarityScoringTests.video(name: "a.mov")
         let b = SimilarityScoringTests.video(name: "b.mov")
