@@ -347,8 +347,7 @@ final class ScanViewModel: ObservableObject {
 
             let revision = self.resultsRevision
             let threshold = self.threshold
-            let items = self.allItems
-            let relations = self.allRelations
+            let (items, relations) = self.visibleItemsAndRelations()
             let previousGroups = self.groups
             let groupBuilder = self.groupBuilder
             guard let rebuilt = try? await groupBuilder(items, relations, threshold) else { return }
@@ -1164,11 +1163,22 @@ final class ScanViewModel: ObservableObject {
 
     private func rebuildGroups(preserving previousGroups: [SimilarityGroup]? = nil) {
         let beforeRebuild = previousGroups ?? groups
+        let (items, relations) = visibleItemsAndRelations()
+        let rebuilt = SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
+        applyRebuiltGroups(rebuilt, preserving: beforeRebuild)
+    }
+
+    /// The items and relations visible for grouping under the current
+    /// `excludeSubfolders` setting. When the toggle is on, only items living
+    /// directly inside a selected folder (not in subfolders) and the relations
+    /// between them are used; otherwise everything is. Both `rebuildGroups`
+    /// and the async `scheduleThresholdRebuild` must apply this filter so the
+    /// threshold slider never repopulates the sidebar with excluded files.
+    private func visibleItemsAndRelations() -> (items: [MediaItem], relations: [SimilarityRelation]) {
         let items = excludeSubfolders ? allItems.filter(isTopLevelItem) : allItems
         let visibleIDs = Set(items.map(\.id))
         let relations = allRelations.filter { visibleIDs.contains($0.firstID) && visibleIDs.contains($0.secondID) }
-        let rebuilt = SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
-        applyRebuiltGroups(rebuilt, preserving: beforeRebuild)
+        return (items, relations)
     }
 
     /// Returns true when `item.url`'s parent is one of the selected folders
@@ -1193,7 +1203,17 @@ final class ScanViewModel: ObservableObject {
         groups = stableIDsAlreadyApplied
             ? rebuilt
             : Self.groupsByPreservingStableIDs(rebuilt, previousGroups: beforeRebuild)
-        checkedMediaIDs.formIntersection(Set(allItems.map(\.id)))
+        // Checking is normally scoped to the currently selected group
+        // (selectGroup clears it), so when a group is selected prune against
+        // that group's items - not allItems - so an item that left the group
+        // but remains in allItems doesn't stay checked and sneak into a batch
+        // deletion it isn't visible for. When no group is selected (e.g. the
+        // toolbar batch-delete flow), fall back to pruning against allItems.
+        if let selectedGroupID, let group = groups.first(where: { $0.id == selectedGroupID }) {
+            checkedMediaIDs.formIntersection(Set(group.items.map(\.id)))
+        } else {
+            checkedMediaIDs.formIntersection(Set(allItems.map(\.id)))
+        }
         if let selectedGroupID, groups.contains(where: { $0.id == selectedGroupID }) {
             // Group still exists; recompute the cached sort so the fallback below
             // picks the sorted-first item (not the grouper's raw first item).
