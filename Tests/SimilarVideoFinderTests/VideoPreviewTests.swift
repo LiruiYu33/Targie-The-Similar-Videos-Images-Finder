@@ -36,7 +36,7 @@ final class VideoPreviewTests: XCTestCase {
         XCTAssertTrue(playerView.showsFullScreenToggleButton)
     }
 
-    func testCoordinatorKeepsPlayerAttachedWhenReleasingCurrentPlayer() {
+    func testCoordinatorDetachesPlayerWhenReleasingCurrentPlayer() {
         let playerView = AVPlayerView()
         let player = AVPlayer()
         playerView.player = player
@@ -44,11 +44,13 @@ final class VideoPreviewTests: XCTestCase {
 
         coordinator.releaseCurrentPlayer(from: playerView)
 
-        XCTAssertTrue(playerView.player === player)
+        // On dismantle the player is detached from the view so its item/asset
+        // are released promptly instead of lingering until view deallocation.
+        XCTAssertNil(playerView.player)
         XCTAssertNil(player.currentItem)
     }
 
-    func testCoordinatorKeepsPlayerAttachedBeforeTeardownRuns() {
+    func testCoordinatorRunsTeardownBeforeDetachingPlayer() {
         let playerView = AVPlayerView()
         let player = AVPlayer()
         playerView.player = player
@@ -62,9 +64,11 @@ final class VideoPreviewTests: XCTestCase {
         coordinator.currentURL = URL(fileURLWithPath: "/tmp/current.mov")
         coordinator.releaseCurrentPlayer(from: playerView)
 
+        // The teardown closure still sees the attached player (it runs before
+        // the view detaches it), but the view ends up with no player.
         XCTAssertTrue(playerInViewDuringTeardown === player)
         XCTAssertTrue(tornDownPlayer === player)
-        XCTAssertTrue(playerView.player === player)
+        XCTAssertNil(playerView.player)
         XCTAssertNil(coordinator.currentURL)
     }
 
@@ -199,7 +203,7 @@ final class VideoPreviewTests: XCTestCase {
         XCTAssertTrue(NativeVideoPlayerVolumeSync.shouldPersist(playerVolume: 0.7, storedVolume: 0.5))
     }
 
-    func testDefaultTeardownDoesNotForceReplaceCurrentItem() async throws {
+    func testDefaultTeardownClearsCurrentItem() async throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("PreviewTeardown-\(UUID().uuidString).mov")
         try Data([0]).write(to: url)
@@ -210,7 +214,9 @@ final class VideoPreviewTests: XCTestCase {
         NativeVideoPlayerTeardown.release(player)
         try await Task.sleep(nanoseconds: 120_000_000)
 
-        XCTAssertTrue(player.currentItem === item)
+        // Teardown pauses and drops the item so the AVURLAsset is released
+        // promptly rather than lingering until the player view is deallocated.
+        XCTAssertNil(player.currentItem)
         XCTAssertEqual(player.rate, 0)
     }
 

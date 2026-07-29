@@ -831,10 +831,14 @@ actor HashCache: HashCaching {
             mediaKind: mediaKind
         ) else { return nil }
 
-        try? await dbQueue.write { db in
-            try db.execute(sql: "UPDATE media_metadata SET filePath = ? WHERE filePath = ?",
-                           arguments: [filePath, candidate.filePath])
-        }
+        // Read-only: do NOT migrate the media_metadata row to the new path.
+        // That row also holds the SHA-256 used as the content-identity proof by
+        // every other move detection (hash_cache / image_features /
+        // frame_features / detectMove -> verifiedMovedRecord ->
+        // cachedSHA256ForMove(oldPath)). Migrating it here would erase the
+        // proof at the old path and defeat all other move detections, forcing
+        // perceptual hashes, Vision features, and thumbnails to recompute. The
+        // new-path row is written naturally by the next upsertMetadata.
         return (candidate.duration, candidate.width, candidate.height)
     }
 
@@ -896,10 +900,7 @@ actor HashCache: HashCaching {
             mediaKind: mediaKind
         ), let sha = candidate.sha256, !sha.isEmpty else { return nil }
 
-        try? await dbQueue.write { db in
-            try db.execute(sql: "UPDATE media_metadata SET filePath = ? WHERE filePath = ?",
-                           arguments: [filePath, candidate.filePath])
-        }
+        // Read-only: see moveMetadataLookup for why the row is not migrated.
         return sha
     }
 

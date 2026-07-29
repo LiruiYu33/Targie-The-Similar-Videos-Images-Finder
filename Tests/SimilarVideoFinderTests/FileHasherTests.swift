@@ -59,4 +59,56 @@ final class FileHasherTests: XCTestCase {
             // Expected.
         }
     }
+
+    /// A cache-aware hash is stored when the file is unchanged across the read.
+    func testCacheAwareHashIsStoredForStableFile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("stable.bin")
+        try Data("stable-content".utf8).write(to: url)
+        let cache = InMemoryHashCache()
+
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        _ = try await FileHasher.sha256(of: url, mediaKind: .video, cache: cache)
+
+        let cached = await cache.lookupSHA256(
+            filePath: url.path,
+            fileSize: Int64(values.fileSize ?? 0),
+            modifiedAt: values.contentModificationDate,
+            mediaKind: .video
+        )
+        XCTAssertNotNil(cached)
+    }
+
+    /// If the file's modification date changes during hashing, the result must
+    /// not be cached under the stale pre-read attributes - otherwise a later
+    /// lookup at those attributes would return a hash for different content.
+    /// The decision is unit-tested deterministically (the slow real-file
+    /// version races the kernel scheduler and is flaky).
+    func testChangedAttributesDuringHashingAreNotCached() {
+        let originalMtime = Date(timeIntervalSince1970: 1_000)
+        let bumpedMtime = originalMtime.addingTimeInterval(60)
+
+        // Unchanged attributes -> safe to cache.
+        XCTAssertTrue(FileHasher.shouldCacheSHA256(
+            originalSize: 100, originalModifiedAt: originalMtime,
+            currentSize: 100, currentModifiedAt: originalMtime
+        ))
+        // Size changed -> must not cache.
+        XCTAssertFalse(FileHasher.shouldCacheSHA256(
+            originalSize: 100, originalModifiedAt: originalMtime,
+            currentSize: 101, currentModifiedAt: originalMtime
+        ))
+        // Modification date changed -> must not cache.
+        XCTAssertFalse(FileHasher.shouldCacheSHA256(
+            originalSize: 100, originalModifiedAt: originalMtime,
+            currentSize: 100, currentModifiedAt: bumpedMtime
+        ))
+        // Dates that differ by sub-millisecond noise are treated as unchanged.
+        XCTAssertTrue(FileHasher.shouldCacheSHA256(
+            originalSize: 100, originalModifiedAt: originalMtime,
+            currentSize: 100, currentModifiedAt: originalMtime.addingTimeInterval(0.0004)
+        ))
+    }
 }

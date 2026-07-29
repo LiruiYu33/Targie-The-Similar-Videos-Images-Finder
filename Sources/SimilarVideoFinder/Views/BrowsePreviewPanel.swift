@@ -445,6 +445,10 @@ struct NativeVideoPlayerView: NSViewRepresentable {
             isPlaybackRequested = false
             if let player = playerView.player {
                 playerTeardown(player)
+                // Release the player from the view so it (and its item/asset)
+                // is torn down on dismantle instead of lingering until the
+                // view itself is deallocated.
+                playerView.player = nil
             }
         }
 
@@ -499,6 +503,11 @@ enum NativeVideoPlayerTeardown {
     @MainActor
     static func release(_ player: AVPlayer) {
         player.pause()
+        // Drop the current item so the AVPlayerItem and its AVURLAsset
+        // (including any in-flight asset loading) are released promptly,
+        // rather than lingering until the AVPlayerView is deallocated. This
+        // also tears down an active Picture-in-Picture session.
+        player.replaceCurrentItem(with: nil)
     }
 }
 

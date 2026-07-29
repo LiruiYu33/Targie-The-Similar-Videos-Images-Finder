@@ -63,7 +63,33 @@ enum FileHasher {
             return cached
         }
         let hash = try await sha256(of: url)
-        await cache.upsertSHA256(filePath: url.path, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: mediaKind, sha256: hash)
+        // Re-read attributes after hashing. If the file changed during the
+        // (potentially multi-second) read, the computed hash corresponds to
+        // unknown intermediate content and must not be cached under the stale
+        // pre-read attributes - that would poison the cache with a wrong hash.
+        let postValues = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        if Self.shouldCacheSHA256(
+            originalSize: fileSize,
+            originalModifiedAt: modifiedAt,
+            currentSize: Int64(postValues.fileSize ?? 0),
+            currentModifiedAt: postValues.contentModificationDate
+        ) {
+            await cache.upsertSHA256(filePath: url.path, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: mediaKind, sha256: hash)
+        }
         return hash
+    }
+
+    /// Whether a freshly-computed hash is safe to cache: only when the file's
+    /// size and modification date are unchanged between the pre-read (which
+    /// keyed the cache lookup) and the post-hash read. Extracted so the
+    /// decision is unit-testable without racing real filesystem I/O.
+    static func shouldCacheSHA256(
+        originalSize: Int64,
+        originalModifiedAt: Date?,
+        currentSize: Int64,
+        currentModifiedAt: Date?
+    ) -> Bool {
+        originalSize == currentSize
+            && FileCacheIdentity.modifiedAtMatches(originalModifiedAt, currentModifiedAt)
     }
 }

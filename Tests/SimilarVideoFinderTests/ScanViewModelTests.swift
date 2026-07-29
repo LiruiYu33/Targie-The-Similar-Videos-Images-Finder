@@ -625,6 +625,30 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(Set(model.groups[0].items.map(\.id)), [a.id, c.id])
     }
 
+    /// Regression: when the only relation between two survivors is below the
+    /// display threshold, deleting the bridge item used to dissolve the group
+    /// because the synthetic continuity relation was skipped (the pair already
+    /// existed in allRelations with a sub-threshold score). The synthetic
+    /// relation must upgrade the pair so the survivors stay grouped.
+    func testDeletingBridgeItemKeepsGroupWhenSurvivorsOnlyHaveBelowThresholdRelation() async {
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: b.id, secondID: c.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: a.id, secondID: c.id, score: 0.65, evidence: [.similarPerceptualHash])
+        ]
+        let model = ScanViewModel(deletionService: FakeDeletionService())
+        model.replaceResultsForTesting(items: [a, b, c], relations: relations)
+        XCTAssertEqual(model.groups.count, 1)
+
+        await model.confirmDeletion(of: b, mode: .permanent)
+
+        XCTAssertEqual(model.groups.count, 1)
+        XCTAssertEqual(Set(model.groups[0].items.map(\.id)), [a.id, c.id])
+    }
+
     func testDeletingOneOfThreeFilesKeepsSelectedGroupIdentityWhenPairRemains() async {
         let a = SimilarityScoringTests.video(name: "a.mov")
         let b = SimilarityScoringTests.video(name: "b.mov")
@@ -1418,6 +1442,84 @@ final class ScanViewModelTests: XCTestCase {
 
         let pruneCallCount = await cache.pruneCallCount()
         XCTAssertEqual(pruneCallCount, 0)
+    }
+
+    // MARK: - Threshold rebuild respects excludeSubfolders (#4)
+
+    /// When excludeSubfolders is on, dragging the threshold slider must rebuild
+    /// groups from top-level items only - the async threshold rebuild used to
+    /// bypass the filter and repopulate the sidebar with subfolder items.
+    func testThresholdRebuildRespectsExcludeSubfolders() async throws {
+        let folder = URL(fileURLWithPath: "/tmp/TargieTest-\(UUID().uuidString)")
+        let topLevelA = SimilarityScoringTests.video(name: "top-a.mov")
+        let topLevelB = SimilarityScoringTests.video(name: "top-b.mov")
+        // Same content hash evidence so they form a group at threshold.
+        let topLevelAInFolder = MediaItem(
+            kind: .video, url: folder.appendingPathComponent("top-a.mov"),
+            fileSize: 1_000_000, duration: 60, width: 1920, height: 1080,
+            modifiedAt: nil, thumbnailData: nil
+        )
+        let topLevelBInFolder = MediaItem(
+            kind: .video, url: folder.appendingPathComponent("top-b.mov"),
+            fileSize: 1_000_000, duration: 60, width: 1920, height: 1080,
+            modifiedAt: nil, thumbnailData: nil
+        )
+        let subItem = MediaItem(
+            kind: .video, url: folder.appendingPathComponent("sub/sub-a.mov"),
+            fileSize: 1_000_000, duration: 60, width: 1920, height: 1080,
+            modifiedAt: nil, thumbnailData: nil
+        )
+        let relations = [
+            SimilarityRelation(firstID: topLevelAInFolder.id, secondID: topLevelBInFolder.id, score: 0.95, evidence: [.identicalContentHash]),
+            SimilarityRelation(firstID: topLevelAInFolder.id, secondID: subItem.id, score: 0.95, evidence: [.identicalContentHash])
+        ]
+        let model = ScanViewModel(hashCache: nil)
+        model.selectedFolders = [folder]
+        model.excludeSubfolders = true
+        model.replaceResultsForTesting(items: [topLevelAInFolder, topLevelBInFolder, subItem], relations: relations)
+        // Sync rebuild already filters; groups contain only top-level items.
+        XCTAssertEqual(Set(model.groups.flatMap { $0.items.map(\.id) }), [topLevelAInFolder.id, topLevelBInFolder.id])
+
+        // Nudge the threshold to schedule an async rebuild.
+        model.threshold = 0.90
+        try await waitUntil { model.groups.count == 1 }
+
+        // After the async rebuild, subfolder items must still be excluded.
+        let groupItemIDs = Set(model.groups.flatMap { $0.items.map(\.id) })
+        XCTAssertEqual(groupItemIDs, [topLevelAInFolder.id, topLevelBInFolder.id])
+        XCTAssertFalse(groupItemIDs.contains(subItem.id))
+    }
+
+    // MARK: - Checked media IDs scoped to selected group (#5)
+
+    /// An item that leaves the selected group during a threshold rebuild but
+    /// remains in allItems must not stay checked - otherwise it would sneak
+    /// into a batch deletion it is no longer visible for.
+    func testCheckedMediaIDsPrunedToSelectedGroupAfterRebuild() async throws {
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let d = SimilarityScoringTests.video(name: "d.mov")
+        // Group {a,b,c,d} at threshold 0.88.
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: b.id, secondID: c.id, score: 0.90, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: c.id, secondID: d.id, score: 0.89, evidence: [.similarFrames])
+        ]
+        let model = ScanViewModel(hashCache: nil)
+        model.replaceResultsForTesting(items: [a, b, c, d], relations: relations)
+        XCTAssertEqual(model.groups.count, 1)
+        model.selectGroup(model.groups[0].id)
+        // Check c; c is connected to the group only via the 0.90 and 0.89 edges.
+        model.toggleGroupItemSelection(c.id)
+        XCTAssertTrue(model.checkedMediaIDs.contains(c.id))
+
+        // Raise the threshold so c's edges (0.90, 0.89) drop below it, but c
+        // stays in allItems. c should leave the group and be unchecked.
+        model.threshold = 0.92
+        try await waitUntil { !(model.groups.first?.items.contains(where: { $0.id == c.id }) ?? true) }
+
+        XCTAssertFalse(model.checkedMediaIDs.contains(c.id), "Item that left the selected group must not stay checked")
     }
 
     private func waitUntil(
