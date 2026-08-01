@@ -33,6 +33,7 @@ struct ContentView: View {
     @StateObject private var browseSession = BrowseSessionCoordinator()
     @State private var isClearCacheConfirmPresented = false
     @State private var isSettingsPresented = false
+    @State private var showDedupSheet = false
     @State private var cacheMB = (thumbnailMB: "0", hashMB: "0")
 
     private var language: AppLanguage {
@@ -168,6 +169,13 @@ struct ContentView: View {
                 .disabled(model.selectedFolders.isEmpty || model.isBusy)
 
                 ToolbarLabeledButton(
+                    title: L10n.cleanDuplicates(language),
+                    systemImage: "trash.slash",
+                    action: { showDedupSheet = true }
+                )
+                .disabled(model.groups.isEmpty || model.isScanning || model.isDeleting)
+
+                ToolbarLabeledButton(
                     title: L10n.settings(language),
                     systemImage: "gearshape",
                     action: { isSettingsPresented.toggle() }
@@ -193,6 +201,15 @@ struct ContentView: View {
         }
         .sheet(item: $model.deletePrompt) { _ in
             DeleteConfirmationView(model: model)
+        }
+        .sheet(isPresented: $showDedupSheet) {
+            BatchDedupConfirmationView(
+                computedPlan: { [model] strategy in model.computeDedupPlan(strategy: strategy) },
+                onExecute: { [model] strategy in
+                    await model.executeBatchDedup(strategy: strategy)
+                },
+                onDismiss: { showDedupSheet = false }
+            )
         }
         .onDeleteCommand {
             if let video = model.selectedMedia { model.requestDeletion(of: video) }

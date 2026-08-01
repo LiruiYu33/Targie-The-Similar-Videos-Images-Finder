@@ -175,6 +175,15 @@ struct SimilarityGroup: Identifiable, Hashable, Sendable {
 
     var reclaimableBytes: Int64 { reclaimableBytesValue }
 
+    /// Returns the item to keep and the items to delete when deduplicating this
+    /// group with the given strategy. Groups with 0 or 1 item return (nil, []).
+    func dedupTargets(strategy: RetentionStrategy) -> (keeper: MediaItem?, toDelete: [MediaItem]) {
+        guard items.count > 1, let keeper = strategy.pickKeeper(from: items) else {
+            return (keeper: items.first, toDelete: [])
+        }
+        return (keeper: keeper, toDelete: items.filter { $0.id != keeper.id })
+    }
+
     func score(for itemID: UUID) -> Double {
         scoresByItemID[itemID] ?? maximumScore
     }

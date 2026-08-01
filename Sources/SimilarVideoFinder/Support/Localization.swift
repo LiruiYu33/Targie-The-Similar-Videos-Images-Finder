@@ -170,6 +170,21 @@ enum L10n {
     static func fileMissing(_ l: AppLanguage) -> String { text(l, "The file no longer exists", "文件已不存在", "檔案已不存在", "El archivo ya no existe", "Le fichier n’existe plus", "ファイルはもう存在しません", "파일이 더 이상 존재하지 않습니다") }
     static func deletionFailed(_ message: String, _ l: AppLanguage) -> String { text(l, "Deletion failed: \(message)", "删除失败：\(message)", "刪除失敗：\(message)", "Error al eliminar: \(message)", "Échec de la suppression : \(message)", "削除に失敗しました：\(message)", "삭제 실패: \(message)") }
 
+    // Batch Deduplication
+    static func cleanDuplicates(_ l: AppLanguage) -> String { text(l, "Clean Duplicates", "清理重复文件", "清理重複檔案", "Eliminar duplicados", "Nettoyer les doublons", "重複ファイルを削除", "중복 파일 정리") }
+    static func deleteDuplicatesInGroup(_ l: AppLanguage) -> String { text(l, "Delete Duplicates in This Group", "删除本组重复项", "刪除本組重複項目", "Eliminar duplicados del grupo", "Supprimer les doublons du groupe", "このグループの重複を削除", "이 그룹의 중복 삭제") }
+    static func keepStrategy(_ l: AppLanguage) -> String { text(l, "Keep strategy:", "保留策略：", "保留策略：", "Estrategia de conservación:", "Stratégie de conservation :", "保持方法：", "보관 전략:") }
+    static func keepSmallest(_ l: AppLanguage) -> String { text(l, "Keep smallest file", "保留体积最小的文件", "保留體積最小的檔案", "Conservar el archivo más pequeño", "Garder le plus petit fichier", "最小のファイルを保持", "가장 작은 파일 유지") }
+    static func keepLargest(_ l: AppLanguage) -> String { text(l, "Keep largest file", "保留体积最大的文件", "保留體積最大的檔案", "Conservar el archivo más grande", "Garder le plus grand fichier", "最大のファイルを保持", "가장 큰 파일 유지") }
+    static func keepHighestResolution(_ l: AppLanguage) -> String { text(l, "Keep highest resolution", "保留分辨率最高的文件", "保留解析度最高的檔案", "Conservar la mayor resolución", "Garder la plus haute résolution", "最高解像度のファイルを保持", "가장 높은 해상도 유지") }
+    static func keepOldest(_ l: AppLanguage) -> String { text(l, "Keep oldest file", "保留最早的文件", "保留最早的檔案", "Conservar el archivo más antiguo", "Garder le plus ancien fichier", "最も古いファイルを保持", "가장 오래된 파일 유지") }
+    static func keepNewest(_ l: AppLanguage) -> String { text(l, "Keep newest file", "保留最新的文件", "保留最新的檔案", "Conservar el archivo más reciente", "Garder le plus récent fichier", "最も新しいファイルを保持", "가장 새로운 파일 유지") }
+    static func groupsAffected(_ l: AppLanguage) -> String { text(l, "Groups affected", "涉及组数", "涉及群組數", "Grupos afectados", "Groupes concernés", "対象グループ", "영향받는 그룹") }
+    static func filesToDelete(_ l: AppLanguage) -> String { text(l, "Files to delete", "待删除文件数", "待刪除檔案數", "Archivos a eliminar", "Fichiers à supprimer", "削除対象ファイル", "삭제할 파일") }
+    static func spaceToReclaim(_ l: AppLanguage) -> String { text(l, "Space to reclaim", "可回收空间", "可回收空間", "Espacio a recuperar", "Espace à récupérer", "解放される容量", "회수 가능 공간") }
+    static func noDuplicatesToRemove(_ l: AppLanguage) -> String { text(l, "No duplicate files to remove with the current strategy.", "当前策略下没有可删除的重复文件。", "目前策略下沒有可刪除的重複檔案。", "No hay archivos duplicados que eliminar con la estrategia actual.", "Aucun fichier en double à supprimer avec la stratégie actuelle.", "現在の方法では削除する重複ファイルはありません。", "현재 전략으로 삭제할 중복 파일이 없습니다.") }
+    static func trashCount(_ count: Int, _ l: AppLanguage) -> String { text(l, "Move \(count) to Trash", "将 \(count) 个文件移到废纸篓", "將 \(count) 個檔案移到垃圾桶", "Mover \(count) a la papelera", "Déplacer \(count) vers la corbeille", "\(count)件をゴミ箱に移動", "\(count)개를 휴지통으로 이동") }
+
     // Player
     static func pictureInPicture(_ l: AppLanguage) -> String { text(l, "Picture in Picture", "画中画", "子母畫面", "Imagen en imagen", "Image dans l’image", "ピクチャ・イン・ピクチャ", "화면 속 화면") }
 

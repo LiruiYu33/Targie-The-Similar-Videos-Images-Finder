@@ -253,6 +253,14 @@ struct SidebarView: View {
                 }
             }
             .tag(group.id)
+            .contextMenu {
+                Button(L10n.deleteDuplicatesInGroup(language)) {
+                    Task {
+                        await model.executeGroupDedup(groupID: group.id, strategy: .keepSmallest)
+                    }
+                }
+                .disabled(model.isDeleting)
+            }
         }
     }
 }

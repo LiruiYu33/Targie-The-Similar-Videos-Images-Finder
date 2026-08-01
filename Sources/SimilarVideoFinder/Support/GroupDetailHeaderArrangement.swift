@@ -22,10 +22,11 @@
 enum GroupDetailHeaderAction: Hashable {
     case highestSimilarity
     case sortMenu
+    case deleteDuplicates
 }
 
 enum GroupDetailHeaderArrangement {
     static func actions(hasCheckedSelection _: Bool) -> [GroupDetailHeaderAction] {
-        [.highestSimilarity, .sortMenu]
+        [.deleteDuplicates, .highestSimilarity, .sortMenu]
     }
 }

@@ -1086,6 +1086,128 @@ final class ScanViewModel: ObservableObject {
     func revealMedia(_ media: MediaItem) { deletionService.reveal(media.url) }
     func openMedia(_ media: MediaItem) { deletionService.open(media.url) }
 
+    // MARK: - Batch Deduplication
+
+    /// Computes a deduplication plan across all current groups without executing
+    /// any deletion. The caller can display the plan to the user.
+    func computeDedupPlan(strategy: RetentionStrategy) -> DedupPlan {
+        var targets: [(groupID: UUID, keeper: MediaItem, toDelete: [MediaItem])] = []
+        var totalFiles = 0
+        var totalBytes: Int64 = 0
+        for group in groups {
+            let result = group.dedupTargets(strategy: strategy)
+            guard !result.toDelete.isEmpty else { continue }
+            targets.append((group.id, result.keeper!, result.toDelete))
+            totalFiles += result.toDelete.count
+            totalBytes += result.toDelete.reduce(0) { $0 + $1.fileSize }
+        }
+        return DedupPlan(
+            strategy: strategy,
+            groupsAffected: targets.count,
+            totalFilesToDelete: totalFiles,
+            totalBytesToReclaim: totalBytes,
+            targets: targets
+        )
+    }
+
+    /// Batch-deduplicates all groups using the given retention strategy.
+    /// For each group, deletes every item except the one selected by the strategy.
+    /// Files are moved to Trash (recoverable).
+    func executeBatchDedup(strategy: RetentionStrategy) async {
+        let plan = computeDedupPlan(strategy: strategy)
+        guard !plan.targets.isEmpty, !isDeleting else { return }
+
+        isDeleting = true
+        defer { isDeleting = false }
+
+        invalidatePendingGroupBuild()
+        let groupsBeforeDeletion = groups
+        var deletedIDs = Set<UUID>()
+        var failures: [String] = []
+
+        for target in plan.targets {
+            for media in target.toDelete {
+                do {
+                    try await deletionService.delete(url: media.url, mode: .trash)
+                    deletedIDs.insert(media.id)
+                } catch {
+                    failures.append("\(media.filename): \(error.localizedDescription)")
+                }
+            }
+        }
+
+        if !deletedIDs.isEmpty {
+            let threshold = threshold
+            let rebuilt = await Self.rebuildAfterDeletionOffMain(
+                items: allItems,
+                relations: allRelations,
+                previousGroups: groupsBeforeDeletion,
+                deletedIDs: deletedIDs,
+                threshold: threshold
+            )
+            replaceItems(with: rebuilt.items)
+            allRelations = rebuilt.relations
+            checkedMediaIDs.subtract(deletedIDs)
+            applyRebuiltGroups(
+                rebuilt.groups,
+                preserving: groupsBeforeDeletion,
+                stableIDsAlreadyApplied: true
+            )
+            if excludeSubfolders {
+                rebuildGroups(preserving: groupsBeforeDeletion)
+            }
+        }
+        if !failures.isEmpty { presentedError = .message(failures.joined(separator: "\n")) }
+    }
+
+    /// Deduplicates a single group by its ID, deleting every item except the
+    /// keeper selected by the strategy. Intended for per-group context menus.
+    func executeGroupDedup(groupID: UUID, strategy: RetentionStrategy) async {
+        guard let group = groups.first(where: { $0.id == groupID }), !isDeleting else { return }
+        let result = group.dedupTargets(strategy: strategy)
+        guard !result.toDelete.isEmpty else { return }
+
+        isDeleting = true
+        defer { isDeleting = false }
+
+        invalidatePendingGroupBuild()
+        let groupsBeforeDeletion = groups
+        var deletedIDs = Set<UUID>()
+        var failures: [String] = []
+
+        for media in result.toDelete {
+            do {
+                try await deletionService.delete(url: media.url, mode: .trash)
+                deletedIDs.insert(media.id)
+            } catch {
+                failures.append("\(media.filename): \(error.localizedDescription)")
+            }
+        }
+
+        if !deletedIDs.isEmpty {
+            let threshold = threshold
+            let rebuilt = await Self.rebuildAfterDeletionOffMain(
+                items: allItems,
+                relations: allRelations,
+                previousGroups: groupsBeforeDeletion,
+                deletedIDs: deletedIDs,
+                threshold: threshold
+            )
+            replaceItems(with: rebuilt.items)
+            allRelations = rebuilt.relations
+            checkedMediaIDs.subtract(deletedIDs)
+            applyRebuiltGroups(
+                rebuilt.groups,
+                preserving: groupsBeforeDeletion,
+                stableIDsAlreadyApplied: true
+            )
+            if excludeSubfolders {
+                rebuildGroups(preserving: groupsBeforeDeletion)
+            }
+        }
+        if !failures.isEmpty { presentedError = .message(failures.joined(separator: "\n")) }
+    }
+
     /// Returns the current cache footprint in human-readable size strings so the
     /// UI can show users what they'd be deleting.
     func cacheStats() async -> (thumbnailMB: String, hashMB: String) {

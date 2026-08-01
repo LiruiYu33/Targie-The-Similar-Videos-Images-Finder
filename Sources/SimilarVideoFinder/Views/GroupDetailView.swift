@@ -98,6 +98,15 @@ struct GroupDetailView: View {
                 .font(.callout.weight(.medium))
         case .sortMenu:
             GroupSortMenu(model: model, language: language)
+        case .deleteDuplicates:
+            Button {
+                Task { await model.executeGroupDedup(groupID: group.id, strategy: .keepSmallest) }
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.plain)
+            .help(L10n.deleteDuplicatesInGroup(language))
+            .disabled(model.isDeleting || group.items.count <= 1)
         }
     }
 }
