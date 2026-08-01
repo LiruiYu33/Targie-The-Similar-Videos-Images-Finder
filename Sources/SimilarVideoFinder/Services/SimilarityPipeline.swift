@@ -381,18 +381,20 @@ struct SimilarityPipeline: SimilarityProcessing {
                 ))
             }
 
-            await progress(ScanProgress(
-                stage: .comparing,
-                fraction: Double(qIndex + 1) / Double(totalQueries) * 0.2,
-                currentFile: video.filename,
-                discoveredCount: videos.count,
-                cacheHits: 0,
-                cacheTotal: 0,
-                cacheKind: nil,
-                comparisonPhase: .findingCandidates,
-                comparisonCompleted: qIndex + 1,
-                comparisonTotal: totalQueries
-            ))
+            if ScanProgressReporting.shouldReport(completed: qIndex + 1, total: totalQueries) {
+                await progress(ScanProgress(
+                    stage: .comparing,
+                    fraction: Double(qIndex + 1) / Double(totalQueries) * 0.2,
+                    currentFile: video.filename,
+                    discoveredCount: videos.count,
+                    cacheHits: 0,
+                    cacheTotal: 0,
+                    cacheKind: nil,
+                    comparisonPhase: .findingCandidates,
+                    comparisonCompleted: qIndex + 1,
+                    comparisonTotal: totalQueries
+                ))
+            }
         }
 
         let relationKeys = pendingComparisonCandidates.compactMap(\.relationKey)

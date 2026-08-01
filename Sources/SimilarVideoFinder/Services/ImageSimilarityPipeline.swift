@@ -157,18 +157,20 @@ struct ImageSimilarityPipeline: Sendable {
                 ))
             }
 
-            await progress(ScanProgress(
-                stage: .comparing,
-                fraction: images.isEmpty ? 1 : Double(index + 1) / Double(images.count) * 0.2,
-                currentFile: image.filename,
-                discoveredCount: images.count,
-                cacheHits: pairCacheHits,
-                cacheTotal: pairCacheTotal,
-                cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil,
-                comparisonPhase: .findingCandidates,
-                comparisonCompleted: index + 1,
-                comparisonTotal: max(images.count, 1)
-            ))
+            if ScanProgressReporting.shouldReport(completed: index + 1, total: images.count) {
+                await progress(ScanProgress(
+                    stage: .comparing,
+                    fraction: images.isEmpty ? 1 : Double(index + 1) / Double(images.count) * 0.2,
+                    currentFile: image.filename,
+                    discoveredCount: images.count,
+                    cacheHits: pairCacheHits,
+                    cacheTotal: pairCacheTotal,
+                    cacheKind: cache != nil && pairCacheTotal > 0 ? .relation : nil,
+                    comparisonPhase: .findingCandidates,
+                    comparisonCompleted: index + 1,
+                    comparisonTotal: max(images.count, 1)
+                ))
+            }
         }
 
         let relationKeys = pendingComparisonCandidates.compactMap(\.relationKey)
