@@ -5,6 +5,7 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import XCTest
+@preconcurrency import Vision
 @testable import SimilarVideoFinder
 
 final class ImageSimilarityPipelineTests: XCTestCase {
@@ -181,7 +182,7 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         )
     }
 
-    func testV1ImagePairRelationDoesNotSkipV2FeatureExtraction() async throws {
+    func testPreviousImagePairRelationDoesNotSkipCurrentFeatureExtraction() async throws {
         let first = image(path: "/missing/v1-pair-first.jpg", size: 1_000)
         let second = image(path: "/missing/v1-pair-second.jpg", size: 1_100)
         let cache = InMemoryHashCache()
@@ -190,7 +191,7 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         await cache.upsertPairRelation(
             first: first,
             second: second,
-            algorithmVersion: "image-pair-relation-v1",
+            algorithmVersion: "image-pair-relation-v3",
             relation: SimilarityRelation(
                 firstID: first.id,
                 secondID: second.id,
@@ -283,7 +284,7 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         let cache = ImagePairRelationBatchRecordingCache()
         await cache.seed(image: first, hash: [UInt8](repeating: 0, count: 8))
         await cache.seed(image: second, hash: [1] + [UInt8](repeating: 0, count: 7))
-        let pipeline = ImageSimilarityPipeline(cache: cache, featureExtractor: CountingThrowingImageFeatureExtractor())
+        let pipeline = ImageSimilarityPipeline(cache: cache, featureExtractor: ControllableImageFeatureExtractor(score: 0.90))
 
         _ = try await pipeline.process(images: [first, second], threshold: 0.60) { _ in }
 
@@ -291,6 +292,68 @@ final class ImageSimilarityPipelineTests: XCTestCase {
         XCTAssertEqual(counts.batchCalls, 1)
         XCTAssertEqual(counts.singleCalls, 0)
         XCTAssertEqual(counts.lastBatchSize, 1)
+    }
+
+    func testFailedRequiredImageVerificationRetriesUntilItSucceeds() async throws {
+        let failures: [Double?] = [nil, .nan, .infinity]
+        for failure in failures {
+            let first = image(path: "/missing/retry-image-first.jpg", size: 1_000)
+            let second = image(path: "/missing/retry-image-second.jpg", size: 1_100)
+            let cache = InMemoryHashCache()
+            let firstHash = [UInt8](repeating: 0, count: 8)
+            let secondHash = [UInt8(1)] + [UInt8](repeating: 0, count: 7)
+            await seed(cache, image: first, hash: firstHash)
+            await seed(cache, image: second, hash: secondHash)
+            let extractor = ControllableImageFeatureExtractor(score: failure)
+            let pipeline = ImageSimilarityPipeline(cache: cache, featureExtractor: extractor)
+            let version = ImageSimilarityPipeline.pairRelationAlgorithmVersion
+            let signature = ImageSimilarityPipeline.scanRelationSignature(
+                items: [first, second], hashes: [first.id: Data(firstHash), second.id: Data(secondHash)], algorithmVersion: version
+            )
+
+            var previousExtractions = 0
+            for _ in 0..<2 {
+                let result = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+                XCTAssertEqual(result.relations.count, 1)
+                XCTAssertTrue(result.relations.allSatisfy { $0.score <= 0.85 })
+                XCTAssertTrue(SimilarityGrouper.groups(items: result.images, relations: result.relations, threshold: 0.88).isEmpty)
+                XCTAssertGreaterThan(extractor.extractionCount, previousExtractions, "Required verification must be retried after failure")
+                previousExtractions = extractor.extractionCount
+                let pair = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: version)
+                let index = await (cache as any HashCaching).lookupScanRelationIndex(signature: signature, mediaKind: .image, algorithmVersion: version)
+                XCTAssertNil(pair)
+                XCTAssertNil(index)
+            }
+
+            extractor.setScore(0.99)
+            let recovered = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+            XCTAssertEqual(SimilarityGrouper.groups(items: recovered.images, relations: recovered.relations, threshold: 0.88).count, 1)
+            let cachedPair = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: version)
+            let cachedIndex = await (cache as any HashCaching).lookupScanRelationIndex(signature: signature, mediaKind: .image, algorithmVersion: version)
+            XCTAssertNotNil(cachedPair)
+            XCTAssertNotNil(cachedIndex)
+            let successfulExtractions = extractor.extractionCount
+            _ = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+            XCTAssertEqual(extractor.extractionCount, successfulExtractions)
+        }
+    }
+
+    func testSuccessfullyVerifiedWeakImagePairRemainsCached() async throws {
+        let first = image(path: "/missing/weak-image-first.jpg", size: 1_000)
+        let second = image(path: "/missing/weak-image-second.jpg", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, image: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, image: second, hash: [1] + [UInt8](repeating: 0, count: 7))
+        let extractor = ControllableImageFeatureExtractor(score: 0.1)
+        let pipeline = ImageSimilarityPipeline(cache: cache, featureExtractor: extractor)
+        let firstResult = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+        XCTAssertTrue(firstResult.relations.isEmpty)
+        let pair = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: ImageSimilarityPipeline.pairRelationAlgorithmVersion)
+        XCTAssertNotNil(pair)
+        XCTAssertNil(pair?.score)
+        let extractions = extractor.extractionCount
+        _ = try await pipeline.process(images: [first, second], threshold: 0.88) { _ in }
+        XCTAssertEqual(extractor.extractionCount, extractions)
     }
 
     func testCachedPairRelationsAreLookedUpOnceForWholeComparisonPhase() async throws {
@@ -502,6 +565,32 @@ private final class CountingThrowingImageFeatureExtractor: @unchecked Sendable, 
 
     func similarity(between first: ImageFeature, and second: ImageFeature) throws -> Double {
         throw CocoaError(.featureUnsupported)
+    }
+}
+
+private final class ControllableImageFeatureExtractor: @unchecked Sendable, ImageFeatureExtracting {
+    private let lock = NSLock()
+    private var score: Double?
+    private var count = 0
+
+    init(score: Double?) { self.score = score }
+
+    var extractionCount: Int { lock.withLock { count } }
+
+    func setScore(_ score: Double?) { lock.withLock { self.score = score } }
+
+    func feature(for url: URL) async throws -> ImageFeature {
+        let available = lock.withLock {
+            count += 1
+            return score != nil
+        }
+        guard available else { throw CocoaError(.fileReadCorruptFile) }
+        return ImageFeature(observation: VNFeaturePrintObservation())
+    }
+
+    func similarity(between first: ImageFeature, and second: ImageFeature) throws -> Double {
+        guard let score = lock.withLock({ score }) else { throw CocoaError(.fileReadCorruptFile) }
+        return score
     }
 }
 

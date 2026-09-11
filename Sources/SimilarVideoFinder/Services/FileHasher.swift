@@ -22,27 +22,18 @@
 import CryptoKit
 import Foundation
 
+enum FileHashError: Error, Equatable {
+    case fileChangedDuringRead
+}
+
 enum FileHasher {
+    private struct LiveIdentity: Equatable, Sendable {
+        let fileSize: Int64
+        let modifiedAt: Date?
+    }
+
     static func sha256(of url: URL) async throws -> String {
-        try Task.checkCancellation()
-        let worker = Task.detached(priority: .utility) {
-            try Task.checkCancellation()
-            let handle = try FileHandle(forReadingFrom: url)
-            defer { try? handle.close() }
-            var hasher = SHA256()
-            while true {
-                try Task.checkCancellation()
-                guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { break }
-                hasher.update(data: data)
-            }
-            try Task.checkCancellation()
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        }
-        return try await withTaskCancellationHandler {
-            try await worker.value
-        } onCancel: {
-            worker.cancel()
-        }
+        try await sha256(of: url, mediaKind: .video, cache: nil)
     }
 
     /// Cache-aware SHA-256 — checks the persistent cache before reading the file,
@@ -52,37 +43,99 @@ enum FileHasher {
         try await sha256(of: url, mediaKind: .video, cache: cache)
     }
 
-    static func sha256(of url: URL, mediaKind: MediaKind, cache: (any HashCaching)?) async throws -> String {
-        guard let cache else { return try await sha256(of: url) }
-
-        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        let fileSize = Int64(values.fileSize ?? 0)
-        let modifiedAt = values.contentModificationDate
-
-        if let cached = await cache.lookupSHA256(filePath: url.path, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: mediaKind) {
-            return cached
+    static func sha256(
+        of url: URL,
+        mediaKind: MediaKind,
+        cache: (any HashCaching)?,
+        afterReadingChunk: (@Sendable () async throws -> Void)? = nil
+    ) async throws -> String {
+        try Task.checkCancellation()
+        let identity = try liveIdentity(of: url)
+        if let cache {
+            let cached = await cache.lookupSHA256(
+                filePath: url.path,
+                fileSize: identity.fileSize,
+                modifiedAt: identity.modifiedAt,
+                mediaKind: mediaKind
+            )
+            // Even a cache hit crosses an await: the source may have changed
+            // while the lookup was pending.
+            try Task.checkCancellation()
+            try validate(identity, at: url)
+            if let cached { return cached }
         }
-        let hash = try await sha256(of: url)
-        // Re-read attributes after hashing. If the file changed during the
-        // (potentially multi-second) read, the computed hash corresponds to
-        // unknown intermediate content and must not be cached under the stale
-        // pre-read attributes - that would poison the cache with a wrong hash.
-        let postValues = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        if Self.shouldCacheSHA256(
-            originalSize: fileSize,
-            originalModifiedAt: modifiedAt,
-            currentSize: Int64(postValues.fileSize ?? 0),
-            currentModifiedAt: postValues.contentModificationDate
-        ) {
-            await cache.upsertSHA256(filePath: url.path, fileSize: fileSize, modifiedAt: modifiedAt, mediaKind: mediaKind, sha256: hash)
+
+        let hash = try await readStableSHA256(of: url, identity: identity, afterReadingChunk: afterReadingChunk)
+        try Task.checkCancellation()
+        try validate(identity, at: url)
+        if let cache {
+            await cache.upsertSHA256(
+                filePath: url.path,
+                fileSize: identity.fileSize,
+                modifiedAt: identity.modifiedAt,
+                mediaKind: mediaKind,
+                sha256: hash
+            )
+            try Task.checkCancellation()
+            try validate(identity, at: url)
         }
         return hash
     }
 
-    /// Whether a freshly-computed hash is safe to cache: only when the file's
-    /// size and modification date are unchanged between the pre-read (which
-    /// keyed the cache lookup) and the post-hash read. Extracted so the
-    /// decision is unit-testable without racing real filesystem I/O.
+    private static func readStableSHA256(
+        of url: URL,
+        identity: LiveIdentity,
+        afterReadingChunk: (@Sendable () async throws -> Void)?
+    ) async throws -> String {
+        let worker = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            try validate(identity, at: url)
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var hasher = SHA256()
+            while true {
+                try Task.checkCancellation()
+                guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { break }
+                hasher.update(data: data)
+                // A controlled boundary also lets tests exercise real file
+                // changes and cancellation without depending on read timings.
+                try await afterReadingChunk?()
+            }
+            try Task.checkCancellation()
+            try validate(identity, at: url)
+            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        }
+        return try await withTaskCancellationHandler {
+            let hash = try await worker.value
+            try Task.checkCancellation()
+            return hash
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
+    private static func liveIdentity(of url: URL) throws -> LiveIdentity {
+        // FileManager reads the filesystem directly. Reusing resourceValues
+        // on the scanner's URL would return its cached size and modification date.
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let size = attributes[.size] as? NSNumber else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        return LiveIdentity(fileSize: size.int64Value, modifiedAt: attributes[.modificationDate] as? Date)
+    }
+
+    private static func validate(_ expected: LiveIdentity, at url: URL) throws {
+        let current = try liveIdentity(of: url)
+        guard shouldCacheSHA256(
+            originalSize: expected.fileSize,
+            originalModifiedAt: expected.modifiedAt,
+            currentSize: current.fileSize,
+            currentModifiedAt: current.modifiedAt
+        ) else { throw FileHashError.fileChangedDuringRead }
+    }
+
+    /// Live stability checks retain full timestamp precision. Millisecond
+    /// normalisation is only appropriate when comparing persisted cache dates.
     static func shouldCacheSHA256(
         originalSize: Int64,
         originalModifiedAt: Date?,
@@ -90,6 +143,6 @@ enum FileHasher {
         currentModifiedAt: Date?
     ) -> Bool {
         originalSize == currentSize
-            && FileCacheIdentity.modifiedAtMatches(originalModifiedAt, currentModifiedAt)
+            && originalModifiedAt == currentModifiedAt
     }
 }

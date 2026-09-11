@@ -15,7 +15,7 @@ protocol ImageFeatureExtracting: Sendable {
 }
 
 struct ImageFeatureExtractor: ImageFeatureExtracting {
-    static let algorithmVersion = "vision-image-feature-v2"
+    static let algorithmVersion = "vision-image-feature-v3-revision2"
     static let maximumInputPixelSize = 1_536
 
     func feature(for url: URL) async throws -> ImageFeature {
@@ -25,6 +25,7 @@ struct ImageFeatureExtractor: ImageFeatureExtracting {
         }
         try Task.checkCancellation()
         let request = VNGenerateImageFeaturePrintRequest()
+        request.revision = VisionFeatureSimilarity.requestRevision
         try await CancellableVisionRequest.perform(
             request,
             handler: VNImageRequestHandler(cgImage: image)
@@ -49,9 +50,7 @@ struct ImageFeatureExtractor: ImageFeatureExtracting {
     }
 
     func similarity(between first: ImageFeature, and second: ImageFeature) throws -> Double {
-        var distance: Float = 0
-        try first.observation.computeDistance(&distance, to: second.observation)
-        return max(0, min(1, 1 - Double(distance) / 40))
+        try VisionFeatureSimilarity.similarity(between: first.observation, and: second.observation)
     }
 }
 

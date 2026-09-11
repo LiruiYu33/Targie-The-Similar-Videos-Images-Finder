@@ -105,10 +105,197 @@ final class FileHasherTests: XCTestCase {
             originalSize: 100, originalModifiedAt: originalMtime,
             currentSize: 100, currentModifiedAt: bumpedMtime
         ))
-        // Dates that differ by sub-millisecond noise are treated as unchanged.
-        XCTAssertTrue(FileHasher.shouldCacheSHA256(
+        // Real changes during the read must retain sub-millisecond precision.
+        XCTAssertFalse(FileHasher.shouldCacheSHA256(
             originalSize: 100, originalModifiedAt: originalMtime,
             currentSize: 100, currentModifiedAt: originalMtime.addingTimeInterval(0.0004)
         ))
+    }
+
+    func testCacheAwareHashRefreshesAttributesOfReusedURL() async throws {
+        let url = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let cache = InMemoryHashCache()
+        _ = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let original = try await FileHasher.sha256(of: url, cache: cache)
+
+        try Data("BBBB".utf8).write(to: url)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 6_000)],
+            ofItemAtPath: url.path
+        )
+
+        let refreshed = try await FileHasher.sha256(of: url, cache: cache)
+        let direct = try await FileHasher.sha256(of: url)
+        XCTAssertNotEqual(refreshed, original)
+        XCTAssertEqual(refreshed, direct)
+    }
+
+    func testCacheLookupChangeRejectsBothHitsAndMisses() async throws {
+        for cachedDigest in [String?.some("old-digest"), nil] {
+            let url = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: url) }
+            let cache = HashLookupProbe(result: cachedDigest) {
+                try? Data("BBBB".utf8).write(to: url)
+                try? FileManager.default.setAttributes(
+                    [.modificationDate: Date(timeIntervalSince1970: 6_000)],
+                    ofItemAtPath: url.path
+                )
+            }
+
+            do {
+                _ = try await FileHasher.sha256(of: url, cache: cache)
+                XCTFail("A changed source must not return a cached or newly computed digest")
+            } catch {
+                XCTAssertEqual(error as? FileHashError, .fileChangedDuringRead)
+            }
+            let writes = await cache.writeCount
+            XCTAssertEqual(writes, 0)
+        }
+    }
+
+    func testChangeDuringChunkReadRejectsDigestWithAndWithoutCache() async throws {
+        let cache = HashLookupProbe(result: nil)
+        for selectedCache: (any HashCaching)? in [nil, cache] {
+            let url = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: url) }
+            do {
+                _ = try await FileHasher.sha256(of: url, mediaKind: .video, cache: selectedCache) {
+                    try Data("BBBB".utf8).write(to: url)
+                    // The change is smaller than persisted cache precision,
+                    // but must still invalidate this live read.
+                    try FileManager.default.setAttributes(
+                        [.modificationDate: Date(timeIntervalSince1970: 5_000.0004)],
+                        ofItemAtPath: url.path
+                    )
+                }
+                XCTFail("A digest for content changed during reading must be rejected")
+            } catch {
+                XCTAssertEqual(error as? FileHashError, .fileChangedDuringRead)
+            }
+        }
+        let writes = await cache.writeCount
+        XCTAssertEqual(writes, 0)
+    }
+
+    func testAlreadyCancelledCacheAwareHashDoesNotQueryCache() async throws {
+        let url = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let cache = HashLookupProbe(result: "cached")
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await FileHasher.sha256(of: url, cache: cache)
+        }
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled task must not return a cached digest")
+        } catch is CancellationError {
+            // Expected.
+        }
+        let lookups = await cache.lookupCount
+        XCTAssertEqual(lookups, 0)
+    }
+
+    func testCancellationWhileCacheLookupIsPendingDoesNotReturnDigest() async throws {
+        let url = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let entered = expectation(description: "cache lookup entered")
+        let gate = HashReadGate()
+        let cache = HashLookupProbe(result: "cached") {
+            entered.fulfill()
+            await gate.wait()
+        }
+        let task = Task { try await FileHasher.sha256(of: url, cache: cache) }
+        await fulfillment(of: [entered], timeout: 5)
+        task.cancel()
+        await gate.release()
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled cache hit must not return a digest")
+        } catch is CancellationError {
+            // Expected.
+        }
+        let writes = await cache.writeCount
+        XCTAssertEqual(writes, 0)
+    }
+
+    func testCancellationDuringChunkReadDoesNotCacheDigest() async throws {
+        let url = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let entered = expectation(description: "first chunk read")
+        let gate = HashReadGate()
+        let cache = HashLookupProbe(result: nil)
+        let task = Task {
+            try await FileHasher.sha256(of: url, mediaKind: .video, cache: cache) {
+                entered.fulfill()
+                await gate.wait()
+            }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        task.cancel()
+        await gate.release()
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled read must not return a digest")
+        } catch is CancellationError {
+            // Expected.
+        }
+        let writes = await cache.writeCount
+        XCTAssertEqual(writes, 0)
+    }
+
+    private func makeFixture() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("FileHasher-\(UUID().uuidString).bin")
+        try Data("AAAA".utf8).write(to: url)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 5_000)],
+            ofItemAtPath: url.path
+        )
+        return url
+    }
+}
+
+private actor HashLookupProbe: HashCaching {
+    private let result: String?
+    private let onLookup: @Sendable () async -> Void
+    private(set) var lookupCount = 0
+    private(set) var writeCount = 0
+
+    init(result: String?, onLookup: @escaping @Sendable () async -> Void = {}) {
+        self.result = result
+        self.onLookup = onLookup
+    }
+
+    func lookup(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, algorithmVersion: String) -> CacheRecord? { nil }
+    func upsert(_ record: CacheRecord) {}
+    func pruneStale(validPaths: Set<String>) {}
+    func count() -> Int { 0 }
+    func clearAll() {}
+    func sizeInBytes() -> Int64 { 0 }
+
+    func lookupSHA256(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind) async -> String? {
+        lookupCount += 1
+        await onLookup()
+        return result
+    }
+
+    func upsertSHA256(filePath: String, fileSize: Int64, modifiedAt: Date?, mediaKind: MediaKind, sha256: String) {
+        writeCount += 1
+    }
+}
+
+private actor HashReadGate {
+    private var isReleased = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
     }
 }

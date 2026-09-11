@@ -5,6 +5,22 @@ import XCTest
 @testable import SimilarVideoFinder
 
 final class PrehashCandidateFinderTests: XCTestCase {
+    func testFindsRenamedResizedVideoDespiteEightfoldEncodedSizeDifference() {
+        let first = makeVideo(name: "camera-original.mp4", fileSize: 8_000_000, width: 1920, height: 1080)
+        let second = makeVideo(name: "received-message.mov", fileSize: 1_000_000, width: 960, height: 540)
+        let firstPrehash = QuickPrehasher.prehash(for: first)
+        let secondPrehash = QuickPrehasher.prehash(for: second)
+        XCTAssertNotEqual(FilenameNormalizer.normalize(first.filename), FilenameNormalizer.normalize(second.filename))
+        XCTAssertGreaterThan(abs(firstPrehash.sizeBucket - secondPrehash.sizeBucket), 3)
+        let result = PrehashCandidateFinder.find(
+            videos: [first, second],
+            prehashes: [first.id: firstPrehash, second.id: secondPrehash]
+        )
+
+        XCTAssertEqual(result.pairs.count, 1, "An encoding-size change must not prevent visual comparison of renamed copies.")
+        XCTAssertEqual(result.compatibilityChecks, 1)
+    }
+
     func testFindsCompatibleVideosAcrossNeighboringBuckets() {
         let first = makeVideo(name: "first.mp4")
         let second = makeVideo(name: "second.mp4")
@@ -43,14 +59,14 @@ final class PrehashCandidateFinderTests: XCTestCase {
         XCTAssertLessThan(result.compatibilityChecks, 5_000)
     }
 
-    private func makeVideo(name: String) -> MediaItem {
+    private func makeVideo(name: String, fileSize: Int64 = 1, width: Int = 1, height: Int = 1) -> MediaItem {
         MediaItem(
             kind: .video,
             url: URL(fileURLWithPath: "/tmp/\(name)"),
-            fileSize: 1,
+            fileSize: fileSize,
             duration: 1,
-            width: 1,
-            height: 1,
+            width: width,
+            height: height,
             modifiedAt: nil,
             thumbnailData: nil
         )

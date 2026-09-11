@@ -20,6 +20,7 @@
 // and credit the original author (Lirui Yu).
 
 import XCTest
+import GRDB
 @testable import SimilarVideoFinder
 
 final class HashCacheTests: XCTestCase {
@@ -194,7 +195,7 @@ final class HashCacheTests: XCTestCase {
         XCTAssertEqual(result?.filePath, current.path)
     }
 
-    func testMoveLookupRequiresExactModificationDateEvenWhenSHA256Matches() async throws {
+    func testMoveLookupRejectsChangedModificationDateEvenWhenSHA256Matches() async throws {
         let cachedDate = Date(timeIntervalSince1970: 5_075)
         let currentDate = cachedDate.addingTimeInterval(0.5)
         let data = Data("SAME".utf8)
@@ -216,6 +217,56 @@ final class HashCacheTests: XCTestCase {
         let result = await cache.lookup(filePath: current.path, fileSize: Int64(data.count), modifiedAt: currentDate)
 
         XCTAssertNil(result)
+    }
+
+    func testRealRenameWithSubmillisecondModificationDateReusesPersistedCaches() async throws {
+        let original = try writeFixture(
+            named: "fractional-old.mp4",
+            data: Data("SAME".utf8),
+            modifiedAt: Date(timeIntervalSince1970: 5_090.1234)
+        )
+        let date = try XCTUnwrap(original.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        XCTAssertNotEqual(date, FileCacheIdentity.normalizedModifiedAt(date))
+        let digest = try await FileHasher.sha256(of: original)
+        let frameData = Data("frame-features".utf8)
+        await cache.upsert(makeRecord(path: original.path, size: 4, date: date))
+        await cache.upsertMetadata(filePath: original.path, fileSize: 4, modifiedAt: date, mediaKind: .video, duration: 12, width: 1920, height: 1080)
+        await cache.upsertSHA256(filePath: original.path, fileSize: 4, modifiedAt: date, mediaKind: .video, sha256: digest)
+        await cache.upsertFrameFeature(filePath: original.path, fileSize: 4, modifiedAt: date, featureData: frameData)
+
+        let moved = tempDir.appendingPathComponent("fractional-new.mp4")
+        try FileManager.default.moveItem(at: original, to: moved)
+        let movedDate = try XCTUnwrap(moved.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        XCTAssertEqual(date, movedDate)
+
+        // Reopen the database to exercise persisted date precision, not a mock.
+        let reopened = try HashCache(databaseURL: dbURL)
+        let oldPath = await reopened.detectMove(filePath: moved.path, fileSize: 4, modifiedAt: movedDate, mediaKind: .video, algorithmVersion: PerceptualHasher.algorithmVersion)
+        let metadata = await reopened.lookupMetadata(filePath: moved.path, fileSize: 4, modifiedAt: movedDate, mediaKind: .video)
+        let sha = await reopened.lookupSHA256(filePath: moved.path, fileSize: 4, modifiedAt: movedDate, mediaKind: .video)
+        let frames = await reopened.lookupFrameFeature(filePath: moved.path, fileSize: 4, modifiedAt: movedDate)
+        let hash = await reopened.lookup(filePath: moved.path, fileSize: 4, modifiedAt: movedDate)
+        XCTAssertEqual(oldPath, original.path)
+        XCTAssertEqual(metadata?.duration, 12)
+        XCTAssertEqual(sha, digest)
+        XCTAssertEqual(frames, frameData)
+        XCTAssertEqual(hash?.filePath, moved.path)
+    }
+
+    func testMoveDetectionStillRejectsExistingSourceAndWrongMediaKind() async throws {
+        let date = Date(timeIntervalSince1970: 5_095.1234)
+        let original = try writeFixture(named: "existing-old.mp4", data: Data("SAME".utf8), modifiedAt: date)
+        let copied = try writeFixture(named: "existing-copy.mp4", data: Data("SAME".utf8), modifiedAt: date)
+        let digest = try await FileHasher.sha256(of: original)
+        await cache.upsertSHA256(filePath: original.path, fileSize: 4, modifiedAt: date, mediaKind: .video, sha256: digest)
+
+        let whileOriginalExists = await cache.detectMove(filePath: copied.path, fileSize: 4, modifiedAt: date, mediaKind: .video, algorithmVersion: PerceptualHasher.algorithmVersion)
+        XCTAssertNil(whileOriginalExists)
+        try FileManager.default.removeItem(at: original)
+        let wrongKind = await cache.detectMove(filePath: copied.path, fileSize: 4, modifiedAt: date, mediaKind: .image, algorithmVersion: PerceptualHasher.algorithmVersion)
+        let correctKind = await cache.detectMove(filePath: copied.path, fileSize: 4, modifiedAt: date, mediaKind: .video, algorithmVersion: PerceptualHasher.algorithmVersion)
+        XCTAssertNil(wrongKind)
+        XCTAssertEqual(correctKind, original.path)
     }
 
     func testMoveMetadataLookupDoesNotReuseMetadataWhenSHA256DoesNotMatch() async throws {
@@ -459,6 +510,101 @@ final class HashCacheTests: XCTestCase {
             mediaKind: .video
         )
         XCTAssertNil(sha)
+    }
+
+    func testSHA256UpdatePreservesMetadataOnlyForUnchangedIdentity() async {
+        let date = Date(timeIntervalSince1970: 5_540)
+        let identities: [(size: Int64, date: Date, kind: MediaKind)] = [
+            (4, date, .video),
+            (8, date, .video),
+            (4, date.addingTimeInterval(10), .video),
+            (4, date, .image)
+        ]
+        let caches: [any HashCaching] = [cache, InMemoryHashCache()]
+        for selectedCache in caches {
+            for (index, identity) in identities.enumerated() {
+                let path = tempDir.appendingPathComponent("sha-metadata-\(index).mp4").path
+                await selectedCache.upsertMetadata(filePath: path, fileSize: 4, modifiedAt: date, mediaKind: .video, duration: 12, width: 1920, height: 1080)
+                await selectedCache.upsertSHA256(filePath: path, fileSize: identity.size, modifiedAt: identity.date, mediaKind: identity.kind, sha256: "new-digest")
+
+                let metadata = await selectedCache.lookupMetadata(filePath: path, fileSize: identity.size, modifiedAt: identity.date, mediaKind: identity.kind)
+                let digest = await selectedCache.lookupSHA256(filePath: path, fileSize: identity.size, modifiedAt: identity.date, mediaKind: identity.kind)
+                XCTAssertNotNil(metadata)
+                XCTAssertEqual(digest, "new-digest")
+                if index == 0 {
+                    XCTAssertEqual(metadata?.duration, 12)
+                    XCTAssertEqual(metadata?.width, 1920)
+                    XCTAssertEqual(metadata?.height, 1080)
+                } else {
+                    XCTAssertNil(metadata?.duration)
+                    XCTAssertNil(metadata?.width)
+                    XCTAssertNil(metadata?.height)
+                    let previous = await selectedCache.lookupMetadata(filePath: path, fileSize: 4, modifiedAt: date, mediaKind: .video)
+                    XCTAssertNil(previous)
+                }
+            }
+        }
+    }
+
+    func testFrameFeatureCacheVersionsSeparateLegacyAndCurrentData() async {
+        let date = Date(timeIntervalSince1970: 5_550)
+        let path = tempDir.appendingPathComponent("versioned-frames.mp4").path
+        let legacy = "vision-frame-feature-v1"
+        let caches: [any HashCaching] = [cache, InMemoryHashCache()]
+        for selectedCache in caches {
+            await selectedCache.upsertFrameFeature(filePath: path, fileSize: 4, modifiedAt: date, algorithmVersion: legacy, featureData: Data([1]))
+            let stale = await selectedCache.lookupFrameFeature(filePath: path, fileSize: 4, modifiedAt: date)
+            let legacyHit = await selectedCache.lookupFrameFeature(filePath: path, fileSize: 4, modifiedAt: date, algorithmVersion: legacy)
+            XCTAssertNil(stale)
+            XCTAssertEqual(legacyHit, Data([1]))
+
+            await selectedCache.upsertFrameFeature(filePath: path, fileSize: 4, modifiedAt: date, featureData: Data([2]))
+            let current = await selectedCache.lookupFrameFeature(filePath: path, fileSize: 4, modifiedAt: date, algorithmVersion: FrameFeatureExtractor.algorithmVersion)
+            let invalidatedLegacy = await selectedCache.lookupFrameFeature(filePath: path, fileSize: 4, modifiedAt: date, algorithmVersion: legacy)
+            XCTAssertEqual(current, Data([2]))
+            XCTAssertNil(invalidatedLegacy)
+        }
+    }
+
+    func testFrameFeatureMoveLookupRequiresMatchingAlgorithmVersion() async throws {
+        let date = Date(timeIntervalSince1970: 5_560.1234)
+        let original = try writeFixture(named: "old-version-frames.mp4", data: Data("SAME".utf8), modifiedAt: date)
+        let moved = tempDir.appendingPathComponent("moved-version-frames.mp4")
+        let digest = try await FileHasher.sha256(of: original)
+        let legacy = "vision-frame-feature-v1"
+        await cache.upsertSHA256(filePath: original.path, fileSize: 4, modifiedAt: date, mediaKind: .video, sha256: digest)
+        await cache.upsertFrameFeature(filePath: original.path, fileSize: 4, modifiedAt: date, algorithmVersion: legacy, featureData: Data([1]))
+        try FileManager.default.moveItem(at: original, to: moved)
+
+        let stale = await cache.lookupFrameFeature(filePath: moved.path, fileSize: 4, modifiedAt: date)
+        XCTAssertNil(stale)
+        await cache.upsertFrameFeature(filePath: original.path, fileSize: 4, modifiedAt: date, featureData: Data([2]))
+        let current = await cache.lookupFrameFeature(filePath: moved.path, fileSize: 4, modifiedAt: date)
+        XCTAssertEqual(current, Data([2]))
+    }
+
+    func testFrameFeatureMigrationInvalidatesUnversionedRowsAndPreservesSHA256() async throws {
+        let path = tempDir.appendingPathComponent("migration-frames.mp4").path
+        let date = Date(timeIntervalSince1970: 5_570)
+        await cache.upsertSHA256(filePath: path, fileSize: 4, modifiedAt: date, mediaKind: .video, sha256: "preserved-sha")
+        cache = nil
+        let queue = try DatabaseQueue(path: dbURL.path)
+        // Restore the exact pre-v10 frame table while retaining the previous
+        // migrations and unrelated cache data.
+        try await queue.write { db in
+            try db.execute(sql: "DROP TABLE frame_features")
+            try db.execute(sql: "CREATE TABLE frame_features (filePath TEXT PRIMARY KEY, fileSize INTEGER NOT NULL, modifiedAt DATETIME, featureData BLOB NOT NULL)")
+            try db.execute(sql: "INSERT INTO frame_features (filePath, fileSize, modifiedAt, featureData) VALUES (?, ?, ?, ?)", arguments: [path, 4, date, Data([1])])
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?", arguments: ["v10_version_frame_features"])
+        }
+
+        let migrated = try HashCache(databaseURL: dbURL)
+        let current = await migrated.lookupFrameFeature(filePath: path, fileSize: 4, modifiedAt: date)
+        let legacy = await migrated.lookupFrameFeature(filePath: path, fileSize: 4, modifiedAt: date, algorithmVersion: "vision-frame-feature-v1")
+        let sha = await migrated.lookupSHA256(filePath: path, fileSize: 4, modifiedAt: date, mediaKind: .video)
+        XCTAssertNil(current)
+        XCTAssertEqual(legacy, Data([1]))
+        XCTAssertEqual(sha, "preserved-sha")
     }
 
     func testAllPrimaryCachesRejectSameSizeFileChangedWithinOneSecond() async {

@@ -32,6 +32,8 @@ enum FrameSimilarityAggregator {
 }
 
 struct FrameFeatureExtractor {
+    static let algorithmVersion = "vision-frame-feature-v3-revision2-256"
+    static let maximumInputPixelSize = 256
     static let samplePositions = [0.08, 0.28, 0.50, 0.72, 0.92]
 
     func similarity(between firstURL: URL, and secondURL: URL) async throws -> Double? {
@@ -43,6 +45,17 @@ struct FrameFeatureExtractor {
 
 struct FrameFeatures: @unchecked Sendable {
     let observations: [VNFeaturePrintObservation?]
+
+    /// Partial extraction can be shared within one scan, but must be retried
+    /// on a later scan instead of becoming a persistent successful result.
+    var isCompleteForPersistence: Bool {
+        observations.count == FrameFeatureExtractor.samplePositions.count
+            && observations.allSatisfy { observation in
+                guard let observation else { return false }
+                return observation.requestRevision == VisionFeatureSimilarity.requestRevision
+                    && observation.elementCount > 0
+            }
+    }
 }
 
 enum FrameFeatureSerializer {
@@ -80,6 +93,9 @@ extension FrameFeatureExtractor: FrameFeatureExtracting {
         guard duration.isFinite, duration > 0 else { return FrameFeatures(observations: []) }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
+        // Use a common input-size limit so re-encoding at a lower resolution
+        // does not change Vision's input scale for otherwise matching frames.
+        generator.maximumSize = CGSize(width: Self.maximumInputPixelSize, height: Self.maximumInputPixelSize)
         generator.requestedTimeToleranceBefore = CMTime(seconds: 0.35, preferredTimescale: 600)
         generator.requestedTimeToleranceAfter = CMTime(seconds: 0.35, preferredTimescale: 600)
 
@@ -98,6 +114,7 @@ extension FrameFeatureExtractor: FrameFeatureExtracting {
                 continue
             }
             let request = VNGenerateImageFeaturePrintRequest()
+            request.revision = VisionFeatureSimilarity.requestRevision
             try await CancellableVisionRequest.perform(
                 request,
                 handler: VNImageRequestHandler(cgImage: image)
@@ -116,15 +133,18 @@ extension FrameFeatureExtractor: FrameFeatureExtracting {
                 similarities.append(nil)
                 continue
             }
-            var distance: Float = 0
-            try lhs.computeDistance(&distance, to: rhs)
-            similarities.append(max(0, min(1, 1 - Double(distance) / 40)))
+            similarities.append(try VisionFeatureSimilarity.similarity(between: lhs, and: rhs))
         }
         return FrameSimilarityAggregator.aggregate(similarities)
     }
 }
 
 actor FrameFeatureCache {
+    struct ComparisonResult: Sendable {
+        let score: Double?
+        let hasCompleteFeatures: Bool
+    }
+
     private struct CachedTask {
         let id: UUID
         let task: Task<FrameFeatures, Error>
@@ -233,22 +253,26 @@ actor FrameFeatureCache {
            let data = await persistentCache.lookupFrameFeature(
                filePath: url.path,
                fileSize: Int64(values.fileSize ?? 0),
-               modifiedAt: values.contentModificationDate
+               modifiedAt: values.contentModificationDate,
+               algorithmVersion: FrameFeatureExtractor.algorithmVersion
            ),
-           let cached = try? FrameFeatureSerializer.deserialize(data) {
+           let cached = try? FrameFeatureSerializer.deserialize(data),
+           cached.isCompleteForPersistence {
             try Task.checkCancellation()
             return cached
         }
 
         let value = try await extractor.features(for: url)
         try Task.checkCancellation()
-        if let persistentCache,
+        if value.isCompleteForPersistence,
+           let persistentCache,
            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
            let data = try? FrameFeatureSerializer.serialize(value) {
             await persistentCache.upsertFrameFeature(
                 filePath: url.path,
                 fileSize: Int64(values.fileSize ?? 0),
                 modifiedAt: values.contentModificationDate,
+                algorithmVersion: FrameFeatureExtractor.algorithmVersion,
                 featureData: data
             )
         }
@@ -257,8 +281,17 @@ actor FrameFeatureCache {
     }
 
     func similarity(between firstURL: URL, and secondURL: URL) async throws -> Double? {
+        try await comparison(between: firstURL, and: secondURL).score
+    }
+
+    func comparison(between firstURL: URL, and secondURL: URL) async throws -> ComparisonResult {
         let first = try await features(for: firstURL)
         let second = try await features(for: secondURL)
-        return try await extractor.similarity(between: first, and: second)
+        let score = try await extractor.similarity(between: first, and: second)
+        try Task.checkCancellation()
+        return ComparisonResult(
+            score: score,
+            hasCompleteFeatures: first.isCompleteForPersistence && second.isCompleteForPersistence
+        )
     }
 }

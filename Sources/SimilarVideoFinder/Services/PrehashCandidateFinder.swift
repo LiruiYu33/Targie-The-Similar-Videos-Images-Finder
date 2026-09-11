@@ -11,7 +11,6 @@ struct PrehashCandidateResult {
 enum PrehashCandidateFinder {
     private struct BucketKey: Hashable {
         let duration: Int
-        let size: Int
         let aspect: Int
     }
 
@@ -49,15 +48,13 @@ enum PrehashCandidateFinder {
             guard let prehash = prehashes[video.id] else { continue }
 
             for duration in (prehash.durationBucket - 2)...(prehash.durationBucket + 2) {
-                for size in (prehash.sizeBucket - 3)...(prehash.sizeBucket + 3) {
-                    for aspect in (prehash.aspectBucket - 2)...(prehash.aspectBucket + 2) {
-                        let key = BucketKey(duration: duration, size: size, aspect: aspect)
-                        for candidate in buckets[key] ?? [] {
-                            guard let candidatePrehash = prehashes[candidate.id] else { continue }
-                            compatibilityChecks += 1
-                            if prehash.isCompatible(with: candidatePrehash) {
-                                appendPair(candidate, video)
-                            }
+                for aspect in (prehash.aspectBucket - 2)...(prehash.aspectBucket + 2) {
+                    let key = BucketKey(duration: duration, aspect: aspect)
+                    for candidate in buckets[key] ?? [] {
+                        guard let candidatePrehash = prehashes[candidate.id] else { continue }
+                        compatibilityChecks += 1
+                        if prehash.isCompatible(with: candidatePrehash) {
+                            appendPair(candidate, video)
                         }
                     }
                 }
@@ -73,7 +70,6 @@ enum PrehashCandidateFinder {
 
             let ownKey = BucketKey(
                 duration: prehash.durationBucket,
-                size: prehash.sizeBucket,
                 aspect: prehash.aspectBucket
             )
             buckets[ownKey, default: []].append(video)

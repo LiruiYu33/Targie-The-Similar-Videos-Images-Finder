@@ -29,7 +29,7 @@ import Foundation
 struct QuickPrehash: Hashable, Sendable {
     let videoID: UUID
     let durationBucket: Int     // Duration bucket (5% step).
-    let sizeBucket: Int         // Size bucket (log-scaled).
+    let sizeBucket: Int         // Retained for cache compatibility; encoded size does not exclude candidates.
     let aspectBucket: Int       // Aspect-ratio bucket (3% step).
     let thumbnailMean: UInt8    // Grayscale thumbnail mean (0-255).
     let thumbnailVariance: UInt16  // Approximate grayscale thumbnail variance (0-65535).
@@ -39,8 +39,8 @@ struct QuickPrehash: Hashable, Sendable {
     func isCompatible(with other: QuickPrehash) -> Bool {
         // Duration tolerance: +/-2 buckets (about 10%).
         guard abs(durationBucket - other.durationBucket) <= 2 else { return false }
-        // Size tolerance: +/-3 buckets in log space, roughly up to a 2x size difference.
-        guard abs(sizeBucket - other.sizeBucket) <= 3 else { return false }
+        // Re-encoding or resizing can change the byte count substantially
+        // without changing content, so encoded size is not a rejection rule.
         // Aspect-ratio tolerance: +/-2 buckets (about 6%).
         guard abs(aspectBucket - other.aspectBucket) <= 2 else { return false }
         // Thumbnail mean tolerance: +/-40, allowing encoding differences.

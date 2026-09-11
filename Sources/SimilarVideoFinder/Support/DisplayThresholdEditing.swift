@@ -23,8 +23,8 @@ import Foundation
 
 enum DisplayThresholdEditing {
     static let allowedRange = 0.60...1.0
-    static let recommendedThreshold = 0.72
-    private static let magnetLowerBound = 0.68
+    static let recommendedThreshold = 0.88
+    private static let magnetLowerBound = recommendedThreshold - 0.04
 
     static func sliderValue(for proposedValue: Double) -> Double {
         let value = clamped(proposedValue)

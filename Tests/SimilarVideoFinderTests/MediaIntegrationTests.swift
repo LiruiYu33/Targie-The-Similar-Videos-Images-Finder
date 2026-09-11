@@ -24,10 +24,7 @@ import XCTest
 
 final class MediaIntegrationTests: XCTestCase {
     func testRealVideoScanAndExactDuplicateGrouping() async throws {
-        let ffmpeg = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
-        guard FileManager.default.isExecutableFile(atPath: ffmpeg.path) else {
-            throw XCTSkip("ffmpeg is unavailable")
-        }
+        let ffmpeg = try TestMediaTools.ffmpeg()
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

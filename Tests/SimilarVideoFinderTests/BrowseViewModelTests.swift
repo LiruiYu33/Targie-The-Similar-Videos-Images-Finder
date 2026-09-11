@@ -122,6 +122,134 @@ final class BrowseViewModelTests: XCTestCase {
         XCTAssertFalse(BrowseViewModel.SortField.modifiedTime.isResolution)
     }
 
+    func testSelectingResolutionPresetReplacesManualInputWithOneRecompute() {
+        let (browse, items) = makeResolutionFilterModel()
+        browse.setManualWidth("1920")
+        browse.setManualHeight("1080")
+        browse.selectMedia(items[1].id)
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        browse.setResolutionPreset(resolutionPreset("720p"))
+
+        XCTAssertEqual(browse.selectedResolutionPreset?.id, "720p")
+        XCTAssertEqual(browse.manualWidth, "")
+        XCTAssertEqual(browse.manualHeight, "")
+        XCTAssertEqual(browse.displayedItems.map(\.id), Array(items.prefix(2)).map(\.id))
+        XCTAssertEqual(browse.primarySelectedID, items[1].id)
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
+    }
+
+    func testEditingManualWidthReplacesPresetWithOneRecompute() {
+        let (browse, items) = makeResolutionFilterModel()
+        browse.setResolutionPreset(resolutionPreset("480p"))
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        browse.setManualWidth("1080")
+
+        XCTAssertNil(browse.selectedResolutionPreset)
+        XCTAssertEqual(browse.manualWidth, "1080")
+        XCTAssertEqual(browse.manualHeight, "")
+        XCTAssertEqual(browse.displayedItems.map(\.id), Array(items.prefix(3)).map(\.id))
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
+    }
+
+    func testEditingManualHeightReplacesPresetWithOneRecompute() {
+        let (browse, items) = makeResolutionFilterModel()
+        browse.setResolutionPreset(resolutionPreset("1080p"))
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        browse.setManualHeight("480")
+
+        XCTAssertNil(browse.selectedResolutionPreset)
+        XCTAssertEqual(browse.manualWidth, "")
+        XCTAssertEqual(browse.manualHeight, "480")
+        XCTAssertEqual(browse.displayedItems.map(\.id), [items[0].id])
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
+    }
+
+    func testSwitchingResolutionPresetsAppliesLatestThresholdWithOneRecompute() {
+        let (browse, items) = makeResolutionFilterModel()
+        browse.setResolutionPreset(resolutionPreset("480p"))
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        browse.setResolutionPreset(resolutionPreset("720p"))
+
+        XCTAssertEqual(browse.selectedResolutionPreset?.id, "720p")
+        XCTAssertEqual(browse.displayedItems.map(\.id), Array(items.prefix(2)).map(\.id))
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
+    }
+
+    func testClearingManualResolutionFilterRecomputesOnce() {
+        let (browse, items) = makeResolutionFilterModel()
+        browse.setManualWidth("1920")
+        browse.setManualHeight("1080")
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        browse.clearResolutionFilter()
+
+        XCTAssertNil(browse.selectedResolutionPreset)
+        XCTAssertEqual(browse.manualWidth, "")
+        XCTAssertEqual(browse.manualHeight, "")
+        XCTAssertFalse(browse.hasActiveFilter)
+        XCTAssertEqual(browse.displayedItems.map(\.id), items.map(\.id))
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
+    }
+
+    func testClearingResolutionPresetRestoresAllItems() {
+        let (browse, items) = makeResolutionFilterModel()
+        browse.setResolutionPreset(resolutionPreset("720p"))
+        let recomputeCount = browse.displayedItemsRecomputeCount
+
+        browse.clearResolutionFilter()
+
+        XCTAssertNil(browse.selectedResolutionPreset)
+        XCTAssertFalse(browse.hasActiveFilter)
+        XCTAssertEqual(browse.displayedItems.map(\.id), items.map(\.id))
+        XCTAssertEqual(browse.displayedItemsRecomputeCount, recomputeCount + 1)
+    }
+
+    func testSingleValidManualDimensionStillFiltersWithInvalidOtherDimension() {
+        let (browse, items) = makeResolutionFilterModel()
+        for invalidDimension in ["", "0", "-10", "invalid"] {
+            browse.setManualWidth("720")
+            browse.setManualHeight(invalidDimension)
+            XCTAssertEqual(browse.displayedItems.map(\.id), Array(items.prefix(2)).map(\.id))
+
+            browse.setManualWidth(invalidDimension)
+            browse.setManualHeight("1080")
+            XCTAssertEqual(browse.displayedItems.map(\.id), Array(items.prefix(3)).map(\.id))
+        }
+    }
+
+    func testInvalidManualEditRemovesPresetWithoutApplyingResolutionFilter() {
+        let (browse, items) = makeResolutionFilterModel()
+        for invalidDimension in ["", "0", "-10", "invalid"] {
+            browse.setResolutionPreset(resolutionPreset("720p"))
+
+            browse.setManualWidth(invalidDimension)
+
+            XCTAssertNil(browse.selectedResolutionPreset)
+            XCTAssertFalse(browse.hasActiveFilter)
+            XCTAssertEqual(browse.displayedItems.map(\.id), items.map(\.id))
+        }
+    }
+
+    private func makeResolutionFilterModel() -> (BrowseViewModel, [MediaItem]) {
+        let scanModel = ScanViewModel(hashCache: nil)
+        let items = [
+            makeItem(name: "a.mov", width: 320, height: 240),
+            makeItem(name: "b.mov", width: 640, height: 480),
+            makeItem(name: "c.mov", width: 1280, height: 720),
+            makeItem(name: "d.mov", width: 1920, height: 1080)
+        ]
+        scanModel.replaceResultsForTesting(items: items, relations: [])
+        return (BrowseViewModel(scanModel: scanModel), items)
+    }
+
+    private func resolutionPreset(_ id: String) -> BrowseViewModel.ResolutionPreset {
+        BrowseViewModel.resolutionPresets.first { $0.id == id }!
+    }
+
     func testSearchTextFiltersDisplayedItemsByFilenameAndPath() {
         let scanModel = ScanViewModel(hashCache: nil)
         let holiday = MediaItem(
