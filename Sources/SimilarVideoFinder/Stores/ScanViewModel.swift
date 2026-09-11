@@ -69,21 +69,6 @@ private struct DeletionRebuildResult: Sendable {
     let groups: [SimilarityGroup]
 }
 
-private struct MediaPairIdentity: Hashable, Sendable {
-    let firstID: UUID
-    let secondID: UUID
-
-    init(_ firstID: UUID, _ secondID: UUID) {
-        if firstID.uuidString < secondID.uuidString {
-            self.firstID = firstID
-            self.secondID = secondID
-        } else {
-            self.firstID = secondID
-            self.secondID = firstID
-        }
-    }
-}
-
 typealias SimilarityGroupBuilder = @Sendable (
     [MediaItem],
     [SimilarityRelation],
@@ -325,7 +310,7 @@ final class ScanViewModel: ObservableObject {
     static let displayThresholdRange = DisplayThresholdEditing.allowedRange
 
     @Published var selectedFolders: [URL] = []
-    @Published var threshold = 0.88 {
+    @Published var threshold = DisplayThresholdEditing.recommendedThreshold {
         didSet { scheduleThresholdRebuild() }
     }
 
@@ -396,6 +381,7 @@ final class ScanViewModel: ObservableObject {
     @Published var excludeSubfolders = false {
         didSet {
             guard oldValue != excludeSubfolders else { return }
+            invalidatePendingGroupBuild()
             noteItemsChanged()
             rebuildGroups()
         }
@@ -1136,13 +1122,6 @@ final class ScanViewModel: ObservableObject {
             invalidatePendingGroupBuild()
             noteItemsChanged()
         }
-        allRelations = Self.relationsByPreservingGroupContinuity(
-            items: allItems,
-            relations: allRelations,
-            previousGroups: groupsBeforeRemoval,
-            deletedIDs: [id],
-            threshold: threshold
-        )
         rebuildGroups(preserving: groupsBeforeRemoval)
     }
 
@@ -1171,13 +1150,19 @@ final class ScanViewModel: ObservableObject {
     /// The items and relations visible for grouping under the current
     /// `excludeSubfolders` setting. When the toggle is on, only items living
     /// directly inside a selected folder (not in subfolders) and the relations
-    /// between them are used; otherwise everything is. Both `rebuildGroups`
-    /// and the async `scheduleThresholdRebuild` must apply this filter so the
-    /// threshold slider never repopulates the sidebar with excluded files.
+    /// between them are used; otherwise everything is. First publication and
+    /// subsequent rebuilds share the same visibility rules.
     private func visibleItemsAndRelations() -> (items: [MediaItem], relations: [SimilarityRelation]) {
-        let items = excludeSubfolders ? allItems.filter(isTopLevelItem) : allItems
+        visibleItemsAndRelations(items: allItems, relations: allRelations)
+    }
+
+    private func visibleItemsAndRelations(
+        items: [MediaItem],
+        relations: [SimilarityRelation]
+    ) -> (items: [MediaItem], relations: [SimilarityRelation]) {
+        let items = excludeSubfolders ? items.filter(isTopLevelItem) : items
         let visibleIDs = Set(items.map(\.id))
-        let relations = allRelations.filter { visibleIDs.contains($0.firstID) && visibleIDs.contains($0.secondID) }
+        let relations = relations.filter { visibleIDs.contains($0.firstID) && visibleIDs.contains($0.secondID) }
         return (items, relations)
     }
 
@@ -1242,9 +1227,14 @@ final class ScanViewModel: ObservableObject {
         while true {
             try Task.checkCancellation()
             let targetThreshold = threshold
-            let rebuilt = try await groupBuilder(items, relations, targetThreshold)
+            let targetExcludeSubfolders = excludeSubfolders
+            let targetFolders = selectedFolders
+            let visible = visibleItemsAndRelations(items: items, relations: relations)
+            let rebuilt = try await groupBuilder(visible.items, visible.relations, targetThreshold)
             try Task.checkCancellation()
-            if threshold == targetThreshold {
+            if threshold == targetThreshold,
+               excludeSubfolders == targetExcludeSubfolders,
+               selectedFolders == targetFolders {
                 return rebuilt
             }
         }
@@ -1429,15 +1419,12 @@ final class ScanViewModel: ObservableObject {
     ) async -> DeletionRebuildResult {
         await Task.detached(priority: .userInitiated) {
             let remainingItems = items.filter { !deletedIDs.contains($0.id) }
-            let remainingRelations = Self.relationsByPreservingGroupContinuity(
-                items: remainingItems,
-                relations: relations.filter {
-                    !deletedIDs.contains($0.firstID) && !deletedIDs.contains($0.secondID)
-                },
-                previousGroups: previousGroups,
-                deletedIDs: deletedIDs,
-                threshold: threshold
-            )
+            // Removing a bridge does not create new similarity evidence between
+            // its neighbours. Preserve only the measured surviving relations;
+            // stable group IDs and selection are handled after regrouping.
+            let remainingRelations = relations.filter {
+                !deletedIDs.contains($0.firstID) && !deletedIDs.contains($0.secondID)
+            }
             let rebuilt = SimilarityGrouper.groups(
                 items: remainingItems,
                 relations: remainingRelations,
@@ -1449,56 +1436,5 @@ final class ScanViewModel: ObservableObject {
                 groups: Self.groupsByPreservingStableIDs(rebuilt, previousGroups: previousGroups)
             )
         }.value
-    }
-
-    private nonisolated static func relationsByPreservingGroupContinuity(
-        items: [MediaItem],
-        relations: [SimilarityRelation],
-        previousGroups: [SimilarityGroup],
-        deletedIDs: Set<UUID>,
-        threshold: Double
-    ) -> [SimilarityRelation] {
-        guard !deletedIDs.isEmpty else { return relations }
-        let remainingIDs = Set(items.map(\.id))
-        var updatedRelations = relations
-        // Track the best existing score per pair so we only add a synthetic
-        // continuity relation when the pair is missing OR only has a
-        // below-threshold relation. A pair that already has a relation at or
-        // above the threshold is already connected and needs no help; but a
-        // pair whose only relation is below threshold would be filtered out by
-        // the grouper, so it must be upgraded with a synthetic high score to
-        // keep the surviving group connected.
-        var existingPairScores: [MediaPairIdentity: Double] = [:]
-        for relation in relations {
-            let key = MediaPairIdentity(relation.firstID, relation.secondID)
-            existingPairScores[key] = max(existingPairScores[key] ?? -1, relation.score)
-        }
-
-        for group in previousGroups where group.items.contains(where: { deletedIDs.contains($0.id) }) {
-            let survivors = group.items.filter { remainingIDs.contains($0.id) }
-            guard survivors.count >= 2 else { continue }
-
-            let score = group.relations
-                .filter { $0.score >= threshold }
-                .map(\.score)
-                .min() ?? threshold
-            let evidence = group.relations.reduce(into: Set<SimilarityEvidence>()) {
-                $0.formUnion($1.evidence)
-            }
-
-            for (first, second) in zip(survivors, survivors.dropFirst()) {
-                let pair = MediaPairIdentity(first.id, second.id)
-                let existing = existingPairScores[pair] ?? -1
-                guard existing < threshold else { continue }
-                updatedRelations.append(SimilarityRelation(
-                    firstID: first.id,
-                    secondID: second.id,
-                    score: score,
-                    evidence: evidence
-                ))
-                existingPairScores[pair] = score
-            }
-        }
-        return updatedRelations
     }
 }

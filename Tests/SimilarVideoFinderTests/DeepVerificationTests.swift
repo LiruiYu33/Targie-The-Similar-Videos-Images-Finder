@@ -25,7 +25,7 @@ final class DeepVerificationTests: XCTestCase {
         let model = ScanViewModel()
         XCTAssertEqual(
             model.videoPairRelationAlgorithmVersion,
-            "video-pair-relation-v2-perceptual"
+            "video-pair-relation-v3-perceptual"
         )
     }
 
@@ -34,7 +34,7 @@ final class DeepVerificationTests: XCTestCase {
         model.setDeepVerification(true)
         XCTAssertEqual(
             model.videoPairRelationAlgorithmVersion,
-            "video-pair-relation-v2-frame"
+            "video-pair-relation-v4-frame"
         )
     }
 
@@ -44,7 +44,7 @@ final class DeepVerificationTests: XCTestCase {
         model.setDeepVerification(false)
         XCTAssertEqual(
             model.videoPairRelationAlgorithmVersion,
-            "video-pair-relation-v2-perceptual"
+            "video-pair-relation-v3-perceptual"
         )
     }
 
@@ -57,7 +57,7 @@ final class DeepVerificationTests: XCTestCase {
         // but an externally injected pipeline instance is left in place.
         XCTAssertEqual(
             model.videoPairRelationAlgorithmVersion,
-            "video-pair-relation-v2-frame"
+            "video-pair-relation-v4-frame"
         )
         XCTAssertEqual(stub.processCallCount, 0)
     }

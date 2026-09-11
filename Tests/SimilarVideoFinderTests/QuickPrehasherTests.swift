@@ -68,6 +68,23 @@ final class QuickPrehasherTests: XCTestCase {
 
     // MARK: - Compatibility Tests
 
+    func testEncodingSizeDifferenceDoesNotRejectMatchingContentCharacteristics() {
+        let first = QuickPrehash(
+            videoID: UUID(), durationBucket: 80,
+            sizeBucket: QuickPrehasher.sizeBucket(8_000_000),
+            aspectBucket: 59, thumbnailMean: 128, thumbnailVariance: 1000
+        )
+        let second = QuickPrehash(
+            videoID: UUID(), durationBucket: 80,
+            sizeBucket: QuickPrehasher.sizeBucket(1_000_000),
+            aspectBucket: 59, thumbnailMean: 128, thumbnailVariance: 1000
+        )
+
+        XCTAssertGreaterThan(abs(first.sizeBucket - second.sizeBucket), 3)
+        XCTAssertTrue(first.isCompatible(with: second))
+        XCTAssertTrue(second.isCompatible(with: first))
+    }
+
     func testCompatibleWithNearlyIdenticalPrehashes() {
         let a = QuickPrehash(
             videoID: UUID(),

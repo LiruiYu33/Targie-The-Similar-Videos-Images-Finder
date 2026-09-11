@@ -98,19 +98,19 @@ final class BrowseViewModel: ObservableObject {
             requestDisplayedItemsRecompute()
         }
     }
-    @Published var selectedResolutionPreset: ResolutionPreset? {
+    @Published private(set) var selectedResolutionPreset: ResolutionPreset? {
         didSet {
             guard selectedResolutionPreset != oldValue else { return }
             requestDisplayedItemsRecompute()
         }
     }
-    @Published var manualWidth: String = "" {
+    @Published private(set) var manualWidth: String = "" {
         didSet {
             guard manualWidth != oldValue else { return }
             requestDisplayedItemsRecompute()
         }
     }
-    @Published var manualHeight: String = "" {
+    @Published private(set) var manualHeight: String = "" {
         didSet {
             guard manualHeight != oldValue else { return }
             requestDisplayedItemsRecompute()
@@ -507,6 +507,30 @@ final class BrowseViewModel: ObservableObject {
     /// Reset sort back to name/ascending (used by the resolution sort popover's Clear button).
     func clearResolutionSort() {
         setSort(field: .name, ascending: true)
+    }
+
+    func setResolutionPreset(_ preset: ResolutionPreset) {
+        batchDisplayedItemsChanges {
+            selectedResolutionPreset = preset
+            manualWidth = ""
+            manualHeight = ""
+        }
+    }
+
+    /// User edits switch to manual filtering. Programmatic field clearing when
+    /// choosing a preset must not be interpreted as a new manual edit.
+    func setManualWidth(_ value: String) {
+        batchDisplayedItemsChanges {
+            selectedResolutionPreset = nil
+            manualWidth = value
+        }
+    }
+
+    func setManualHeight(_ value: String) {
+        batchDisplayedItemsChanges {
+            selectedResolutionPreset = nil
+            manualHeight = value
+        }
     }
 
     func clearResolutionFilter() {

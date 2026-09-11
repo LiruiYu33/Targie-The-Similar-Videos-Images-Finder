@@ -42,27 +42,20 @@ struct SimilarityScore: Equatable, Sendable {
 }
 
 enum SimilarityScorer {
-    /// Combines three evidence layers into one score:
-    /// - SHA-256 byte-level identity -> 1.0
-    /// - Perceptual hash (DCT-3D Hamming distance): primary signal, 0...1.
-    /// - Vision FeaturePrint (frame-level CNN feature): optional verification layer.
-    /// - Metadata (duration, dimensions, size, filename): supporting evidence.
-    ///
-    /// `perceptualSimilarity` is in [0, 1]:
-    ///   - 1.0 = Hamming distance 0 (identical fingerprints).
-    ///   - 0.0 = every bit differs.
-    ///   - After BK-Tree candidate filtering, it is usually >= 1 - 24/64 ~= 0.625.
-    ///
-    /// Scoring formula:
-    ///   - All three layers: score = 0.45*perc + 0.35*frames + 0.20*metadata.
-    ///   - Hash + metadata only: score = 0.65*perc + 0.35*metadata, capped at 0.95.
-    ///   - Metadata only: score = 0.78*metadata, capped at 0.78.
+    /// A ranking score, not a calibrated probability of duplicate content.
+    /// SHA-256 identity is definitive. Otherwise Vision supplies 75% of the
+    /// content score and pHash 25%; metadata can add at most 5% of the remaining
+    /// headroom. The final score cannot exceed measured Vision similarity by
+    /// more than five percentage points, even when every other signal agrees.
+    /// Missing required verification retains a limited candidate score; it is
+    /// distinct from both a measured visual mismatch and deliberate fast mode.
     static func score(
         _ first: MediaItem,
         _ second: MediaItem,
         hashesMatch: Bool,
         perceptualSimilarity: Double? = nil,
-        frameSimilarity: Double?
+        frameSimilarity: Double?,
+        requiresVisualVerification: Bool = false
     ) -> SimilarityScore {
         if hashesMatch {
             return SimilarityScore(score: 1, evidence: [.identicalContentHash])
@@ -87,29 +80,33 @@ enum SimilarityScorer {
             metadata = dimensions * (2.0 / 7.0) + size * (2.0 / 7.0) + name * (3.0 / 7.0)
         }
 
-        let perc = perceptualSimilarity.map { min(max($0, 0), 1) }
+        let perc = validSimilarity(perceptualSimilarity)
+        let frames = validSimilarity(frameSimilarity)
         if let perc, perc >= 0.78 { evidence.insert(.similarPerceptualHash) }
+        if let frames, frames >= 0.82 { evidence.insert(.similarFrames) }
 
-        // Branch by available evidence combination.
-        if let perc, let frame = frameSimilarity {
-            let frames = min(max(frame, 0), 1)
-            if frames >= 0.82 { evidence.insert(.similarFrames) }
-            let combined = perc * 0.45 + frames * 0.35 + metadata * 0.20
-            return SimilarityScore(score: min(combined, 1), evidence: evidence)
+        if let frames {
+            let content = perc.map { $0 * 0.25 + frames * 0.75 } ?? frames
+            let combined = supportedScore(content: content, metadata: metadata)
+            return SimilarityScore(score: min(combined, frames + 0.05, 1), evidence: evidence)
         }
 
         if let perc {
-            let combined = perc * 0.65 + metadata * 0.35
-            return SimilarityScore(score: min(combined, 0.95), evidence: evidence)
+            let ceiling = requiresVisualVerification ? 0.85 : 0.95
+            let combined = supportedScore(content: perc, metadata: metadata)
+            return SimilarityScore(score: min(combined, ceiling), evidence: evidence)
         }
 
-        if let frame = frameSimilarity {
-            let frames = min(max(frame, 0), 1)
-            if frames >= 0.82 { evidence.insert(.similarFrames) }
-            return SimilarityScore(score: min(frames * 0.70 + metadata * 0.30, 1), evidence: evidence)
-        }
+        return SimilarityScore(score: metadata * 0.05, evidence: evidence)
+    }
 
-        return SimilarityScore(score: min(metadata * 0.78, 0.78), evidence: evidence)
+    private static func supportedScore(content: Double, metadata: Double) -> Double {
+        content + 0.05 * metadata * (1 - content)
+    }
+
+    private static func validSimilarity(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return min(max(value, 0), 1)
     }
 
     private static func ratioScore(_ lhs: Double, _ rhs: Double) -> Double {

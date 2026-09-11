@@ -80,20 +80,20 @@ struct BrowseFilterPopover: View {
 
                 // Manual input
                 HStack(spacing: 4) {
-                    TextField(L10n.width(language), text: $browseModel.manualWidth)
+                    TextField(L10n.width(language), text: Binding(
+                        get: { browseModel.manualWidth },
+                        set: { browseModel.setManualWidth($0) }
+                    ))
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 70)
-                        .onChange(of: browseModel.manualWidth) { _, _ in
-                            browseModel.selectedResolutionPreset = nil
-                        }
                     Text("×")
                         .foregroundStyle(.secondary)
-                    TextField(L10n.height(language), text: $browseModel.manualHeight)
+                    TextField(L10n.height(language), text: Binding(
+                        get: { browseModel.manualHeight },
+                        set: { browseModel.setManualHeight($0) }
+                    ))
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 70)
-                        .onChange(of: browseModel.manualHeight) { _, _ in
-                            browseModel.selectedResolutionPreset = nil
-                        }
                 }
                 .controlSize(.small)
 
@@ -125,7 +125,7 @@ struct BrowseFilterPopover: View {
         let isActive = browseModel.selectedResolutionPreset?.shortEdge == shortEdge
         if isActive {
             Button {
-                browseModel.selectedResolutionPreset = nil
+                browseModel.clearResolutionFilter()
             } label: {
                 Text(label)
             }
@@ -133,11 +133,9 @@ struct BrowseFilterPopover: View {
             .controlSize(.small)
         } else {
             Button {
-                browseModel.selectedResolutionPreset = BrowseViewModel.ResolutionPreset(
+                browseModel.setResolutionPreset(BrowseViewModel.ResolutionPreset(
                     id: label, label: label, shortEdge: shortEdge
-                )
-                browseModel.manualWidth = ""
-                browseModel.manualHeight = ""
+                ))
             } label: {
                 Text(label)
             }

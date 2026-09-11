@@ -105,7 +105,7 @@ struct SimilarityPipeline: SimilarityProcessing {
     fileprivate static let pairRelationWriteBatchSize = 512
 
     static func pairRelationAlgorithmVersion(usesFrameVerification: Bool) -> String {
-        usesFrameVerification ? "video-pair-relation-v2-frame" : "video-pair-relation-v2-perceptual"
+        usesFrameVerification ? "video-pair-relation-v4-frame" : "video-pair-relation-v3-perceptual"
     }
 
     static func scanRelationSignature(
@@ -279,6 +279,7 @@ struct SimilarityPipeline: SimilarityProcessing {
         var pairCacheHits = 0
         var pairCacheTotal = 0
         var pendingPairRelationUpserts: [PairRelationCacheUpsert] = []
+        var canPersistScanIndex = true
 
         // Exact duplicates must not depend on video frame extraction succeeding.
         // This also keeps corrupt or partially supported files from aborting the scan.
@@ -448,7 +449,7 @@ struct SimilarityPipeline: SimilarityProcessing {
                 scanIntensity: scanIntensity
             )
             var completedMisses = 0
-            try await withThrowingTaskGroup(of: (VideoComparisonCandidate, SimilarityRelation?).self) { group in
+            try await withThrowingTaskGroup(of: (VideoComparisonCandidate, VideoPairComparisonResult).self) { group in
                 var iterator = misses.makeIterator()
                 for _ in 0..<min(comparisonLimit, misses.count) {
                     guard let next = iterator.next() else { break }
@@ -463,15 +464,19 @@ struct SimilarityPipeline: SimilarityProcessing {
                     }
                 }
 
-                while let (completedCandidate, relation) = try await group.next() {
+                while let (completedCandidate, result) = try await group.next() {
                     completedMisses += 1
-                    if let relation { relations.append(relation) }
-                    pendingPairRelationUpserts.append(PairRelationCacheUpsert(
-                        first: completedCandidate.first,
-                        second: completedCandidate.second,
-                        algorithmVersion: completedCandidate.algorithmVersion,
-                        relation: relation
-                    ))
+                    if let relation = result.relation { relations.append(relation) }
+                    if result.isCacheable {
+                        pendingPairRelationUpserts.append(PairRelationCacheUpsert(
+                            first: completedCandidate.first,
+                            second: completedCandidate.second,
+                            algorithmVersion: completedCandidate.algorithmVersion,
+                            relation: result.relation
+                        ))
+                    } else {
+                        canPersistScanIndex = false
+                    }
                     if pendingPairRelationUpserts.count >= Self.pairRelationWriteBatchSize {
                         await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
                     }
@@ -518,14 +523,18 @@ struct SimilarityPipeline: SimilarityProcessing {
                 evidence: relation.evidence
             )
         }
-        await cache?.upsertScanRelationIndex(
-            signature: indexSignature,
-            mediaKind: .video,
-            algorithmVersion: pairRelationAlgorithmVersion,
-            fileCount: videosNeedingHash.count,
-            candidateCount: pairCacheTotal,
-            relations: scanIndexRelations
-        )
+        // Failed required verification must be retried, including when every
+        // other pair could be loaded from a persistent cache.
+        if canPersistScanIndex {
+            await cache?.upsertScanRelationIndex(
+                signature: indexSignature,
+                mediaKind: .video,
+                algorithmVersion: pairRelationAlgorithmVersion,
+                fileCount: videosNeedingHash.count,
+                candidateCount: pairCacheTotal,
+                relations: scanIndexRelations
+            )
+        }
 
         try Task.checkCancellation()
         return PipelineResult(videos: videos, relations: relations)
@@ -731,12 +740,17 @@ struct SimilarityPipeline: SimilarityProcessing {
     }
 }
 
+private struct VideoPairComparisonResult: Sendable {
+    let relation: SimilarityRelation?
+    let isCacheable: Bool
+}
+
 private func compareVideoCandidate(
     _ candidate: VideoComparisonCandidate,
     cache: (any HashCaching)?,
     frameFeatureCache: FrameFeatureCache,
     usesFrameVerification: Bool
-) async throws -> SimilarityRelation? {
+) async throws -> VideoPairComparisonResult {
     try Task.checkCancellation()
     let percSimilarity = candidate.firstHash.similarity(to: candidate.secondHash)
     let sameSize = candidate.first.fileSize > 0 && candidate.first.fileSize == candidate.second.fileSize
@@ -763,18 +777,23 @@ private func compareVideoCandidate(
     }
 
     let frameScore: Double?
-    if !usesFrameVerification || hashMatch || percSimilarity >= 0.92 {
+    let hasCompleteFrameFeatures: Bool
+    if !usesFrameVerification || hashMatch {
         frameScore = nil
+        hasCompleteFrameFeatures = false
     } else {
         do {
-            frameScore = try await frameFeatureCache.similarity(
+            let comparison = try await frameFeatureCache.comparison(
                 between: candidate.first.url,
                 and: candidate.second.url
             )
+            frameScore = comparison.score
+            hasCompleteFrameFeatures = comparison.hasCompleteFeatures
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             frameScore = nil
+            hasCompleteFrameFeatures = false
         }
     }
 
@@ -783,7 +802,8 @@ private func compareVideoCandidate(
         candidate.second,
         hashesMatch: hashMatch,
         perceptualSimilarity: percSimilarity,
-        frameSimilarity: frameScore
+        frameSimilarity: frameScore,
+        requiresVisualVerification: usesFrameVerification
     )
 
     let relation: SimilarityRelation?
@@ -797,7 +817,10 @@ private func compareVideoCandidate(
     } else {
         relation = nil
     }
-    return relation
+    return VideoPairComparisonResult(
+        relation: relation,
+        isCacheable: hashMatch || !usesFrameVerification || (hasCompleteFrameFeatures && frameScore?.isFinite == true)
+    )
 }
 
 private func flushPairRelationUpserts(

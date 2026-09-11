@@ -100,7 +100,7 @@ echo "▶ Packaging into $ZIP_NAME..."
 TMP_VERIFY="$(mktemp -d)"
 trap 'rm -rf "$TMP_VERIFY"' EXIT
 /usr/bin/ditto -x -k "$ZIP_PATH" "$TMP_VERIFY"
-codesign --verify --strict "$TMP_VERIFY/$(basename "$APP_BUNDLE")/Contents/MacOS/SimilarVideoFinder"
+codesign --verify --deep --strict "$TMP_VERIFY/$(basename "$APP_BUNDLE")"
 
 # Checksum.
 ( cd "$RELEASE_DIR" && /usr/bin/shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256" )

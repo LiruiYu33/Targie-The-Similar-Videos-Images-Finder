@@ -10,7 +10,7 @@ struct ImagePipelineResult: Sendable {
 
 struct ImageSimilarityPipeline: Sendable {
     static let algorithmVersion = "image-phash-v1"
-    static let pairRelationAlgorithmVersion = "image-pair-relation-v2"
+    static let pairRelationAlgorithmVersion = "image-pair-relation-v4"
     static let maxDistance = 20
     fileprivate static let relationStorageFloor = 0.60
     private static let pairRelationWriteBatchSize = 512
@@ -138,6 +138,7 @@ struct ImageSimilarityPipeline: Sendable {
         var pairCacheHits = 0
         var pairCacheTotal = 0
         var pendingPairRelationUpserts: [PairRelationCacheUpsert] = []
+        var canPersistScanIndex = true
         var pendingComparisonCandidates: [(candidate: ImageComparisonCandidate, relationKey: PairRelationCacheKey?)] = []
         for (index, image) in images.enumerated() {
             try Task.checkCancellation()
@@ -222,7 +223,7 @@ struct ImageSimilarityPipeline: Sendable {
                 scanIntensity: scanIntensity
             )
             var completedMisses = 0
-            try await withThrowingTaskGroup(of: (ImageComparisonCandidate, SimilarityRelation?).self) { group in
+            try await withThrowingTaskGroup(of: (ImageComparisonCandidate, ImagePairComparisonResult).self) { group in
                 var iterator = misses.makeIterator()
                 for _ in 0..<min(comparisonLimit, misses.count) {
                     guard let next = iterator.next() else { break }
@@ -232,15 +233,19 @@ struct ImageSimilarityPipeline: Sendable {
                     }
                 }
 
-                while let (completedCandidate, relation) = try await group.next() {
+                while let (completedCandidate, result) = try await group.next() {
                     completedMisses += 1
-                    if let relation { relations.append(relation) }
-                    pendingPairRelationUpserts.append(PairRelationCacheUpsert(
-                        first: completedCandidate.first,
-                        second: completedCandidate.second,
-                        algorithmVersion: Self.pairRelationAlgorithmVersion,
-                        relation: relation
-                    ))
+                    if let relation = result.relation { relations.append(relation) }
+                    if result.isCacheable {
+                        pendingPairRelationUpserts.append(PairRelationCacheUpsert(
+                            first: completedCandidate.first,
+                            second: completedCandidate.second,
+                            algorithmVersion: Self.pairRelationAlgorithmVersion,
+                            relation: result.relation
+                        ))
+                    } else {
+                        canPersistScanIndex = false
+                    }
                     if pendingPairRelationUpserts.count >= Self.pairRelationWriteBatchSize {
                         await flushPairRelationUpserts(&pendingPairRelationUpserts, cache: cache)
                     }
@@ -281,14 +286,18 @@ struct ImageSimilarityPipeline: Sendable {
                 evidence: relation.evidence
             )
         }
-        await cache?.upsertScanRelationIndex(
-            signature: indexSignature,
-            mediaKind: .image,
-            algorithmVersion: Self.pairRelationAlgorithmVersion,
-            fileCount: images.count,
-            candidateCount: pairCacheTotal,
-            relations: scanIndexRelations
-        )
+        // Incomplete verification remains retryable. A scan index would bypass
+        // the failed pair on the next scan even if its pair cache was omitted.
+        if canPersistScanIndex {
+            await cache?.upsertScanRelationIndex(
+                signature: indexSignature,
+                mediaKind: .image,
+                algorithmVersion: Self.pairRelationAlgorithmVersion,
+                fileCount: images.count,
+                candidateCount: pairCacheTotal,
+                relations: scanIndexRelations
+            )
+        }
         try Task.checkCancellation()
         return ImagePipelineResult(images: images, relations: relations)
     }
@@ -404,11 +413,16 @@ private struct ImagePairKey: Hashable {
     }
 }
 
+private struct ImagePairComparisonResult: Sendable {
+    let relation: SimilarityRelation?
+    let isCacheable: Bool
+}
+
 private func compareImageCandidate(
     _ candidate: ImageComparisonCandidate,
     cache: (any HashCaching)?,
     featureCache: ImageFeatureCache
-) async throws -> SimilarityRelation? {
+) async throws -> ImagePairComparisonResult {
     try Task.checkCancellation()
     let perceptual = candidate.firstHash.similarity(to: candidate.secondHash)
     var exact = false
@@ -434,7 +448,7 @@ private func compareImageCandidate(
         exact = firstHash != nil && firstHash == secondHash
     }
 
-    let feature = !exact && perceptual >= 0.72
+    let feature = !exact
         ? try await featureCache.similarity(between: candidate.first.url, and: candidate.second.url)
         : nil
     let score = SimilarityScorer.score(
@@ -442,7 +456,8 @@ private func compareImageCandidate(
         candidate.second,
         hashesMatch: exact,
         perceptualSimilarity: perceptual,
-        frameSimilarity: feature
+        frameSimilarity: feature,
+        requiresVisualVerification: true
     )
     let relation: SimilarityRelation?
     if score.score >= ImageSimilarityPipeline.relationStorageFloor {
@@ -455,7 +470,7 @@ private func compareImageCandidate(
     } else {
         relation = nil
     }
-    return relation
+    return ImagePairComparisonResult(relation: relation, isCacheable: exact || feature?.isFinite == true)
 }
 
 private func flushPairRelationUpserts(

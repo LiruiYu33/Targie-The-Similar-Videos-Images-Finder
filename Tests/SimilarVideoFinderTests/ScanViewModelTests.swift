@@ -20,6 +20,9 @@
 // and credit the original author (Lirui Yu).
 
 import Combine
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 import XCTest
 @testable import SimilarVideoFinder
 
@@ -608,7 +611,7 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertTrue(model.groups.isEmpty)
     }
 
-    func testDeletingBridgeItemKeepsGroupWhenTwoFilesRemain() async {
+    func testDeletingBridgeItemDoesNotInventSurvivorRelation() async {
         let a = SimilarityScoringTests.video(name: "a.mov")
         let b = SimilarityScoringTests.video(name: "b.mov")
         let c = SimilarityScoringTests.video(name: "c.mov")
@@ -621,16 +624,13 @@ final class ScanViewModelTests: XCTestCase {
 
         await model.confirmDeletion(of: b, mode: .permanent)
 
-        XCTAssertEqual(model.groups.count, 1)
-        XCTAssertEqual(Set(model.groups[0].items.map(\.id)), [a.id, c.id])
+        XCTAssertTrue(model.groups.isEmpty)
+        XCTAssertEqual(Set(model.items.map(\.id)), [a.id, c.id])
     }
 
-    /// Regression: when the only relation between two survivors is below the
-    /// display threshold, deleting the bridge item used to dissolve the group
-    /// because the synthetic continuity relation was skipped (the pair already
-    /// existed in allRelations with a sub-threshold score). The synthetic
-    /// relation must upgrade the pair so the survivors stay grouped.
-    func testDeletingBridgeItemKeepsGroupWhenSurvivorsOnlyHaveBelowThresholdRelation() async {
+    /// Deletion must neither upgrade a weak measured pair nor copy evidence
+    /// from the removed bridge merely to keep the old group visible.
+    func testDeletingBridgeItemPreservesBelowThresholdScoreAndEvidence() async throws {
         let a = SimilarityScoringTests.video(name: "a.mov")
         let b = SimilarityScoringTests.video(name: "b.mov")
         let c = SimilarityScoringTests.video(name: "c.mov")
@@ -645,8 +645,77 @@ final class ScanViewModelTests: XCTestCase {
 
         await model.confirmDeletion(of: b, mode: .permanent)
 
+        XCTAssertTrue(model.groups.isEmpty)
+        XCTAssertEqual(Set(model.items.map(\.id)), [a.id, c.id])
+
+        model.threshold = 0.60
+        try await waitUntil { model.groups.count == 1 }
+        let group = try XCTUnwrap(model.groups.first)
+        XCTAssertEqual(group.relations, [relations[2]])
+        XCTAssertEqual(group.maximumScore, 0.65)
+        XCTAssertFalse(group.relations[0].evidence.contains(.similarFrames))
+    }
+
+    func testBrowseRemovalDoesNotInventOrUpgradeSurvivorRelations() async throws {
+        for survivorScore in [nil, 0.65] as [Double?] {
+            let a = SimilarityScoringTests.video(name: "a.mov")
+            let b = SimilarityScoringTests.video(name: "b.mov")
+            let c = SimilarityScoringTests.video(name: "c.mov")
+            let survivingRelation = survivorScore.map {
+                SimilarityRelation(firstID: a.id, secondID: c.id, score: $0, evidence: [.similarPerceptualHash])
+            }
+            var relations = [
+                SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+                SimilarityRelation(firstID: b.id, secondID: c.id, score: 0.95, evidence: [.similarFrames])
+            ]
+            if let survivingRelation { relations.append(survivingRelation) }
+            let model = ScanViewModel(hashCache: nil)
+            model.replaceResultsForTesting(items: [a, b, c], relations: relations)
+            model.selectGroup(model.groups.first?.id)
+
+            model.removeItem(b.id)
+
+            XCTAssertTrue(model.groups.isEmpty)
+            XCTAssertNil(model.selectedGroupID)
+            XCTAssertEqual(Set(model.items.map(\.id)), [a.id, c.id])
+            let rebuilt = expectation(description: "survivors regrouped at lower threshold")
+            let publication = model.$groups.dropFirst().sink { _ in rebuilt.fulfill() }
+            model.threshold = 0.60
+            await fulfillment(of: [rebuilt], timeout: 2)
+            publication.cancel()
+            if let survivingRelation {
+                let group = try XCTUnwrap(model.groups.first)
+                XCTAssertEqual(group.relations, [survivingRelation])
+                XCTAssertEqual(group.maximumScore, survivingRelation.score)
+            } else {
+                XCTAssertTrue(model.groups.isEmpty)
+            }
+        }
+    }
+
+    func testBrowseRemovalKeepsIdentityAndSelectionForMeasuredSurvivingPair() throws {
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let survivorRelation = SimilarityRelation(firstID: a.id, secondID: c.id, score: 0.93, evidence: [.similarFrames])
+        let relations = [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: b.id, secondID: c.id, score: 0.94, evidence: [.similarFrames]),
+            survivorRelation
+        ]
+        let model = ScanViewModel(hashCache: nil)
+        model.replaceResultsForTesting(items: [a, b, c], relations: relations)
+        let groupID = try XCTUnwrap(model.groups.first?.id)
+        model.selectGroup(groupID)
+
+        model.removeItem(b.id)
+
+        let group = try XCTUnwrap(model.groups.first)
         XCTAssertEqual(model.groups.count, 1)
-        XCTAssertEqual(Set(model.groups[0].items.map(\.id)), [a.id, c.id])
+        XCTAssertEqual(group.id, groupID)
+        XCTAssertEqual(model.selectedGroupID, groupID)
+        XCTAssertEqual(group.relations, [survivorRelation])
+        XCTAssertEqual(Set(group.items.map(\.id)), [a.id, c.id])
     }
 
     func testDeletingOneOfThreeFilesKeepsSelectedGroupIdentityWhenPairRemains() async {
@@ -1446,13 +1515,122 @@ final class ScanViewModelTests: XCTestCase {
 
     // MARK: - Threshold rebuild respects excludeSubfolders (#4)
 
+    func testFirstVideoScanExcludesSubfoldersAndHonoursExplicitNestedRoot() async throws {
+        try await assertFirstScanExcludesSubfolders(kind: .video)
+    }
+
+    func testFirstImageScanExcludesSubfoldersAndHonoursExplicitNestedRoot() async throws {
+        try await assertFirstScanExcludesSubfolders(kind: .image)
+    }
+
+    private func assertFirstScanExcludesSubfolders(kind: MediaKind) async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("ScanVisibility-\(UUID().uuidString)", isDirectory: true)
+        let first = root.appendingPathComponent("first", isDirectory: true)
+        let nested = first.appendingPathComponent("nested", isDirectory: true)
+        let second = root.appendingPathComponent("second", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ext = kind == .video ? "mp4" : "png"
+        let topFile = first.appendingPathComponent("top.\(ext)")
+        let peerFile = second.appendingPathComponent("peer.\(ext)")
+        let nestedFile = nested.appendingPathComponent("nested.\(ext)")
+        if kind == .image {
+            let context = try XCTUnwrap(CGContext(
+                data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 256,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            context.setFillColor(CGColor(gray: 1, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+            context.setFillColor(CGColor(gray: 0, alpha: 1))
+            context.fillEllipse(in: CGRect(x: 8, y: 12, width: 36, height: 44))
+            let image = try XCTUnwrap(context.makeImage())
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
+                topFile as CFURL, UTType.png.identifier as CFString, 1, nil
+            ))
+            CGImageDestinationAddImage(destination, image, nil)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+        } else {
+            try Data("video fixture".utf8).write(to: topFile)
+        }
+        try FileManager.default.copyItem(at: topFile, to: peerFile)
+        try FileManager.default.copyItem(at: topFile, to: nestedFile)
+        let model = ScanViewModel(
+            scanner: VideoScanner { url in
+                MediaItem(kind: .video, url: url, fileSize: 13, duration: 1,
+                          width: 64, height: 64, modifiedAt: nil, thumbnailData: nil)
+            },
+            pipeline: AllDuplicatesPipeline(),
+            hashCache: nil,
+            thumbnailStore: ThumbnailStore(directoryURL: root.appendingPathComponent("thumbnails"))
+        )
+        model.addFolders([first, second])
+        model.excludeSubfolders = true
+        model.startScan()
+        try await waitUntil { !model.isScanning }
+
+        XCTAssertEqual(model.progress.stage, .completed)
+        let topPaths = Set([topFile, peerFile].map { $0.standardizedFileURL.path })
+        XCTAssertEqual(Set(model.items.map { $0.url.standardizedFileURL.path }), topPaths)
+        XCTAssertEqual(model.groups.count, 1)
+        XCTAssertEqual(Set(model.groups.flatMap { $0.items.map { $0.url.standardizedFileURL.path } }), topPaths)
+
+        // Exclusion only changes visibility; the full scan remains available.
+        model.excludeSubfolders = false
+        XCTAssertEqual(model.groups.first?.items.count, 3)
+        model.excludeSubfolders = true
+        XCTAssertEqual(model.groups.first?.items.count, 2)
+
+        // A nested directory explicitly selected as a root is in scope.
+        model.addFolders([nested])
+        model.startScan()
+        try await waitUntil { !model.isScanning }
+        XCTAssertEqual(model.progress.stage, .completed)
+        let allPaths = Set([topFile, peerFile, nestedFile].map { $0.standardizedFileURL.path })
+        XCTAssertEqual(Set(model.groups.flatMap { $0.items.map { $0.url.standardizedFileURL.path } }), allPaths)
+    }
+
+    func testFilterChangeDuringFinalScanBuildRejectsStaleGroups() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("ScanFilterChange-\(UUID().uuidString)", isDirectory: true)
+        let nested = root.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data().write(to: root.appendingPathComponent("top.mp4"))
+        try Data().write(to: nested.appendingPathComponent("nested.mp4"))
+        let gate = FirstGroupBuildGate()
+        let model = ScanViewModel(
+            scanner: VideoScanner { url in
+                MediaItem(kind: .video, url: url, fileSize: 1, duration: 1,
+                          width: 16, height: 9, modifiedAt: nil, thumbnailData: nil)
+            },
+            pipeline: ExactDuplicatePipeline(),
+            hashCache: nil,
+            groupBuilder: { items, relations, threshold in
+                await gate.build(items: items, relations: relations, threshold: threshold)
+            }
+        )
+        model.addFolders([root])
+        model.startScan()
+        try await waitUntilAsync { await gate.hasBlockedBuild }
+        model.excludeSubfolders = true
+        await gate.resume()
+        try await waitUntil { !model.isScanning }
+
+        XCTAssertEqual(model.progress.stage, .completed)
+        XCTAssertEqual(model.items.count, 1)
+        XCTAssertTrue(model.groups.isEmpty)
+        let buildCount = await gate.buildCount
+        XCTAssertEqual(buildCount, 2)
+    }
+
     /// When excludeSubfolders is on, dragging the threshold slider must rebuild
     /// groups from top-level items only - the async threshold rebuild used to
     /// bypass the filter and repopulate the sidebar with subfolder items.
     func testThresholdRebuildRespectsExcludeSubfolders() async throws {
         let folder = URL(fileURLWithPath: "/tmp/TargieTest-\(UUID().uuidString)")
-        let topLevelA = SimilarityScoringTests.video(name: "top-a.mov")
-        let topLevelB = SimilarityScoringTests.video(name: "top-b.mov")
         // Same content hash evidence so they form a group at threshold.
         let topLevelAInFolder = MediaItem(
             kind: .video, url: folder.appendingPathComponent("top-a.mov"),
@@ -1480,9 +1658,13 @@ final class ScanViewModelTests: XCTestCase {
         // Sync rebuild already filters; groups contain only top-level items.
         XCTAssertEqual(Set(model.groups.flatMap { $0.items.map(\.id) }), [topLevelAInFolder.id, topLevelBInFolder.id])
 
-        // Nudge the threshold to schedule an async rebuild.
+        // Wait for an actual publication: group count already equals one
+        // before the asynchronous rebuild, so it cannot be our wait condition.
+        let rebuilt = expectation(description: "threshold groups published")
+        let publication = model.$groups.dropFirst().sink { _ in rebuilt.fulfill() }
+        defer { publication.cancel() }
         model.threshold = 0.90
-        try await waitUntil { model.groups.count == 1 }
+        await fulfillment(of: [rebuilt], timeout: 2)
 
         // After the async rebuild, subfolder items must still be excluded.
         let groupItemIDs = Set(model.groups.flatMap { $0.items.map(\.id) })
@@ -1542,6 +1724,41 @@ final class ScanViewModelTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("Timed out waiting for async scan state")
+    }
+}
+
+private actor FirstGroupBuildGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var hasBlockedBuild = false
+    private(set) var buildCount = 0
+
+    func build(items: [MediaItem], relations: [SimilarityRelation], threshold: Double) async -> [SimilarityGroup] {
+        buildCount += 1
+        if buildCount == 1 {
+            hasBlockedBuild = true
+            await withCheckedContinuation { continuation = $0 }
+        }
+        return SimilarityGrouper.groups(items: items, relations: relations, threshold: threshold)
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private struct AllDuplicatesPipeline: SimilarityProcessing {
+    func process(
+        videos: [MediaItem], threshold: Double,
+        progress: @escaping @Sendable (ScanProgress) async -> Void
+    ) async throws -> PipelineResult {
+        let relations = videos.indices.flatMap { index in
+            videos.dropFirst(index + 1).map { other in
+                SimilarityRelation(firstID: videos[index].id, secondID: other.id,
+                                   score: 1, evidence: [.identicalContentHash])
+            }
+        }
+        return PipelineResult(videos: videos, relations: relations)
     }
 }
 

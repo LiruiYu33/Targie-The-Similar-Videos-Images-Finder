@@ -30,6 +30,14 @@ jobs:
           swift --version
           xcodebuild -version
 
+      - name: Ensure video test dependency
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            brew install ffmpeg
+          fi
+          ffmpeg -version
+
       - name: Run tests
         run: |
           set -euo pipefail

@@ -23,11 +23,41 @@ import XCTest
 @testable import SimilarVideoFinder
 
 final class DisplayThresholdEditingTests: XCTestCase {
-    func testSliderValueSnapsToRecommendedThresholdNearSeventyTwoPercent() {
-        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.715), 0.72, accuracy: 0.0001)
-        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.69), 0.72, accuracy: 0.0001)
-        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.735), 0.735, accuracy: 0.0001)
-        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.67), 0.67, accuracy: 0.0001)
+    func testSliderValueSnapsToRecommendedThresholdFromEightyFourToEightyEightPercent() {
+        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.84), 0.88, accuracy: 0.0001)
+        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.85), 0.88, accuracy: 0.0001)
+        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.879), 0.88, accuracy: 0.0001)
+        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.88), 0.88, accuracy: 0.0001)
+        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.89), 0.89, accuracy: 0.0001)
+        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.839), 0.839, accuracy: 0.0001)
+        XCTAssertEqual(DisplayThresholdEditing.sliderValue(for: 0.69), 0.69, accuracy: 0.0001)
+    }
+
+    func testManualInputDoesNotSnapInsideSliderMagnetRange() {
+        assertParsedThreshold("85", equals: 0.85)
+        assertParsedThreshold("87.5%", equals: 0.875)
+    }
+
+    @MainActor
+    func testInitialScanThresholdMatchesRecommendedThreshold() {
+        let model = ScanViewModel(hashCache: nil)
+
+        XCTAssertEqual(DisplayThresholdEditing.recommendedThreshold, 0.88, accuracy: 0.0001)
+        XCTAssertEqual(model.threshold, DisplayThresholdEditing.recommendedThreshold)
+        XCTAssertEqual(DisplayThresholdEditing.text(for: model.threshold), "88")
+    }
+
+    func testThresholdHelpUsesRecommendedValueInEveryLanguage() {
+        let recommendedText = DisplayThresholdEditing.text(for: DisplayThresholdEditing.recommendedThreshold)
+        for language in AppLanguage.allCases {
+            let help = L10n.displayThresholdHelp(language)
+            XCTAssertTrue(help.contains(recommendedText), "Missing recommendation for \(language)")
+            XCTAssertFalse(help.contains("72"), "Outdated recommendation for \(language)")
+        }
+        XCTAssertEqual(
+            L10n.displayThresholdHelp(.simplifiedChinese),
+            "建议从 \(recommendedText)% 开始；降低阈值会显示更多候选。分数不代表重复概率。"
+        )
     }
 
     func testTextInputParsesPercentValuesAndClampsToAllowedRange() {

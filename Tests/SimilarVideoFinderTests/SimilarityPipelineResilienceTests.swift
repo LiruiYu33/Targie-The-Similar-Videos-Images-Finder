@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Lirui Yu
 
 import XCTest
+import CoreGraphics
+@preconcurrency import Vision
 @testable import SimilarVideoFinder
 
 final class SimilarityPipelineResilienceTests: XCTestCase {
@@ -78,15 +80,151 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(PerceptualHasher.algorithmVersion, "video-dct3d-v2")
         XCTAssertEqual(
             SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false),
-            "video-pair-relation-v2-perceptual"
+            "video-pair-relation-v3-perceptual"
         )
         XCTAssertEqual(
             SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: true),
-            "video-pair-relation-v2-frame"
+            "video-pair-relation-v4-frame"
         )
         XCTAssertEqual(ImageSimilarityPipeline.algorithmVersion, "image-phash-v1")
-        XCTAssertEqual(ImageFeatureExtractor.algorithmVersion, "vision-image-feature-v2")
-        XCTAssertEqual(ImageSimilarityPipeline.pairRelationAlgorithmVersion, "image-pair-relation-v2")
+        XCTAssertEqual(ImageFeatureExtractor.algorithmVersion, "vision-image-feature-v3-revision2")
+        XCTAssertEqual(ImageSimilarityPipeline.pairRelationAlgorithmVersion, "image-pair-relation-v4")
+    }
+
+    func testFailedRequiredFrameVerificationRetriesUntilItSucceeds() async throws {
+        let completeFeatures = try makeCompleteFrameFeatures()
+        let failures: [(throwsOnExtraction: Bool, score: Double?)] = [
+            (true, nil), (false, nil), (false, .nan), (false, .infinity)
+        ]
+        for failure in failures {
+            let first = video(path: "/missing/retry-frame-first.mp4", size: 1_000)
+            let second = video(path: "/missing/retry-frame-second.mp4", size: 1_100)
+            let cache = InMemoryHashCache()
+            let firstHash = [UInt8](repeating: 0, count: 8)
+            let secondHash = [UInt8(1)] + [UInt8](repeating: 0, count: 7)
+            await seed(cache, video: first, hash: firstHash)
+            await seed(cache, video: second, hash: secondHash)
+            let extractor = ControllableFrameExtractor(score: failure.score, features: completeFeatures, throwsOnExtraction: failure.throwsOnExtraction)
+            let pipeline = SimilarityPipeline(cache: cache, extractor: extractor, usesFrameVerification: true)
+            let version = SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: true)
+            let signature = SimilarityPipeline.scanRelationSignature(
+                items: [first, second], hashes: [first.id: Data(firstHash), second.id: Data(secondHash)], algorithmVersion: version
+            )
+
+            var previousExtractions = 0
+            for _ in 0..<2 {
+                let result = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+                XCTAssertEqual(result.relations.count, 1)
+                XCTAssertTrue(result.relations.allSatisfy { $0.score <= 0.85 })
+                XCTAssertTrue(SimilarityGrouper.groups(items: result.videos, relations: result.relations, threshold: 0.88).isEmpty)
+                let extractions = await extractor.extractionCount
+                XCTAssertGreaterThan(extractions, previousExtractions, "Required verification must retry after an incomplete result")
+                previousExtractions = extractions
+                let pair = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: version)
+                let index = await (cache as any HashCaching).lookupScanRelationIndex(signature: signature, mediaKind: .video, algorithmVersion: version)
+                XCTAssertNil(pair)
+                XCTAssertNil(index)
+            }
+
+            await extractor.setScore(0.99)
+            let recovered = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+            XCTAssertEqual(SimilarityGrouper.groups(items: recovered.videos, relations: recovered.relations, threshold: 0.88).count, 1)
+            let pair = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: version)
+            let index = await (cache as any HashCaching).lookupScanRelationIndex(signature: signature, mediaKind: .video, algorithmVersion: version)
+            XCTAssertNotNil(pair)
+            XCTAssertNotNil(index)
+            let successfulExtractions = await extractor.extractionCount
+            _ = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+            let afterCachedScan = await extractor.extractionCount
+            XCTAssertEqual(afterCachedScan, successfulExtractions)
+        }
+    }
+
+    func testSuccessfullyVerifiedWeakVideoPairRemainsCached() async throws {
+        let first = video(path: "/missing/weak-frame-first.mp4", size: 1_000)
+        let second = video(path: "/missing/weak-frame-second.mp4", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, video: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, video: second, hash: [1] + [UInt8](repeating: 0, count: 7))
+        let extractor = ControllableFrameExtractor(score: 0.1, features: try makeCompleteFrameFeatures())
+        let pipeline = SimilarityPipeline(cache: cache, extractor: extractor, usesFrameVerification: true)
+        let result = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+        XCTAssertTrue(result.relations.isEmpty)
+        let pair = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: true))
+        XCTAssertNotNil(pair)
+        XCTAssertNil(pair?.score)
+        let extractions = await extractor.extractionCount
+        _ = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+        let afterCachedScan = await extractor.extractionCount
+        XCTAssertEqual(afterCachedScan, extractions)
+    }
+
+    func testFinitePartialFrameComparisonRetriesUntilAllSamplesRecover() async throws {
+        let complete = try makeCompleteFrameFeatures()
+        let partial = FrameFeatures(observations: [complete.observations[0], complete.observations[1], nil, nil, nil])
+        XCTAssertFalse(partial.isCompleteForPersistence)
+        let first = video(path: "/missing/partial-first.mp4", size: 1_000)
+        let second = video(path: "/missing/partial-second.mp4", size: 1_100)
+        let cache = InMemoryHashCache()
+        let firstHash = [UInt8](repeating: 0, count: 8)
+        let secondHash = [UInt8(1)] + [UInt8](repeating: 0, count: 7)
+        await seed(cache, video: first, hash: firstHash)
+        await seed(cache, video: second, hash: secondHash)
+        let extractor = ControllableFrameExtractor(score: nil, features: partial, usesMeasuredSimilarity: true)
+        let pipeline = SimilarityPipeline(cache: cache, extractor: extractor, usesFrameVerification: true)
+        let version = SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: true)
+        let signature = SimilarityPipeline.scanRelationSignature(
+            items: [first, second], hashes: [first.id: Data(firstHash), second.id: Data(secondHash)], algorithmVersion: version
+        )
+
+        for scan in 1...2 {
+            let result = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+            let relation = try XCTUnwrap(result.relations.first)
+            XCTAssertTrue(relation.score.isFinite)
+            XCTAssertGreaterThan(relation.score, 0.88, "Two valid real observations can provide a useful score for this scan")
+            let extractions = await extractor.extractionCount
+            let comparisons = await extractor.comparisonCount
+            XCTAssertEqual(extractions, scan * 2, "Incomplete frame sets must be extracted again on the next scan")
+            XCTAssertEqual(comparisons, scan, "Completeness checks must not repeat the comparison")
+            let pair = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: version)
+            let index = await (cache as any HashCaching).lookupScanRelationIndex(signature: signature, mediaKind: .video, algorithmVersion: version)
+            XCTAssertNil(pair)
+            XCTAssertNil(index)
+        }
+
+        await extractor.setFeatures(complete)
+        _ = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+        let successfulExtractions = await extractor.extractionCount
+        let successfulComparisons = await extractor.comparisonCount
+        XCTAssertEqual(successfulExtractions, 6)
+        XCTAssertEqual(successfulComparisons, 3)
+        let pair = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: version)
+        let index = await (cache as any HashCaching).lookupScanRelationIndex(signature: signature, mediaKind: .video, algorithmVersion: version)
+        XCTAssertNotNil(pair)
+        XCTAssertNotNil(index)
+        _ = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+        let cachedExtractions = await extractor.extractionCount
+        let cachedComparisons = await extractor.comparisonCount
+        XCTAssertEqual(cachedExtractions, successfulExtractions)
+        XCTAssertEqual(cachedComparisons, successfulComparisons)
+    }
+
+    func testFastVideoComparisonRemainsCacheableWithoutVision() async throws {
+        let first = video(path: "/missing/fast-frame-first.mp4", size: 1_000)
+        let second = video(path: "/missing/fast-frame-second.mp4", size: 1_100)
+        let cache = InMemoryHashCache()
+        await seed(cache, video: first, hash: [UInt8](repeating: 0, count: 8))
+        await seed(cache, video: second, hash: [1] + [UInt8](repeating: 0, count: 7))
+        let extractor = CountingThrowingExtractor()
+        let pipeline = SimilarityPipeline(cache: cache, extractor: extractor, usesFrameVerification: false)
+        let firstScan = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+        let pair = await cache.lookupPairRelation(first: first, second: second, algorithmVersion: SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: false))
+        XCTAssertNotNil(pair)
+        let secondScan = try await pipeline.process(videos: [first, second], threshold: 0.88) { _ in }
+        XCTAssertEqual(firstScan.relations, secondScan.relations)
+        XCTAssertEqual(SimilarityGrouper.groups(items: secondScan.videos, relations: secondScan.relations, threshold: 0.88).count, 1)
+        let extractions = await extractor.extractionCount
+        XCTAssertEqual(extractions, 0)
     }
 
     func testVideoComparisonConcurrencyDropsWhenThermalStateIsHigh() {
@@ -623,6 +761,27 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         XCTAssertEqual(lastPairBatchLookupKeyCount, 2)
     }
 
+    private func makeCompleteFrameFeatures() throws -> FrameFeatures {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: 128, height: 128, bitsPerComponent: 8, bytesPerRow: 512,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(gray: 0.9, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.7, alpha: 1))
+        context.fill(CGRect(x: 20, y: 15, width: 45, height: 80))
+        context.setFillColor(CGColor(gray: 0.2, alpha: 1))
+        context.fillEllipse(in: CGRect(x: 75, y: 55, width: 35, height: 40))
+        let image = try XCTUnwrap(context.makeImage())
+        let request = VNGenerateImageFeaturePrintRequest()
+        request.revision = VisionFeatureSimilarity.requestRevision
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        let observation = try XCTUnwrap(request.results?.first as? VNFeaturePrintObservation)
+        let features = FrameFeatures(observations: Array(repeating: observation, count: FrameFeatureExtractor.samplePositions.count))
+        XCTAssertTrue(features.isCompleteForPersistence)
+        return features
+    }
+
     private func video(path: String, size: Int64) -> MediaItem {
         MediaItem(
             kind: .video,
@@ -656,6 +815,43 @@ private actor CountingThrowingExtractor: FrameFeatureExtracting {
 
     func similarity(between first: FrameFeatures, and second: FrameFeatures) async throws -> Double? {
         nil
+    }
+}
+
+private actor ControllableFrameExtractor: FrameFeatureExtracting {
+    private var score: Double?
+    private var featuresValue: FrameFeatures
+    private var throwsOnExtraction: Bool
+    private let usesMeasuredSimilarity: Bool
+    private(set) var extractionCount = 0
+    private(set) var comparisonCount = 0
+
+    init(score: Double?, features: FrameFeatures, throwsOnExtraction: Bool = false, usesMeasuredSimilarity: Bool = false) {
+        self.score = score
+        self.featuresValue = features
+        self.throwsOnExtraction = throwsOnExtraction
+        self.usesMeasuredSimilarity = usesMeasuredSimilarity
+    }
+
+    func setScore(_ score: Double?) {
+        self.score = score
+        throwsOnExtraction = false
+    }
+
+    func setFeatures(_ features: FrameFeatures) { featuresValue = features }
+
+    func features(for url: URL) async throws -> FrameFeatures {
+        extractionCount += 1
+        if throwsOnExtraction { throw CocoaError(.fileReadCorruptFile) }
+        return featuresValue
+    }
+
+    func similarity(between first: FrameFeatures, and second: FrameFeatures) async throws -> Double? {
+        comparisonCount += 1
+        if usesMeasuredSimilarity {
+            return try await FrameFeatureExtractor().similarity(between: first, and: second)
+        }
+        return score
     }
 }
 
