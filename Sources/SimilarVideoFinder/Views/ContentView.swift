@@ -33,6 +33,8 @@ struct ContentView: View {
     @StateObject private var browseSession = BrowseSessionCoordinator()
     @State private var isClearCacheConfirmPresented = false
     @State private var isSettingsPresented = false
+    @State private var isInspectorPresented = false
+    @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
     @State private var cacheMB = (thumbnailMB: "0", hashMB: "0")
 
     private var language: AppLanguage {
@@ -90,6 +92,11 @@ struct ContentView: View {
             model.setDeepVerification(deepVerification)
             model.excludeSubfolders = excludeSubfolders
             browseSession.prepareIfPossible(scanModel: model)
+            columnVisibility = model.selectedFolders.isEmpty ? .detailOnly : .all
+        }
+        .onChange(of: model.selectedFolders.isEmpty) { _, isEmpty in
+            columnVisibility = isEmpty ? .detailOnly : .all
+            if isEmpty { isInspectorPresented = false }
         }
         .onChange(of: scanIntensityRawValue) { _, _ in
             model.setScanIntensity(scanIntensity)
@@ -109,38 +116,31 @@ struct ContentView: View {
             }
         }
         .background(
-            // In scan mode this owns the window title; browse mode installs
-            // its own dynamic WindowTitleUpdater that reflects item count.
-            Group {
-                if appMode == .scan {
-                    WindowTitleUpdater(title: L10n.appName(language))
-                }
-            }
+            WindowTitleUpdater(title: appMode == .scan
+                ? AppIdentity.displayName
+                : L10n.browseItemCount(browseSession.browseModel?.displayedItems.count ?? 0, language))
         )
     }
 
     // MARK: - Scan Mode View
 
     private var scanView: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(model: model, excludeSubfolders: $excludeSubfolders)
                 .navigationSplitViewColumnWidth(
                     min: SplitColumnConfiguration.sidebar.minWidth,
                     ideal: SplitColumnConfiguration.sidebar.idealWidth,
                     max: SplitColumnConfiguration.sidebar.maxWidth ?? SplitColumnConfiguration.sidebar.idealWidth
                 )
-        } content: {
-            GroupDetailView(model: model)
-                .navigationSplitViewColumnWidth(
-                    min: SplitColumnConfiguration.comparison.minWidth,
-                    ideal: SplitColumnConfiguration.comparison.idealWidth
-                )
         } detail: {
-            InspectorView(model: model)
-                .navigationSplitViewColumnWidth(
-                    min: SplitColumnConfiguration.preview.minWidth,
-                    ideal: SplitColumnConfiguration.preview.idealWidth
-                )
+            HSplitView {
+                GroupDetailView(model: model)
+                    .frame(minWidth: 520, maxWidth: .infinity)
+                if isInspectorPresented {
+                    InspectorView(model: model)
+                        .frame(minWidth: 280, idealWidth: 320, maxWidth: 380)
+                }
+            }
         }
         .toolbar {
             ToolbarItemGroup {
@@ -166,6 +166,15 @@ struct ContentView: View {
                     action: enterBrowseMode
                 )
                 .disabled(model.selectedFolders.isEmpty || model.isBusy)
+
+                ToolbarLabeledButton(
+                    title: L10n.details(language),
+                    systemImage: "sidebar.right",
+                    action: { isInspectorPresented.toggle() }
+                )
+                .disabled(model.selectedFolders.isEmpty)
+                .help(L10n.previewAndDetails(language))
+                .accessibilityValue(isInspectorPresented ? "Visible" : "Hidden")
 
                 ToolbarLabeledButton(
                     title: L10n.settings(language),
@@ -195,7 +204,11 @@ struct ContentView: View {
             DeleteConfirmationView(model: model)
         }
         .onDeleteCommand {
-            if let video = model.selectedMedia { model.requestDeletion(of: video) }
+            if !model.checkedMediaIDs.isEmpty {
+                model.requestCheckedDeletion()
+            } else if let video = model.selectedMedia {
+                model.requestDeletion(of: video)
+            }
         }
     }
 

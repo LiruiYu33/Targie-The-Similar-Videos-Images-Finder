@@ -29,22 +29,24 @@ struct VideoCardView: View {
     let language: AppLanguage
     let isSelected: Bool
     let isChecked: Bool
+    var previewHeight: CGFloat = 320
     let toggleChecked: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: Binding(get: { isChecked }, set: { _ in toggleChecked() })) { EmptyView() }
                 .toggleStyle(.checkbox)
+                .accessibilityLabel(video.filename)
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(.black.opacity(0.88))
+                    .fill(video.kind == .image ? Color(nsColor: .underPageBackgroundColor) : .black.opacity(0.88))
                 MediaThumbnailView(
                     item: video,
                     placeholderSystemImage: video.kind == .video ? "film" : "photo",
                     placeholderColor: .white.opacity(0.7)
                 )
             }
-            .aspectRatio(previewAspectRatio, contentMode: .fit)
+            .frame(height: previewHeight)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             HStack(alignment: .firstTextBaseline) {
@@ -54,16 +56,19 @@ struct VideoCardView: View {
                 Spacer()
                 Text(DisplayFormatters.percent(score))
                     .font(.caption.bold())
-                    .foregroundStyle(score >= 0.9 ? .green : .secondary)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .help(L10n.similarityScoreHelp(language))
             }
             Text(video.duration.map { "\(DisplayFormatters.fileSize(video.fileSize)) · \(DisplayFormatters.duration($0, language: language)) · \(video.resolution(language: language))" } ?? "\(DisplayFormatters.fileSize(video.fileSize)) · \(video.resolution(language: language))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            Text(video.url.deletingLastPathComponent().path)
+            Label(video.url.deletingLastPathComponent().lastPathComponent, systemImage: "folder")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .help(video.url.deletingLastPathComponent().path)
 
             if !evidence.isEmpty {
                 Text(evidence.map { L10n.evidence($0, language) }.sorted().joined(separator: " · "))
@@ -73,7 +78,7 @@ struct VideoCardView: View {
             }
         }
         .padding(12)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .background(isChecked ? Color.accentColor.opacity(0.08) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.18), lineWidth: isSelected ? 2 : 1)
@@ -81,8 +86,4 @@ struct VideoCardView: View {
         .contentShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private var previewAspectRatio: CGFloat {
-        guard video.kind == .image, video.width > 0, video.height > 0 else { return 16 / 9 }
-        return CGFloat(video.width) / CGFloat(video.height)
-    }
 }

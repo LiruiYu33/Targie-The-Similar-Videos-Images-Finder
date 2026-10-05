@@ -102,7 +102,7 @@ struct InspectorView: View {
             .controlSize(.large)
         case .deleteFile:
             Button(role: .destructive) {
-                model.requestPreviewDeletion(defaultingTo: media)
+                model.requestDeletion(of: media)
             } label: {
                 Label(deleteButtonTitle, systemImage: "trash")
             }
@@ -114,10 +114,7 @@ struct InspectorView: View {
     }
 
     private var deleteButtonTitle: String {
-        if model.checkedMediaIDs.isEmpty {
-            return L10n.deleteMedia(language)
-        }
-        return L10n.deleteSelected(model.checkedMediaIDs.count, language)
+        L10n.deleteMedia(language)
     }
 }
 

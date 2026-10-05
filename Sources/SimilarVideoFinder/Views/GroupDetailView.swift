@@ -28,55 +28,152 @@ struct GroupDetailView: View {
 
     var body: some View {
         Group {
-            if let group = model.selectedGroup {
-                ScrollView {
-                    ZStack(alignment: .topLeading) {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture { model.clearGroupItemSelection() }
+            if model.selectedFolders.isEmpty {
+                welcome
+            } else if let group = model.selectedGroup {
+                GeometryReader { geometry in
+                    ScrollView {
+                        ZStack(alignment: .topLeading) {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture { model.clearGroupItemSelection() }
 
-                        VStack(alignment: .leading, spacing: 16) {
-                            HStack(alignment: .firstTextBaseline) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(L10n.compareMedia(language))
-                                        .font(.title2.bold())
-                                    Text(L10n.compareMediaHint(language))
-                                        .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 16) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(L10n.similarMediaCount(group.items.count, language))
+                                            .font(.title2.bold())
+                                        Text(L10n.highestSimilarity(DisplayFormatters.percent(group.maximumScore), language))
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                            .help(L10n.similarityScoreHelp(language))
+                                    }
+                                    Spacer()
+                                    GroupSortMenu(model: model, language: language)
                                 }
-                                Spacer()
-                                ForEach(GroupDetailHeaderArrangement.actions(hasCheckedSelection: !model.checkedMediaIDs.isEmpty), id: \.self) { action in
-                                    headerAction(action, group: group)
+
+                                LazyVGrid(columns: comparisonColumns(width: geometry.size.width, itemCount: group.items.count), spacing: 14) {
+                                    ForEach(model.sortedGroupItems) { video in
+                                        VideoCardView(
+                                            video: video,
+                                            score: group.score(for: video.id),
+                                            evidence: group.evidence(for: video.id),
+                                            language: language,
+                                            isSelected: model.selectedMediaID == video.id,
+                                            isChecked: model.checkedMediaIDs.contains(video.id),
+                                            previewHeight: comparisonPreviewHeight(size: geometry.size, itemCount: group.items.count),
+                                            toggleChecked: { model.toggleChecked(video.id) }
+                                        )
+                                        .onTapGesture { handleCardTap(video) }
+                                        .contextMenu { groupContextMenu(clickedID: video.id) }
+                                    }
                                 }
                             }
-
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 14)], spacing: 14) {
-                                ForEach(model.sortedGroupItems) { video in
-                                    VideoCardView(
-                                        video: video,
-                                        score: group.score(for: video.id),
-                                        evidence: group.evidence(for: video.id),
-                                        language: language,
-                                        isSelected: model.selectedMediaID == video.id,
-                                        isChecked: model.checkedMediaIDs.contains(video.id),
-                                        toggleChecked: { model.toggleChecked(video.id) }
-                                    )
-                                    .onTapGesture { handleCardTap(video) }
-                                }
-                            }
+                            .padding(20)
                         }
-                        .padding(20)
+                        .frame(maxWidth: .infinity, minHeight: 1, alignment: .topLeading)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 1, alignment: .topLeading)
+                    .contextMenu { groupContextMenu(clickedID: nil) }
                 }
-            } else {
+            } else if !model.groups.isEmpty {
                 ContentUnavailableView(
                     L10n.selectGroup(language),
                     systemImage: "rectangle.3.group",
                     description: Text(L10n.resultsOnLeft(language))
                 )
+            } else if model.isScanning {
+                VStack(spacing: 14) {
+                    ProgressView()
+                    Text(L10n.scanProgressTitle(model.progress, language)).font(.headline)
+                    Text(L10n.scanProgressDetail(model.progress, language)).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView(
+                    model.progress.stage == .completed ? L10n.noSimilarMedia(language) : L10n.waitingToScan(language),
+                    systemImage: model.progress.stage == .completed ? "checkmark.circle" : "folder.badge.plus",
+                    description: Text(model.progress.stage == .completed ? L10n.lowerThresholdHint(language) : L10n.chooseAndScanHint(language))
+                )
             }
         }
-        .navigationTitle(model.selectedGroup == nil ? L10n.mediaComparison(language) : L10n.similarMediaCount(model.selectedGroup!.items.count, language))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !model.checkedMediaIDs.isEmpty {
+                VStack(spacing: 0) {
+                    Divider()
+                    HStack(spacing: 16) {
+                        Label(L10n.selectedCount(model.checkedMediaIDs.count, language), systemImage: "checkmark.circle.fill")
+                            .font(.callout.weight(.medium))
+                        Button(L10n.deselectAllGroupItems(language), action: model.clearGroupItemSelection)
+                            .buttonStyle(.borderless)
+                        Spacer()
+                        Button(role: .destructive, action: model.requestCheckedDeletion) {
+                            Label(L10n.deleteSelected(model.checkedMediaIDs.count, language), systemImage: "trash")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy)
+                    }
+                    .padding(16)
+                    .background(.bar)
+                }
+            }
+        }
+        .navigationTitle(AppIdentity.displayName)
+    }
+
+    private var welcome: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "photo.stack")
+                .font(.system(size: 52, weight: .light))
+                .foregroundStyle(.secondary)
+            VStack(spacing: 10) {
+                Text(L10n.findSimilarMedia(language)).font(.largeTitle.weight(.semibold))
+                Text(L10n.dragFoldersHint(language)).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 12) {
+                Button(action: { model.chooseFolder(language: language) }) {
+                    Label(L10n.addFolders(language), systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .controlSize(.large)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func comparisonColumns(width: CGFloat, itemCount: Int) -> [GridItem] {
+        let availableColumns = max(1, Int((width - 40 + 14) / 244))
+        let count = max(1, min(itemCount, availableColumns))
+        return Array(repeating: GridItem(.flexible(minimum: 230), spacing: 14), count: count)
+    }
+
+    private func comparisonPreviewHeight(size: CGSize, itemCount: Int) -> CGFloat {
+        let columns = comparisonColumns(width: size.width, itemCount: itemCount).count
+        let imageWidth = max(160, (size.width - 40 - CGFloat(columns - 1) * 14) / CGFloat(columns) - 24)
+        let contentHeight = model.sortedGroupItems.map { item -> CGFloat in
+            if item.kind == .image, item.width > 0, item.height > 0 {
+                return imageWidth * CGFloat(item.height) / CGFloat(item.width)
+            }
+            return imageWidth * 9 / 16
+        }.max() ?? imageWidth
+        return max(160, min(460, min(size.height - 235, contentHeight)))
+    }
+
+    @ViewBuilder
+    private func groupContextMenu(clickedID: UUID?) -> some View {
+        let targets = MediaContextSelection.items(
+            displayedItems: model.sortedGroupItems,
+            selectedIDs: model.checkedMediaIDs,
+            clickedID: clickedID,
+            fallbackID: model.selectedMediaID
+        )
+        Button(L10n.selectAll(language), action: model.selectAllGroupItems)
+            .disabled(model.sortedGroupItems.isEmpty || model.isBusy)
+        Divider()
+        Button(role: .destructive) { model.requestDeletion(of: targets) } label: {
+            Label(targets.count > 1 ? L10n.deleteSelected(targets.count, language) : L10n.deleteMedia(language), systemImage: "trash")
+        }
+        .disabled(targets.isEmpty || model.isBusy)
     }
 
     private func handleCardTap(_ video: MediaItem) {
@@ -90,16 +187,6 @@ struct GroupDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private func headerAction(_ action: GroupDetailHeaderAction, group: SimilarityGroup) -> some View {
-        switch action {
-        case .highestSimilarity:
-            Text(L10n.highestSimilarity(DisplayFormatters.percent(group.maximumScore), language))
-                .font(.callout.weight(.medium))
-        case .sortMenu:
-            GroupSortMenu(model: model, language: language)
-        }
-    }
 }
 
 /// Sort menu for the Compare Media card grid. Each dimension is a button:

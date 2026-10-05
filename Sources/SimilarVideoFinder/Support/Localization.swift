@@ -378,3 +378,33 @@ enum L10n {
         }
     }
 }
+
+extension L10n {
+    static func workspaceFolders(_ l: AppLanguage) -> String {
+        text(l, "Folders", "文件夹", "資料夾", "Carpetas", "Dossiers", "フォルダ", "폴더")
+    }
+
+    static func similarGroups(_ l: AppLanguage) -> String {
+        text(l, "Similar groups", "相似组", "相似群組", "Grupos similares", "Groupes similaires", "類似グループ", "유사 그룹")
+    }
+
+    static func scanResultsHint(_ l: AppLanguage) -> String {
+        text(l, "Results appear after scanning.", "扫描后在此显示结果。", "掃描後在此顯示結果。", "Los resultados aparecen tras el análisis.", "Les résultats apparaissent après l’analyse.", "スキャン後に結果が表示されます。", "스캔 후 결과가 표시됩니다.")
+    }
+
+    static func details(_ l: AppLanguage) -> String {
+        text(l, "Details", "详情", "詳細資訊", "Detalles", "Détails", "詳細", "상세 정보")
+    }
+
+    static func findSimilarMedia(_ l: AppLanguage) -> String {
+        text(l, "Find similar photos and videos", "查找相似的照片与视频", "尋找相似的照片與影片", "Encuentra fotos y vídeos similares", "Rechercher des photos et vidéos similaires", "似ている写真や動画を見つける", "유사한 사진과 동영상 찾기")
+    }
+
+    static func deselectAllGroupItems(_ l: AppLanguage) -> String {
+        text(l, "Deselect all", "取消全选", "取消全選", "Deseleccionar todo", "Tout désélectionner", "選択を解除", "모두 선택 해제")
+    }
+
+    static func similarityScoreHelp(_ l: AppLanguage) -> String {
+        text(l, "Similarity score, not the probability of a duplicate. Compare the files before removing them.", "这是相似评分，不是重复概率。删除前请比较文件内容。", "這是相似評分，不是重複機率。刪除前請比較檔案內容。", "Puntuación de similitud, no probabilidad de duplicación. Compara los archivos antes de eliminarlos.", "Score de similarité, pas une probabilité de doublon. Comparez les fichiers avant de les supprimer.", "類似度スコアであり、重複の確率ではありません。削除前にファイルを比較してください。", "중복 확률이 아닌 유사도 점수입니다. 삭제하기 전에 파일을 비교하세요.")
+    }
+}

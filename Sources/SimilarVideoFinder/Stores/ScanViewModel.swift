@@ -889,6 +889,15 @@ final class ScanViewModel: ObservableObject {
         checkedMediaIDs.removeAll()
     }
 
+    func selectAllGroupItems() {
+        guard !isBusy, !sortedGroupItems.isEmpty else { return }
+        checkedMediaIDs = Set(sortedGroupItems.map(\.id))
+        if selectedMediaID == nil || !checkedMediaIDs.contains(selectedMediaID!) {
+            selectedMediaID = sortedGroupItems.first?.id
+        }
+        groupSelectionAnchorID = selectedMediaID
+    }
+
     func toggleGroupItemSelection(_ id: UUID) {
         selectedMediaID = id
         toggleChecked(id)

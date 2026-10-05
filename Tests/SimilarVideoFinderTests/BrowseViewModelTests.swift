@@ -512,6 +512,28 @@ final class BrowseViewModelTests: XCTestCase {
         XCTAssertEqual(browse.selectedMediaIDs, [items[1].id])
     }
 
+    func testSelectAllIsLimitedToDisplayedSearchResults() {
+        let (_, browse, items) = makeThreeItemModel()
+        browse.searchText = "b.mp4"
+
+        browse.selectAllDisplayed()
+
+        XCTAssertEqual(browse.selectedMediaIDs, [items[1].id])
+        XCTAssertEqual(browse.selectedMediaList.map(\.id), [items[1].id])
+    }
+
+    func testPlainClickAfterSelectAllReplacesBatchWithOneFile() {
+        let (_, browse, items) = makeThreeItemModel()
+        browse.selectAllDisplayed()
+        XCTAssertEqual(browse.selectedMediaIDs.count, items.count)
+
+        browse.selectMedia(items[1].id)
+
+        XCTAssertEqual(browse.selectedMediaIDs, [items[1].id])
+        XCTAssertEqual(browse.primarySelectedID, items[1].id)
+        XCTAssertFalse(browse.hasMultipleSelection)
+    }
+
     func testArrowUpMovesSelectionOneRow() {
         let (_, browse, items) = makeThreeItemModel()
         browse.selectMedia(items[2].id)

@@ -79,7 +79,6 @@ struct BrowsePreviewPanel: View {
                 )
             }
         }
-        .navigationTitle("")
     }
 
     private func metadata(_ title: String, _ value: String) -> some View {
