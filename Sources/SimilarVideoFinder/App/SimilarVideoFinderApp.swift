@@ -50,6 +50,6 @@ struct SimilarVideoFinderApp: App {
             ContentView(model: scanModel)
                 .frame(minWidth: 960, minHeight: 600)
         }
-        .defaultSize(width: 1180, height: 720)
+        .defaultSize(width: 1360, height: 820)
     }
 }

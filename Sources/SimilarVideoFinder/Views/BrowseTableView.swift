@@ -96,10 +96,12 @@ struct BrowseTableView: View {
                                     onSelect: { selectRow(item.id) }
                                 )
                                 .padding(.horizontal, rowHorizontalPadding)
+                                .contextMenu { browseContextMenu(clickedID: item.id) }
                             }
                         }
                     }
                     .id(browseModel.sortVersion)
+                    .contextMenu { browseContextMenu(clickedID: nil) }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -236,6 +238,23 @@ struct BrowseTableView: View {
         case .extend:
             browseModel.extendSelection(to: id)
         }
+    }
+
+    @ViewBuilder
+    private func browseContextMenu(clickedID: UUID?) -> some View {
+        let targets = MediaContextSelection.items(
+            displayedItems: browseModel.displayedItems,
+            selectedIDs: browseModel.selectedMediaIDs,
+            clickedID: clickedID,
+            fallbackID: browseModel.primarySelectedID
+        )
+        Button(L10n.selectAll(language), action: browseModel.selectAllDisplayed)
+            .disabled(browseModel.displayedItems.isEmpty || browseModel.scanModel.isBusy)
+        Divider()
+        Button(role: .destructive) { browseModel.scanModel.requestDeletion(of: targets) } label: {
+            Label(targets.count > 1 ? L10n.deleteSelected(targets.count, language) : L10n.deleteMedia(language), systemImage: "trash")
+        }
+        .disabled(targets.isEmpty || browseModel.scanModel.isBusy)
     }
 }
 

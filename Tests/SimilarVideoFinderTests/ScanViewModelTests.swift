@@ -1246,6 +1246,38 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(model.selectedMediaID, items[2].id)
     }
 
+    func testSelectAllGroupItemsIsLimitedToCurrentGroup() throws {
+        let a = SimilarityScoringTests.video(name: "a.mov")
+        let b = SimilarityScoringTests.video(name: "b.mov")
+        let c = SimilarityScoringTests.video(name: "c.mov")
+        let d = SimilarityScoringTests.video(name: "d.mov")
+        let model = ScanViewModel(hashCache: nil)
+        model.replaceResultsForTesting(items: [a, b, c, d], relations: [
+            SimilarityRelation(firstID: a.id, secondID: b.id, score: 0.95, evidence: [.similarFrames]),
+            SimilarityRelation(firstID: c.id, secondID: d.id, score: 0.92, evidence: [.similarFrames])
+        ])
+        let group = try XCTUnwrap(model.groups.first { $0.items.contains { $0.id == a.id } })
+        model.selectGroup(group.id)
+
+        model.selectAllGroupItems()
+
+        XCTAssertEqual(model.checkedMediaIDs, [a.id, b.id])
+        model.requestCheckedDeletion()
+        XCTAssertEqual(Set(model.deletePrompt?.media.map(\.id) ?? []), [a.id, b.id])
+    }
+
+    func testPlainClickAfterSelectAllReturnsToSinglePreview() {
+        let model = sortableGroup()
+        let items = model.sortedGroupItems
+        model.selectAllGroupItems()
+        XCTAssertEqual(model.checkedMediaIDs.count, items.count)
+
+        model.selectGroupItem(items[1].id)
+
+        XCTAssertTrue(model.checkedMediaIDs.isEmpty)
+        XCTAssertEqual(model.selectedMediaID, items[1].id)
+    }
+
     func testClearingGroupItemSelectionKeepsPreviewedItemButClearsCheckedSelection() {
         let model = sortableGroup()
         let items = model.sortedGroupItems

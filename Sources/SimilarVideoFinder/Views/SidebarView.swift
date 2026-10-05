@@ -26,97 +26,74 @@ struct SidebarView: View {
     @Binding var excludeSubfolders: Bool
     @Environment(\.appLanguage) private var language
     @State private var showSkippedFiles = false
+    @State private var areSourcesExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
             controls
             Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(L10n.similarGroups(language)).font(.headline)
+                    Spacer()
+                    Text("\(model.groups.count)").monospacedDigit().foregroundStyle(.secondary)
+                }
+                if model.hasDiscoveredItems || model.progress.stage == .completed {
+                    DisplayThresholdControl(threshold: $model.threshold, language: language)
+                }
+            }
+            .padding(14)
             groupList
         }
         .navigationTitle(L10n.similarMedia(language))
+        .onChange(of: model.progress.stage) { _, stage in
+            if stage == .completed { areSourcesExpanded = false }
+        }
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(SidebarControlPlacement.primaryControls, id: \.self) { control in
-                primaryControl(control)
-            }
-
-            if hasAuxiliaryControls {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(SidebarControlPlacement.auxiliaryControls, id: \.self) { control in
-                        auxiliaryControl(control)
-                    }
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(L10n.workspaceFolders(language), systemImage: "folder")
+                    .font(.headline)
+                Spacer()
+                Button(action: { model.chooseFolder(language: language) }) {
+                    Image(systemName: "plus")
                 }
+                .buttonStyle(.borderless)
+                .help(L10n.addFolders(language))
+                .accessibilityLabel(L10n.addFolders(language))
+                Menu {
+                    Button(L10n.clearFolders(language)) { model.clearFolders() }
+                        .disabled(model.selectedFolders.isEmpty)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel(L10n.workspaceFolders(language))
             }
+            .disabled(model.isBusy)
+
+            DisclosureGroup(isExpanded: $areSourcesExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    selectedFolderList
+                    Toggle(isOn: $excludeSubfolders) {
+                        Text(L10n.excludeSubfolders(language)).font(.caption)
+                    }
+                    .toggleStyle(.checkbox)
+                    .disabled(model.isBusy)
+                }
+                .padding(.top, 8)
+            } label: {
+                Text(model.selectedFolders.count == 1 ? model.selectedFolders[0].lastPathComponent : L10n.foldersSelected(model.selectedFolders.count, language))
+                    .font(.callout)
+            }
+            scanAction
+            skippedFilesButton
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(14)
-    }
-
-    private var hasAuxiliaryControls: Bool {
-        !model.selectedFolders.isEmpty || !model.issues.isEmpty
-    }
-
-    @ViewBuilder
-    private func primaryControl(_ control: SidebarControlKind) -> some View {
-        switch control {
-        case .addFolders:
-            Button(action: { model.chooseFolder(language: language) }) {
-                sidebarActionLabel(L10n.addFolders(language), systemImage: "folder.badge.plus")
-            }
-            .sidebarActionButtonShape()
-            .disabled(model.isBusy)
-
-        case .clearFolders:
-            Button {
-                model.clearFolders()
-            } label: {
-                sidebarActionLabel(L10n.clearFolders(language), systemImage: "folder.badge.minus")
-            }
-            .sidebarActionButtonShape()
-            .disabled(model.isBusy || model.selectedFolders.isEmpty)
-
-        case .excludeSubfolders:
-            Toggle(isOn: $excludeSubfolders) {
-                Text(L10n.excludeSubfolders(language))
-                    .font(.caption)
-            }
-            .toggleStyle(.checkbox)
-            .disabled(model.isBusy)
-            .help(L10n.excludeSubfolders(language))
-
-        case .folderStatus:
-            folderStatus
-
-        case .scanAction:
-            scanAction
-
-        case .displayThreshold:
-            DisplayThresholdControl(threshold: $model.threshold, language: language)
-
-        case .selectedFolderList, .skippedFiles:
-            EmptyView()
-        }
-    }
-
-    private var folderStatus: some View {
-        Group {
-            if model.selectedFolders.isEmpty {
-                Text(L10n.dragFoldersHint(language))
-            } else {
-                Text(L10n.foldersSelected(model.selectedFolders.count, language))
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .lineLimit(SidebarControlPlacement.folderStatusLineLimit)
-        .minimumScaleFactor(0.75)
-        .truncationMode(.tail)
-        .frame(
-            maxWidth: .infinity,
-            alignment: .leading
-        )
     }
 
     @ViewBuilder
@@ -145,18 +122,6 @@ struct SidebarView: View {
     private func sidebarActionLabel(_ title: String, systemImage: String) -> some View {
         Label(title, systemImage: systemImage)
             .frame(maxWidth: .infinity)
-    }
-
-    @ViewBuilder
-    private func auxiliaryControl(_ control: SidebarControlKind) -> some View {
-        switch control {
-        case .selectedFolderList:
-            selectedFolderList
-        case .skippedFiles:
-            skippedFilesButton
-        case .addFolders, .clearFolders, .excludeSubfolders, .folderStatus, .scanAction, .displayThreshold:
-            EmptyView()
-        }
     }
 
     @ViewBuilder
@@ -212,13 +177,11 @@ struct SidebarView: View {
     @ViewBuilder
     private var groupList: some View {
         if model.groups.isEmpty {
-            VStack(spacing: 0) {
-                ContentUnavailableView(
-                    model.progress.stage == .completed ? L10n.noSimilarMedia(language) : L10n.waitingToScan(language),
-                    systemImage: model.progress.stage == .completed ? "checkmark.circle" : "photo.stack",
-                    description: Text(model.progress.stage == .completed ? L10n.lowerThresholdHint(language) : L10n.chooseAndScanHint(language))
-                )
-                .padding(.top, 24)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(model.progress.stage == .completed ? L10n.noSimilarMedia(language) : L10n.scanResultsHint(language))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -228,8 +191,14 @@ struct SidebarView: View {
                 set: { model.selectGroup($0) }
             )) {
                 if model.scanMode == .all {
-                    Section(L10n.videos(language)) { groupRows(model.groups.filter { $0.items.first?.kind == .video }) }
-                    Section(L10n.images(language)) { groupRows(model.groups.filter { $0.items.first?.kind == .image }) }
+                    let videoGroups = model.groups.filter { $0.items.first?.kind == .video }
+                    let imageGroups = model.groups.filter { $0.items.first?.kind == .image }
+                    if !videoGroups.isEmpty {
+                        Section(L10n.videos(language)) { groupRows(videoGroups) }
+                    }
+                    if !imageGroups.isEmpty {
+                        Section(L10n.images(language)) { groupRows(imageGroups) }
+                    }
                 } else {
                     let kind: MediaKind = model.scanMode == .videos ? .video : .image
                     groupRows(model.groups.filter { $0.items.first?.kind == kind })
@@ -242,9 +211,12 @@ struct SidebarView: View {
     private func groupRows(_ groups: [SimilarityGroup]) -> some View {
         ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
             HStack(spacing: 10) {
-                Image(systemName: group.items.first?.kind == .image ? "photo.stack" : "film.stack")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                if let item = group.items.first {
+                    MediaThumbnailView(item: item, placeholderSystemImage: item.kind == .image ? "photo" : "film")
+                        .frame(width: 38, height: 38)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L10n.similarGroup(index + 1, language))
                     Text(L10n.mediaCountAndScore(group.items.count, DisplayFormatters.percent(group.maximumScore), language))
