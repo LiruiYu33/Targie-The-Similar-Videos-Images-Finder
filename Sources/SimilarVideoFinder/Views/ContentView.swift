@@ -35,6 +35,9 @@ struct ContentView: View {
     @State private var isSettingsPresented = false
     @State private var isInspectorPresented = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
+    @State private var inspectorWidth: CGFloat = 320
+    @State private var inspectorDragStartWidth: CGFloat?
+    @State private var isInspectorResizeCursorPushed = false
     @State private var cacheMB = (thumbnailMB: "0", hashMB: "0")
 
     private var language: AppLanguage {
@@ -122,6 +125,16 @@ struct ContentView: View {
         )
     }
 
+    private func updateInspectorResizeCursor(hovering: Bool) {
+        if hovering && !isInspectorResizeCursorPushed {
+            NSCursor.resizeLeftRight.push()
+            isInspectorResizeCursorPushed = true
+        } else if !hovering && isInspectorResizeCursorPushed {
+            NSCursor.pop()
+            isInspectorResizeCursorPushed = false
+        }
+    }
+
     // MARK: - Scan Mode View
 
     private var scanView: some View {
@@ -133,13 +146,39 @@ struct ContentView: View {
                     max: SplitColumnConfiguration.sidebar.maxWidth ?? SplitColumnConfiguration.sidebar.idealWidth
                 )
         } detail: {
-            HSplitView {
-                GroupDetailView(model: model)
-                    .frame(minWidth: 520, maxWidth: .infinity)
-                if isInspectorPresented {
-                    InspectorView(model: model)
-                        .frame(minWidth: 280, idealWidth: 320, maxWidth: 380)
+            GeometryReader { geometry in
+                let dividerWidth: CGFloat = isInspectorPresented ? 8 : 0
+                let maximumPreviewWidth = max(0, min(380, geometry.size.width - 280 - dividerWidth))
+                let previewWidth = isInspectorPresented
+                    ? min(max(280, inspectorWidth), maximumPreviewWidth)
+                    : 0
+                let comparisonWidth = max(0, geometry.size.width - previewWidth - dividerWidth)
+
+                HStack(spacing: 0) {
+                    GroupDetailView(model: model)
+                        .frame(width: comparisonWidth, height: geometry.size.height)
+                    if isInspectorPresented {
+                        Rectangle()
+                            .fill(.quaternary)
+                            .frame(width: 1)
+                            .frame(width: dividerWidth)
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 1)
+                                    .onChanged { value in
+                                        let start = inspectorDragStartWidth ?? previewWidth
+                                        if inspectorDragStartWidth == nil { inspectorDragStartWidth = start }
+                                        inspectorWidth = min(max(280, start - value.translation.width), maximumPreviewWidth)
+                                    }
+                                    .onEnded { _ in inspectorDragStartWidth = nil }
+                            )
+                            .onHover { updateInspectorResizeCursor(hovering: $0) }
+                            .onDisappear { updateInspectorResizeCursor(hovering: false) }
+                        InspectorView(model: model)
+                            .frame(width: previewWidth, height: geometry.size.height)
+                    }
                 }
+                .frame(width: geometry.size.width, height: geometry.size.height)
             }
         }
         .toolbar {

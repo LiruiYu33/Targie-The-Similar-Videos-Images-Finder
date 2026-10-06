@@ -100,17 +100,21 @@ struct GroupDetailView: View {
             if !model.checkedMediaIDs.isEmpty {
                 VStack(spacing: 0) {
                     Divider()
-                    HStack(spacing: 16) {
-                        Label(L10n.selectedCount(model.checkedMediaIDs.count, language), systemImage: "checkmark.circle.fill")
-                            .font(.callout.weight(.medium))
-                        Button(L10n.deselectAllGroupItems(language), action: model.clearGroupItemSelection)
-                            .buttonStyle(.borderless)
-                        Spacer()
-                        Button(role: .destructive, action: model.requestCheckedDeletion) {
-                            Label(L10n.deleteSelected(model.checkedMediaIDs.count, language), systemImage: "trash")
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 16) {
+                            selectionCount
+                            clearSelectionButton
+                            Spacer()
+                            deleteSelectionButton
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy)
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                selectionCount
+                                Spacer()
+                                clearSelectionButton
+                            }
+                            deleteSelectionButton
+                        }
                     }
                     .padding(16)
                     .background(.bar)
@@ -118,6 +122,27 @@ struct GroupDetailView: View {
             }
         }
         .navigationTitle(AppIdentity.displayName)
+    }
+
+    private var selectionCount: some View {
+        Label(L10n.selectedCount(model.checkedMediaIDs.count, language), systemImage: "checkmark.circle.fill")
+            .font(.callout.weight(.medium))
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var clearSelectionButton: some View {
+        Button(L10n.deselectAllGroupItems(language), action: model.clearGroupItemSelection)
+            .buttonStyle(.borderless)
+            .fixedSize()
+    }
+
+    private var deleteSelectionButton: some View {
+        Button(role: .destructive, action: model.requestCheckedDeletion) {
+            Label(L10n.deleteSelected(model.checkedMediaIDs.count, language), systemImage: "trash")
+        }
+        .buttonStyle(.bordered)
+        .disabled(model.isBusy)
+        .fixedSize()
     }
 
     private var welcome: some View {
