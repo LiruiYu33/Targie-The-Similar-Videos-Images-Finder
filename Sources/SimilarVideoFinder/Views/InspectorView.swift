@@ -30,22 +30,12 @@ struct InspectorView: View {
         Group {
             if let media = model.selectedMedia {
                 VStack(spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
-                            MediaPreview(media: media)
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(media.filename)
-                                    .font(.title3.bold())
-                                    .textSelection(.enabled)
-                                metadata(L10n.fileSize(language), DisplayFormatters.fileSize(media.fileSize))
-                                if let duration = media.duration {
-                                    metadata(L10n.duration(language), DisplayFormatters.duration(duration, language: language))
-                                }
-                                metadata(L10n.resolution(language), media.resolution(language: language))
-                                metadata(L10n.path(language), media.url.path)
-                            }
+                    GeometryReader { geometry in
+                        ScrollView {
+                            inspectorContent(media: media)
+                                .frame(width: max(0, geometry.size.width - 36), alignment: .leading)
+                                .padding(18)
                         }
-                        .padding(18)
                     }
 
                     Divider()
@@ -78,10 +68,31 @@ struct InspectorView: View {
         .navigationTitle(L10n.previewAndDetails(language))
     }
 
+    private func inspectorContent(media: MediaItem) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            MediaPreview(media: media)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(media.filename)
+                    .font(.title3.bold())
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                metadata(L10n.fileSize(language), DisplayFormatters.fileSize(media.fileSize))
+                if let duration = media.duration {
+                    metadata(L10n.duration(language), DisplayFormatters.duration(duration, language: language))
+                }
+                metadata(L10n.resolution(language), media.resolution(language: language))
+                metadata(L10n.path(language), media.url.path)
+            }
+        }
+    }
+
     private func metadata(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.callout).textSelection(.enabled)
+            Text(value)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
 

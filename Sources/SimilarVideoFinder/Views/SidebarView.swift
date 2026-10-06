@@ -88,6 +88,9 @@ struct SidebarView: View {
             } label: {
                 Text(model.selectedFolders.count == 1 ? model.selectedFolders[0].lastPathComponent : L10n.foldersSelected(model.selectedFolders.count, language))
                     .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(model.selectedFolders.map(\.path).joined(separator: "\n"))
             }
             scanAction
             skippedFilesButton
