@@ -19,6 +19,8 @@ Targie trouve des vidéos et des images similaires dans les dossiers sélectionn
 - Prend en charge l'anglais, le chinois simplifié, le chinois traditionnel, l'espagnol, le français, le japonais et le coréen avec changement instantané et préférence mémorisée.
 - **Mode parcourir** : affiche tous les fichiers des dossiers sélectionnés dans un tableau triable et filtrable, avec colonnes redimensionnables par glissement, sélection par lots et titre de fenêtre mis à jour en temps réel.
 
+![Écran d’accueil de Targie](asset/Opening.png)
+
 ![Comparaison de similarité d'images](asset/Screenshot1.png)
 
 ![Comparaison de similarité de vidéos](asset/Screenshot2.png)

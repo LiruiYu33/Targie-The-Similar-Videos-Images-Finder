@@ -19,6 +19,8 @@ Targie finds similar videos and images across selected folders by combining meta
 - Supports English, Simplified Chinese, Traditional Chinese, Spanish, French, Japanese, and Korean with instant switching and remembered preference.
 - **Browse mode**: view all files from selected folders in a sortable, filterable table with drag-to-resize columns, batch selection, and a live-updating window title.
 
+![Targie welcome screen](asset/Opening.png)
+
 ![Image similarity comparison](asset/Screenshot1.png)
 
 ![Video similarity comparison](asset/Screenshot2.png)
