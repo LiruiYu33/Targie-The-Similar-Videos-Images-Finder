@@ -19,6 +19,8 @@ Targie encuentra vídeos e imágenes similares en las carpetas seleccionadas com
 - Compatible con inglés, chino simplificado, chino tradicional, español, francés, japonés y coreano, con cambio instantáneo y preferencia recordada.
 - **Modo exploración**: visualiza todos los archivos de las carpetas seleccionadas en una tabla ordenable y filtrable, con columnas redimensionables arrastrando, selección por lotes y título de ventana actualizado en tiempo real.
 
+![Pantalla de bienvenida de Targie](asset/Opening.png)
+
 ![Comparación de similitud de imágenes](asset/Screenshot1.png)
 
 ![Comparación de similitud de vídeos](asset/Screenshot2.png)
