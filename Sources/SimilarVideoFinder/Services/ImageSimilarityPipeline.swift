@@ -10,7 +10,7 @@ struct ImagePipelineResult: Sendable {
 
 struct ImageSimilarityPipeline: Sendable {
     static let algorithmVersion = "image-phash-v1"
-    static let pairRelationAlgorithmVersion = "image-pair-relation-v4"
+    static let pairRelationAlgorithmVersion = "image-pair-relation-v5"
     static let maxDistance = 20
     fileprivate static let relationStorageFloor = 0.60
     private static let pairRelationWriteBatchSize = 512

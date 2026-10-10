@@ -23,20 +23,31 @@ export COPYFILE_DISABLE=1
 ARCHS="${BUILD_ARCHS:-}"
 
 swift_build() {
+  # Pin the native build system: the swiftbuild default (Xcode 27+) stamps the
+  # deployment target as the binary's SDK version (LC_BUILD_VERSION sdk 14.0),
+  # which makes macOS run the app with legacy, pre-Liquid Glass AppKit styling.
   # Unset the sandbox-injected safe.bareRepository=explicit env so SwiftPM can
   # reuse its bare-cache repo for GRDB instead of re-fetching (~3 min) each
   # build. Applied to both branches below.
   if [ "${DISABLE_SWIFTPM_SANDBOX:-0}" = "1" ]; then
-    env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 swift build --disable-sandbox "$@"
+    env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 swift build --build-system native --disable-sandbox "$@"
   else
-    env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 swift build "$@"
+    env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 swift build --build-system native "$@"
   fi
 }
 
 if [ "$ARCHS" = "universal" ]; then
   echo "▶ Building universal binary (arm64 + x86_64)..." >&2
-  swift_build -c release --arch arm64 --arch x86_64
-  BUILD_BINARY="$(swift_build -c release --arch arm64 --arch x86_64 --show-bin-path)/$EXECUTABLE_NAME"
+  # Build each architecture separately: a multi --arch build routes through
+  # XCBuild, which has the same SDK-version stamping problem as swiftbuild.
+  ARCH_BINARIES=()
+  for arch in arm64 x86_64; do
+    swift_build -c release --arch "$arch"
+    ARCH_BINARIES+=("$(swift_build -c release --arch "$arch" --show-bin-path)/$EXECUTABLE_NAME")
+  done
+  BUILD_BINARY="$ROOT_DIR/.build/universal/$EXECUTABLE_NAME"
+  mkdir -p "$(dirname "$BUILD_BINARY")"
+  /usr/bin/lipo -create "${ARCH_BINARIES[@]}" -output "$BUILD_BINARY"
 else
   swift_build -c release
   BUILD_BINARY="$(swift_build -c release --show-bin-path)/$EXECUTABLE_NAME"

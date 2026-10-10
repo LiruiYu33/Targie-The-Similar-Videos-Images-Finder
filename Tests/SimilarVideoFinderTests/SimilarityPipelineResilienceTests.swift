@@ -84,11 +84,11 @@ final class SimilarityPipelineResilienceTests: XCTestCase {
         )
         XCTAssertEqual(
             SimilarityPipeline.pairRelationAlgorithmVersion(usesFrameVerification: true),
-            "video-pair-relation-v4-frame"
+            "video-pair-relation-v5-frame"
         )
         XCTAssertEqual(ImageSimilarityPipeline.algorithmVersion, "image-phash-v1")
         XCTAssertEqual(ImageFeatureExtractor.algorithmVersion, "vision-image-feature-v3-revision2")
-        XCTAssertEqual(ImageSimilarityPipeline.pairRelationAlgorithmVersion, "image-pair-relation-v4")
+        XCTAssertEqual(ImageSimilarityPipeline.pairRelationAlgorithmVersion, "image-pair-relation-v5")
     }
 
     func testFailedRequiredFrameVerificationRetriesUntilItSucceeds() async throws {
