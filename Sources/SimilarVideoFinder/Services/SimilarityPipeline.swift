@@ -105,7 +105,7 @@ struct SimilarityPipeline: SimilarityProcessing {
     fileprivate static let pairRelationWriteBatchSize = 512
 
     static func pairRelationAlgorithmVersion(usesFrameVerification: Bool) -> String {
-        usesFrameVerification ? "video-pair-relation-v4-frame" : "video-pair-relation-v3-perceptual"
+        usesFrameVerification ? "video-pair-relation-v5-frame" : "video-pair-relation-v3-perceptual"
     }
 
     static func scanRelationSignature(

@@ -134,7 +134,8 @@ final class SimilarityScoringTests: XCTestCase {
                 frameSimilarity: vision
             )
             XCTAssertLessThan(result.score, 0.88, "Weak Vision evidence must keep the pair below the default recommendation threshold")
-            XCTAssertLessThanOrEqual(result.score, vision + 0.05 + 1e-12)
+            let rescaledVision = max(0, (vision - SimilarityScorer.visionBaseline) / (1 - SimilarityScorer.visionBaseline))
+            XCTAssertLessThanOrEqual(result.score, rescaledVision + 0.2 + 1e-12)
         }
     }
 

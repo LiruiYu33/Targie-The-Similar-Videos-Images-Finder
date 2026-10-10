@@ -43,12 +43,15 @@ struct SimilarityScore: Equatable, Sendable {
 
 enum SimilarityScorer {
     /// A ranking score, not a calibrated probability of duplicate content.
-    /// SHA-256 identity is definitive. Otherwise Vision supplies 75% of the
-    /// content score and pHash 25%; metadata can add at most 5% of the remaining
-    /// headroom. The final score cannot exceed measured Vision similarity by
-    /// more than five percentage points, even when every other signal agrees.
-    /// Missing required verification retains a limited candidate score; it is
-    /// distinct from both a measured visual mismatch and deliberate fast mode.
+    /// SHA-256 identity is definitive. Otherwise Vision and pHash each supply
+    /// half of the content score after their unrelated-content baselines are
+    /// removed (unrelated photos measure ~0.3-0.4 Vision cosine and ~0.5 pHash
+    /// bit agreement); metadata can add at most 5% of the remaining headroom.
+    /// The final score cannot exceed rescaled Vision similarity by more than
+    /// twenty percentage points, so pHash alone cannot override visibly
+    /// different content. Missing required verification retains a limited
+    /// candidate score; it is distinct from both a measured visual mismatch
+    /// and deliberate fast mode.
     static func score(
         _ first: MediaItem,
         _ second: MediaItem,
@@ -86,9 +89,10 @@ enum SimilarityScorer {
         if let frames, frames >= 0.82 { evidence.insert(.similarFrames) }
 
         if let frames {
-            let content = perc.map { $0 * 0.25 + frames * 0.75 } ?? frames
+            let visual = rescaled(frames, baseline: visionBaseline)
+            let content = perc.map { visual * 0.5 + rescaled($0, baseline: perceptualBaseline) * 0.5 } ?? visual
             let combined = supportedScore(content: content, metadata: metadata)
-            return SimilarityScore(score: min(combined, frames + 0.05, 1), evidence: evidence)
+            return SimilarityScore(score: min(combined, visual + 0.2, 1), evidence: evidence)
         }
 
         if let perc {
@@ -98,6 +102,15 @@ enum SimilarityScorer {
         }
 
         return SimilarityScore(score: metadata * 0.05, evidence: evidence)
+    }
+
+    /// Vision cosine typical of unrelated photos; values at or below it carry no evidence.
+    static let visionBaseline = 0.3
+    /// Expected bit agreement between median-thresholded hashes of unrelated images.
+    static let perceptualBaseline = 0.5
+
+    private static func rescaled(_ value: Double, baseline: Double) -> Double {
+        max(0, (value - baseline) / (1 - baseline))
     }
 
     private static func supportedScore(content: Double, metadata: Double) -> Double {
