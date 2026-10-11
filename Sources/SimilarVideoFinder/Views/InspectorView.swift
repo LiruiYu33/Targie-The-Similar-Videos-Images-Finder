@@ -27,7 +27,9 @@ struct InspectorView: View {
     @Environment(\.appLanguage) private var language
 
     var body: some View {
-        Group {
+        // ZStack so the empty state and the preview overlap while they
+        // crossfade instead of being laid out side by side.
+        ZStack {
             if let media = model.selectedMedia {
                 VStack(spacing: 0) {
                     GeometryReader { geometry in
@@ -36,26 +38,16 @@ struct InspectorView: View {
                                 .frame(width: max(0, geometry.size.width - 36), alignment: .leading)
                                 .padding(18)
                         }
+                        .id(media.id)
+                        // Opacity only; scaling a scroll view makes its scroll bar flicker.
+                        .transition(.opacity)
                     }
+                    .animation(Motion.quick, value: media.id)
 
                     Divider()
 
-                    let actions = PreviewActionArrangement.singleFileActions(includesOpenDefaultPlayer: media.kind == .video)
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 10) {
-                            ForEach(actions, id: \.self) { action in
-                                actionButton(action, media: media)
-                            }
-                        }
+                    PreviewActionBar(actions: actions(for: media))
                         .padding(18)
-                        VStack(spacing: 8) {
-                            ForEach(actions, id: \.self) { action in
-                                actionButton(action, media: media)
-                                    .frame(maxWidth: .infinity)
-                            }
-                        }
-                        .padding(18)
-                    }
                 }
             } else {
                 ContentUnavailableView(
@@ -65,6 +57,7 @@ struct InspectorView: View {
                 )
             }
         }
+        .animation(Motion.standard, value: model.selectedMedia == nil)
         .navigationTitle(L10n.previewAndDetails(language))
     }
 
@@ -96,31 +89,20 @@ struct InspectorView: View {
         }
     }
 
-    @ViewBuilder
-    private func actionButton(_ action: PreviewActionKind, media: MediaItem) -> some View {
-        switch action {
-        case .openDefaultPlayer:
-            Button(action: model.openSelectedMedia) {
-                Label(L10n.openDefaultPlayer(language), systemImage: "play.rectangle")
+    private func actions(for media: MediaItem) -> [PreviewAction] {
+        PreviewActionArrangement.singleFileActions(includesOpenDefaultPlayer: media.kind == .video).compactMap { kind in
+            switch kind {
+            case .openDefaultPlayer:
+                PreviewAction(kind: kind, title: L10n.openDefaultPlayer(language), systemImage: "play.rectangle", perform: model.openSelectedMedia)
+            case .showInFinder:
+                PreviewAction(kind: kind, title: L10n.showInFinder(language), systemImage: "folder", perform: model.revealSelectedMedia)
+            case .deleteFile:
+                PreviewAction(kind: kind, title: deleteButtonTitle, systemImage: "trash", isDestructive: true) {
+                    model.requestDeletion(of: media)
+                }
+            case .deleteSelection:
+                nil
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        case .showInFinder:
-            Button(action: model.revealSelectedMedia) {
-                Label(L10n.showInFinder(language), systemImage: "folder")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        case .deleteFile:
-            Button(role: .destructive) {
-                model.requestDeletion(of: media)
-            } label: {
-                Label(deleteButtonTitle, systemImage: "trash")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        case .deleteSelection:
-            EmptyView()
         }
     }
 

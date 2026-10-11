@@ -36,7 +36,11 @@ struct SidebarView: View {
                 HStack {
                     Text(L10n.similarGroups(language)).font(.headline)
                     Spacer()
-                    Text("\(model.groups.count)").monospacedDigit().foregroundStyle(.secondary)
+                    Text("\(model.groups.count)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.numericText(value: Double(model.groups.count)))
+                        .animation(Motion.quick, value: model.groups.count)
                 }
                 if model.hasDiscoveredItems || model.progress.stage == .completed {
                     DisplayThresholdControl(threshold: $model.threshold, language: language)
@@ -45,9 +49,13 @@ struct SidebarView: View {
             .padding(14)
             groupList
         }
+        .animation(Motion.standard, value: model.groups.isEmpty)
+        .animation(Motion.standard, value: model.hasDiscoveredItems || model.progress.stage == .completed)
         .navigationTitle(L10n.similarMedia(language))
         .onChange(of: model.progress.stage) { _, stage in
-            if stage == .completed { areSourcesExpanded = false }
+            if stage == .completed {
+                withAnimation(Motion.standard) { areSourcesExpanded = false }
+            }
         }
     }
 
@@ -97,6 +105,8 @@ struct SidebarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(14)
+        .animation(Motion.standard, value: model.isScanning)
+        .animation(Motion.standard, value: model.issues.isEmpty)
     }
 
     @ViewBuilder
@@ -108,13 +118,16 @@ struct SidebarView: View {
                 Text(L10n.scanProgressDetail(model.progress, language))
                     .lineLimit(1)
             }
+            .animation(.linear(duration: 0.2), value: model.progress.fraction)
             Button(role: .cancel, action: model.cancelScan) {
                 sidebarActionLabel(L10n.cancelScan(language), systemImage: "xmark")
             }
             .sidebarActionButtonShape()
         } else {
             Button(action: model.startScan) {
-                sidebarActionLabel(L10n.startScan(language), systemImage: "sparkle.magnifyingglass")
+                Label(L10n.startScan(language), systemImage: "sparkle.magnifyingglass")
+                    .symbolEffect(.bounce, value: model.groups.count)
+                    .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .sidebarActionButtonShape()
@@ -317,8 +330,10 @@ private struct DisplayThresholdControl: View {
                 Text(L10n.displayThresholdHelp(language))
                     .font(.caption2)
                     .foregroundStyle(.orange)
+                    .transition(.opacity)
             }
         }
+        .animation(Motion.quick, value: threshold < DisplayThresholdEditing.recommendedThreshold)
         .onAppear { editState.syncThreshold(threshold) }
         .onChange(of: threshold) { _, _ in
             editState.syncThreshold(threshold)

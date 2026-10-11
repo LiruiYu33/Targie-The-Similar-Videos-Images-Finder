@@ -898,6 +898,24 @@ final class ScanViewModel: ObservableObject {
         groupSelectionAnchorID = selectedMediaID
     }
 
+    /// Marquee selection: replaces the checked set while the drag is live.
+    /// The focused card is left alone until `finishGroupItemMarquee()` so the
+    /// preview does not churn on every pointer move.
+    func setGroupItemSelection(_ ids: Set<UUID>) {
+        guard !isBusy else { return }
+        let visibleIDs = ids.intersection(sortedGroupItems.map(\.id))
+        guard visibleIDs != checkedMediaIDs else { return }
+        checkedMediaIDs = visibleIDs
+    }
+
+    func finishGroupItemMarquee() {
+        if let selectedMediaID, checkedMediaIDs.contains(selectedMediaID) { return }
+        if let first = sortedGroupItems.first(where: { checkedMediaIDs.contains($0.id) }) {
+            selectedMediaID = first.id
+        }
+        groupSelectionAnchorID = selectedMediaID
+    }
+
     func toggleGroupItemSelection(_ id: UUID) {
         selectedMediaID = id
         toggleChecked(id)

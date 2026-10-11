@@ -53,12 +53,16 @@ struct MediaThumbnailView: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
+                    .transition(.blurReplace)
             } else {
                 Image(systemName: placeholderSystemImage)
                     .font(placeholderFont)
                     .foregroundStyle(placeholderColor)
+                    .transition(.blurReplace)
             }
         }
+        // Cached thumbnails render immediately; only async loads fade in.
+        .animation(Motion.fade, value: loader.image(for: item) != nil)
         .task(id: item.id) {
             await loader.load(item)
         }

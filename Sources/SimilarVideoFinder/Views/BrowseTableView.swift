@@ -41,6 +41,8 @@ struct BrowseTableView: View {
     @State private var fileSizeWidth: CGFloat = 84
     @State private var resolutionWidth: CGFloat = 100
     @State private var modifiedTimeWidth: CGFloat = 110
+    @State private var marqueeBase = Set<UUID>()
+    @State private var marqueeMode = MarqueeSelectionMode.replace
 
     private let rowHorizontalPadding: CGFloat = 12
     private let dividerWidth: CGFloat = 6
@@ -97,8 +99,25 @@ struct BrowseTableView: View {
                                 )
                                 .padding(.horizontal, rowHorizontalPadding)
                                 .contextMenu { browseContextMenu(clickedID: item.id) }
+                                .marqueeItem(item.id)
                             }
                         }
+                        // Fill the viewport so a marquee can start below the last row.
+                        .frame(minHeight: max(0, geo.size.height - 29), alignment: .top)
+                        .marqueeSelection(
+                            isEnabled: !browseModel.scanModel.isBusy,
+                            resetKey: browseModel.displayedItems.map(\.id),
+                            onBegin: { mode in
+                                marqueeMode = mode
+                                marqueeBase = mode == .replace ? [] : browseModel.selectedMediaIDs
+                            },
+                            onChange: { hits in
+                                // Live marquee updates skip the preview's blur transition.
+                                withTransaction(Transaction(animation: nil)) {
+                                    browseModel.replaceSelection(with: marqueeMode.apply(hits: hits, to: marqueeBase))
+                                }
+                            }
+                        )
                     }
                     .id(browseModel.sortVersion)
                     .contextMenu { browseContextMenu(clickedID: nil) }

@@ -1234,6 +1234,21 @@ final class ScanViewModelTests: XCTestCase {
         XCTAssertEqual(model.selectedMediaID, items[2].id)
     }
 
+    func testMarqueeSelectionChecksOnlyGroupItemsAndFocusesFirstHitWhenDone() {
+        let model = sortableGroup()
+        let items = model.sortedGroupItems
+        model.selectGroupItem(items[0].id)
+
+        model.setGroupItemSelection([items[1].id, items[2].id, UUID()])
+
+        XCTAssertEqual(model.checkedMediaIDs, [items[1].id, items[2].id])
+        XCTAssertEqual(model.selectedMediaID, items[0].id, "Focus stays put while the marquee is live.")
+
+        model.finishGroupItemMarquee()
+
+        XCTAssertEqual(model.selectedMediaID, items[1].id)
+    }
+
     func testPlainSelectingGroupItemClearsCheckedSelection() {
         let model = sortableGroup()
         let items = model.sortedGroupItems

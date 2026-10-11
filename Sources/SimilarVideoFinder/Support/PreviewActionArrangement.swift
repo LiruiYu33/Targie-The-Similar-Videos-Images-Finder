@@ -40,4 +40,13 @@ enum PreviewActionArrangement {
     static func multipleSelectionActions() -> [PreviewActionKind] {
         [.showInFinder, .deleteSelection]
     }
+
+    /// Splits actions into an optional full-width lead row (opening the file,
+    /// the most common next step) and the rest, which share one row.
+    static func rows(for actions: [PreviewActionKind]) -> (lead: PreviewActionKind?, shared: [PreviewActionKind]) {
+        guard let lead = actions.first(where: { $0 == .openDefaultPlayer }) else {
+            return (nil, actions)
+        }
+        return (lead, actions.filter { $0 != lead })
+    }
 }
