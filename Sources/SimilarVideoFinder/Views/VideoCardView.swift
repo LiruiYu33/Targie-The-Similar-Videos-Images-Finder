@@ -22,7 +22,10 @@
 import AppKit
 import SwiftUI
 
-struct VideoCardView: View {
+/// Equatable so SwiftUI can skip unchanged cards: the `toggleChecked`
+/// closure would otherwise make every card look changed, re-rendering the
+/// whole grid on each selection change (noticeable during a marquee drag).
+struct VideoCardView: View, Equatable {
     let video: MediaItem
     let score: Double
     let evidence: Set<SimilarityEvidence>
@@ -31,6 +34,19 @@ struct VideoCardView: View {
     let isChecked: Bool
     var previewHeight: CGFloat = 320
     let toggleChecked: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    nonisolated static func == (lhs: VideoCardView, rhs: VideoCardView) -> Bool {
+        lhs.video == rhs.video
+            && lhs.score == rhs.score
+            && lhs.evidence == rhs.evidence
+            && lhs.language == rhs.language
+            && lhs.isSelected == rhs.isSelected
+            && lhs.isChecked == rhs.isChecked
+            && lhs.previewHeight == rhs.previewHeight
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -48,6 +64,17 @@ struct VideoCardView: View {
             }
             .frame(height: previewHeight)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .topTrailing) {
+                if isChecked {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title2)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, Color.accentColor)
+                        .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
+                        .padding(8)
+                        .transition(reduceMotion ? .opacity : .scale(scale: 0.3).combined(with: .opacity))
+                }
+            }
 
             HStack(alignment: .firstTextBaseline) {
                 Text(video.filename)
@@ -78,12 +105,37 @@ struct VideoCardView: View {
             }
         }
         .padding(12)
-        .background(isChecked ? Color.accentColor.opacity(0.08) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .background {
+            // The shadow sits on this opaque shape rather than on the whole
+            // card: shadowing the card makes Core Animation render its image
+            // and text offscreen every frame, which stalled marquee drags.
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.accentColor.opacity(isChecked ? 0.08 : 0))
+                }
+                // Hover lifts the card; the focused card glows in the accent colour.
+                .shadow(
+                    color: isSelected ? Color.accentColor.opacity(0.35) : .black.opacity(isHovered ? 0.18 : 0.06),
+                    radius: isSelected ? 12 : (isHovered ? 14 : 4),
+                    y: isHovered ? 6 : 2
+                )
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.18), lineWidth: isSelected ? 2 : 1)
         }
         .contentShape(RoundedRectangle(cornerRadius: 12))
+        .scaleEffect(isHovered && !reduceMotion ? 1.015 : 1)
+        .onHover { hovering in
+            // No lift while a button is held: a marquee drag passes over many
+            // cards and bobbing them would also move their hit frames.
+            let isDragging = NSEvent.pressedMouseButtons != 0
+            withAnimation(Motion.quick) { isHovered = hovering && !isDragging }
+        }
+        .animation(Motion.quick, value: isSelected)
+        .animation(Motion.bouncy, value: isChecked)
     }
 
 }

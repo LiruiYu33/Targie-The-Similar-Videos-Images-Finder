@@ -24,10 +24,23 @@ import SwiftUI
 
 struct GroupDetailView: View {
     @ObservedObject var model: ScanViewModel
+    /// Shows the Preview & Details panel; called on a plain double-click.
+    var onOpenPreview: () -> Void = {}
     @Environment(\.appLanguage) private var language
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var marqueeBase = Set<UUID>()
+    @State private var marqueeMode = MarqueeSelectionMode.replace
+    @State private var welcomeBounce = 0
+    @State private var selectionBarHeight: CGFloat = 0
+    /// Group whose cards cascade in. Set only when the user picks a group, so
+    /// rebuilding this view (e.g. returning from Browse) does not replay it.
+    @State private var cascadingGroupID: UUID?
 
     var body: some View {
-        Group {
+        // A ZStack, not a Group: while one screen transitions into another
+        // both exist at once, and a Group would hand them to the parent
+        // HStack as side-by-side siblings, squeezing and reflowing both.
+        ZStack {
             if model.selectedFolders.isEmpty {
                 welcome
             } else if let group = model.selectedGroup {
@@ -53,7 +66,7 @@ struct GroupDetailView: View {
                                 }
 
                                 LazyVGrid(columns: comparisonColumns(width: geometry.size.width, itemCount: group.items.count), spacing: 14) {
-                                    ForEach(model.sortedGroupItems) { video in
+                                    ForEach(Array(model.sortedGroupItems.enumerated()), id: \.element.id) { index, video in
                                         VideoCardView(
                                             video: video,
                                             score: group.score(for: video.id),
@@ -64,17 +77,48 @@ struct GroupDetailView: View {
                                             previewHeight: comparisonPreviewHeight(size: geometry.size, itemCount: group.items.count),
                                             toggleChecked: { model.toggleChecked(video.id) }
                                         )
+                                        .equatable()
                                         .onTapGesture { handleCardTap(video) }
+                                        .help(L10n.doubleClickToPreview(language))
                                         .contextMenu { groupContextMenu(clickedID: video.id) }
+                                        .marqueeItem(video.id)
+                                        .cascadeIn(index: index, isEnabled: cascadingGroupID == group.id, reduceMotion: reduceMotion)
+                                        .transition(.opacity.combined(with: .scale(scale: 0.85)))
                                     }
                                 }
+                                // Re-sorting and deleting move cards instead of jumping.
+                                .animation(Motion.standard, value: model.sortedGroupItems.map(\.id))
                             }
                             .padding(20)
                         }
-                        .frame(maxWidth: .infinity, minHeight: 1, alignment: .topLeading)
+                        // Fill the viewport (minus the selection bar's margin, so a
+                        // short group never becomes scrollable just from checking a card).
+                        // The 1pt slack keeps sub-point rounding from making it scrollable.
+                        .frame(maxWidth: .infinity, minHeight: max(1, geometry.size.height - bottomContentMargin - 1), alignment: .topLeading)
+                        .marqueeSelection(
+                            isEnabled: !model.isBusy,
+                            resetKey: model.sortedGroupItems.map(\.id),
+                            onBegin: { mode in
+                                marqueeMode = mode
+                                marqueeBase = mode == .replace ? [] : model.checkedMediaIDs
+                            },
+                            onChange: { hits in
+                                model.setGroupItemSelection(marqueeMode.apply(hits: hits, to: marqueeBase))
+                            },
+                            onEnd: model.finishGroupItemMarquee
+                        )
                     }
                     .contextMenu { groupContextMenu(clickedID: nil) }
+                    // Leave room for the floating selection bar without
+                    // shrinking the viewport, so cards keep their size.
+                    .contentMargins(.bottom, bottomContentMargin, for: .scrollContent)
                 }
+                // A new group replaces the old one with a crossfade and starts at
+                // the top. Opacity only: a scaling transition (like .blurReplace)
+                // resizes the hosted NSScrollView by fractions of a point, which
+                // toggles its scroll bar on and off for the whole transition.
+                .id(group.id)
+                .transition(.opacity)
             } else if !model.groups.isEmpty {
                 ContentUnavailableView(
                     L10n.selectGroup(language),
@@ -83,7 +127,13 @@ struct GroupDetailView: View {
                 )
             } else if model.isScanning {
                 VStack(spacing: 14) {
-                    ProgressView()
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.system(size: 44, weight: .light))
+                        .foregroundStyle(.tint)
+                        .symbolEffect(.pulse, options: .repeating)
+                    ProgressView(value: model.progress.fraction)
+                        .frame(maxWidth: 260)
+                        .animation(.linear(duration: 0.2), value: model.progress.fraction)
                     Text(L10n.scanProgressTitle(model.progress, language)).font(.headline)
                     Text(L10n.scanProgressDetail(model.progress, language)).foregroundStyle(.secondary)
                 }
@@ -96,7 +146,10 @@ struct GroupDetailView: View {
                 )
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        // An overlay rather than a safe-area inset: an inset would shrink the
+        // geometry the card heights are computed from, resizing every card the
+        // moment the first one is checked (visible as a hitch during a marquee).
+        .overlay(alignment: .bottom) {
             if !model.checkedMediaIDs.isEmpty {
                 VStack(spacing: 0) {
                     Divider()
@@ -117,16 +170,23 @@ struct GroupDetailView: View {
                         }
                     }
                     .padding(16)
-                    .background(.bar)
                 }
+                .background(.bar)
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { selectionBarHeight = $0 }
+                .transition(Motion.slide(from: .bottom, reduceMotion: reduceMotion))
             }
         }
+        .onChange(of: model.selectedGroupID) { _, id in cascadingGroupID = id }
+        .animation(Motion.standard, value: model.checkedMediaIDs.isEmpty)
+        .animation(Motion.standard, value: contentState)
         .navigationTitle(AppIdentity.displayName)
     }
 
     private var selectionCount: some View {
         Label(L10n.selectedCount(model.checkedMediaIDs.count, language), systemImage: "checkmark.circle.fill")
             .font(.callout.weight(.medium))
+            .contentTransition(.numericText(value: Double(model.checkedMediaIDs.count)))
+            .animation(Motion.quick, value: model.checkedMediaIDs.count)
             .fixedSize(horizontal: true, vertical: false)
     }
 
@@ -139,10 +199,28 @@ struct GroupDetailView: View {
     private var deleteSelectionButton: some View {
         Button(role: .destructive, action: model.requestCheckedDeletion) {
             Label(L10n.deleteSelected(model.checkedMediaIDs.count, language), systemImage: "trash")
+                .symbolEffect(.bounce, value: model.checkedMediaIDs.count)
         }
         .buttonStyle(.bordered)
         .disabled(model.isBusy)
         .fixedSize()
+    }
+
+    private var bottomContentMargin: CGFloat {
+        model.checkedMediaIDs.isEmpty ? 0 : selectionBarHeight
+    }
+
+    /// Which top-level screen is showing; changes crossfade between them.
+    private var contentState: ContentState {
+        if model.selectedFolders.isEmpty { return .welcome }
+        if let group = model.selectedGroup { return .group(group.id) }
+        if !model.groups.isEmpty { return .selectGroup }
+        if model.isScanning { return .scanning }
+        return .empty
+    }
+
+    private enum ContentState: Equatable {
+        case welcome, group(UUID), selectGroup, scanning, empty
     }
 
     private var welcome: some View {
@@ -150,6 +228,9 @@ struct GroupDetailView: View {
             Image(systemName: "photo.stack")
                 .font(.system(size: 52, weight: .light))
                 .foregroundStyle(.secondary)
+                .symbolEffect(.bounce, value: welcomeBounce)
+                .onAppear { welcomeBounce += 1 }
+                .onHover { if $0 { welcomeBounce += 1 } }
             VStack(spacing: 10) {
                 Text(L10n.findSimilarMedia(language)).font(.largeTitle.weight(.semibold))
                 Text(L10n.dragFoldersHint(language)).foregroundStyle(.secondary)
@@ -201,9 +282,16 @@ struct GroupDetailView: View {
         .disabled(targets.isEmpty || model.isBusy)
     }
 
+    /// Every click selects immediately; the second click of a plain
+    /// double-click also opens the preview. Reading the click count instead
+    /// of adding a count-2 tap gesture keeps single clicks free of the delay
+    /// SwiftUI adds while it waits to rule out a double-click.
     private func handleCardTap(_ video: MediaItem) {
         let modifiers = NSEvent.modifierFlags
-        if modifiers.contains(.shift) {
+        if NSApp.currentEvent?.clickCount == 2, !modifiers.contains(.shift), !modifiers.contains(.command) {
+            model.selectGroupItem(video.id)
+            onOpenPreview()
+        } else if modifiers.contains(.shift) {
             model.extendGroupItemSelection(to: video.id)
         } else if modifiers.contains(.command) {
             model.toggleGroupItemSelection(video.id)

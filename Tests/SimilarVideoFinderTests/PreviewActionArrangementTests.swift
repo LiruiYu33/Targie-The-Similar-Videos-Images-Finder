@@ -43,4 +43,14 @@ final class PreviewActionArrangementTests: XCTestCase {
             [.showInFinder, .deleteSelection]
         )
     }
+
+    func testOpeningGetsItsOwnRowAndTheRestShareOne() {
+        let video = PreviewActionArrangement.rows(for: PreviewActionArrangement.singleFileActions(includesOpenDefaultPlayer: true))
+        XCTAssertEqual(video.lead, .openDefaultPlayer)
+        XCTAssertEqual(video.shared, [.showInFinder, .deleteFile])
+
+        let image = PreviewActionArrangement.rows(for: PreviewActionArrangement.singleFileActions(includesOpenDefaultPlayer: false))
+        XCTAssertNil(image.lead)
+        XCTAssertEqual(image.shared, [.showInFinder, .deleteFile])
+    }
 }

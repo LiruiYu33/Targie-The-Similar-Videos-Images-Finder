@@ -85,6 +85,7 @@ struct BrowseView: View {
             }
         }
         .coordinateSpace(name: "browseSplit")
+        .background(FinderShortcutMonitor(focusesToolbarSearch: true, onMoveToTrash: moveSelectionToTrash))
         .navigationTitle(L10n.browseItemCount(browseModel.displayedItems.count, language))
         .searchable(text: $browseModel.searchText, placement: .toolbar, prompt: Text(L10n.searchFiles(language)))
         .toolbar {
@@ -94,7 +95,7 @@ struct BrowseView: View {
                         title: L10n.done(language),
                         systemImage: "checkmark"
                     ) {
-                        browseModel.toggleBatchSelectionMode()
+                        withAnimation(Motion.quick) { browseModel.toggleBatchSelectionMode() }
                     }
                 } else {
                     ToolbarLabeledButton(
@@ -124,7 +125,7 @@ struct BrowseView: View {
                         title: L10n.select(language),
                         systemImage: "checklist"
                     ) {
-                        browseModel.toggleBatchSelectionMode()
+                        withAnimation(Motion.quick) { browseModel.toggleBatchSelectionMode() }
                     }
                     .disabled(browseModel.displayedItems.isEmpty)
                 }
@@ -148,6 +149,13 @@ struct BrowseView: View {
                 }
             }
         }
+    }
+
+    /// ⌘⌫ opens the delete prompt for the selected rows, like Finder.
+    private func moveSelectionToTrash() {
+        let targets = browseModel.selectedMediaList
+        guard !targets.isEmpty, !browseModel.scanModel.isBusy else { return }
+        browseModel.scanModel.requestDeletion(of: targets)
     }
 
     // MARK: - Divider

@@ -28,8 +28,11 @@ struct ContentView: View {
     @AppStorage("scanIntensity") private var scanIntensityRawValue = ScanIntensity.defaultIntensity.rawValue
     @AppStorage("excludeSubfolders") private var excludeSubfolders = false
     @AppStorage("deepVerification") private var deepVerification = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var appMode: AppMode = .scan
+    /// Fades the whole window content after a mode switch; see `switchMode`.
+    @State private var isModeContentVisible = true
     @StateObject private var browseSession = BrowseSessionCoordinator()
     @State private var isClearCacheConfirmPresented = false
     @State private var isSettingsPresented = false
@@ -66,6 +69,7 @@ struct ContentView: View {
                 }
             }
         }
+        .opacity(isModeContentVisible ? 1 : 0)
         .alert(L10n.operationFailed(language), isPresented: Binding(
             get: { model.presentedError != nil },
             set: { if !$0 { model.presentedError = nil } }
@@ -98,8 +102,10 @@ struct ContentView: View {
             columnVisibility = model.selectedFolders.isEmpty ? .detailOnly : .all
         }
         .onChange(of: model.selectedFolders.isEmpty) { _, isEmpty in
-            columnVisibility = isEmpty ? .detailOnly : .all
-            if isEmpty { isInspectorPresented = false }
+            withAnimation(Motion.standard) {
+                columnVisibility = isEmpty ? .detailOnly : .all
+                if isEmpty { isInspectorPresented = false }
+            }
         }
         .onChange(of: scanIntensityRawValue) { _, _ in
             model.setScanIntensity(scanIntensity)
@@ -147,35 +153,43 @@ struct ContentView: View {
                 )
         } detail: {
             GeometryReader { geometry in
-                let dividerWidth: CGFloat = isInspectorPresented ? 8 : 0
+                let dividerWidth: CGFloat = 8
                 let maximumPreviewWidth = max(0, min(380, geometry.size.width - 280 - dividerWidth))
-                let previewWidth = isInspectorPresented
-                    ? min(max(280, inspectorWidth), maximumPreviewWidth)
-                    : 0
-                let comparisonWidth = max(0, geometry.size.width - previewWidth - dividerWidth)
+                // The panel keeps its width while hidden so it slides out intact
+                // instead of collapsing; only the comparison area resizes.
+                let previewWidth = min(max(280, inspectorWidth), maximumPreviewWidth)
+                let comparisonWidth = isInspectorPresented
+                    ? max(0, geometry.size.width - previewWidth - dividerWidth)
+                    : geometry.size.width
 
                 HStack(spacing: 0) {
-                    GroupDetailView(model: model)
+                    GroupDetailView(model: model) {
+                        guard !isInspectorPresented else { return }
+                        withAnimation(Motion.standard) { isInspectorPresented = true }
+                    }
                         .frame(width: comparisonWidth, height: geometry.size.height)
                     if isInspectorPresented {
-                        Rectangle()
-                            .fill(.quaternary)
-                            .frame(width: 1)
-                            .frame(width: dividerWidth)
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 1)
-                                    .onChanged { value in
-                                        let start = inspectorDragStartWidth ?? previewWidth
-                                        if inspectorDragStartWidth == nil { inspectorDragStartWidth = start }
-                                        inspectorWidth = min(max(280, start - value.translation.width), maximumPreviewWidth)
-                                    }
-                                    .onEnded { _ in inspectorDragStartWidth = nil }
-                            )
-                            .onHover { updateInspectorResizeCursor(hovering: $0) }
-                            .onDisappear { updateInspectorResizeCursor(hovering: false) }
-                        InspectorView(model: model)
-                            .frame(width: previewWidth, height: geometry.size.height)
+                        HStack(spacing: 0) {
+                            Rectangle()
+                                .fill(.quaternary)
+                                .frame(width: 1)
+                                .frame(width: dividerWidth)
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    DragGesture(minimumDistance: 1)
+                                        .onChanged { value in
+                                            let start = inspectorDragStartWidth ?? previewWidth
+                                            if inspectorDragStartWidth == nil { inspectorDragStartWidth = start }
+                                            inspectorWidth = min(max(280, start - value.translation.width), maximumPreviewWidth)
+                                        }
+                                        .onEnded { _ in inspectorDragStartWidth = nil }
+                                )
+                                .onHover { updateInspectorResizeCursor(hovering: $0) }
+                                .onDisappear { updateInspectorResizeCursor(hovering: false) }
+                            InspectorView(model: model)
+                                .frame(width: previewWidth, height: geometry.size.height)
+                        }
+                        .transition(Motion.slide(from: .trailing, reduceMotion: reduceMotion))
                     }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
@@ -209,7 +223,7 @@ struct ContentView: View {
                 ToolbarLabeledButton(
                     title: L10n.details(language),
                     systemImage: "sidebar.right",
-                    action: { isInspectorPresented.toggle() }
+                    action: { withAnimation(Motion.standard) { isInspectorPresented.toggle() } }
                 )
                 .disabled(model.selectedFolders.isEmpty)
                 .help(L10n.previewAndDetails(language))
@@ -242,12 +256,16 @@ struct ContentView: View {
         .sheet(item: $model.deletePrompt) { _ in
             DeleteConfirmationView(model: model)
         }
-        .onDeleteCommand {
-            if !model.checkedMediaIDs.isEmpty {
-                model.requestCheckedDeletion()
-            } else if let video = model.selectedMedia {
-                model.requestDeletion(of: video)
-            }
+        .onDeleteCommand(perform: deleteCurrentSelection)
+        .background(FinderShortcutMonitor(onMoveToTrash: deleteCurrentSelection))
+    }
+
+    private func deleteCurrentSelection() {
+        guard !model.isBusy else { return }
+        if !model.checkedMediaIDs.isEmpty {
+            model.requestCheckedDeletion()
+        } else if let video = model.selectedMedia {
+            model.requestDeletion(of: video)
         }
     }
 
@@ -259,12 +277,29 @@ struct ContentView: View {
             model.discoverFiles()
         }
         _ = browseSession.model(for: model)
-        appMode = .browse
+        switchMode(to: .browse)
     }
 
     private func exitBrowseMode() {
-        appMode = .scan
+        switchMode(to: .scan)
         browseSession.leaveBrowseMode()
+    }
+}
+
+extension ContentView {
+    /// Swaps screens without animating their layout, then fades the new one in.
+    /// Animating the swap itself rebuilt the split view inside an animated
+    /// transaction, so sidebar, columns and toolbar all sprang into place.
+    fileprivate func switchMode(to mode: AppMode) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isModeContentVisible = false
+            appMode = mode
+        }
+        DispatchQueue.main.async {
+            withAnimation(Motion.fade) { isModeContentVisible = true }
+        }
     }
 }
 

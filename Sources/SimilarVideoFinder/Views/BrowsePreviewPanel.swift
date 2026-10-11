@@ -29,47 +29,43 @@ struct BrowsePreviewPanel: View {
     @Environment(\.appLanguage) private var language
 
     var body: some View {
-        Group {
+        // ZStack so single, multiple and empty states overlap while they
+        // crossfade instead of being laid out side by side.
+        ZStack {
             if browseModel.hasMultipleSelection {
                 BrowseStackedPreview(browseModel: browseModel, language: language)
             } else if let media = browseModel.selectedMedia {
                 VStack(spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
-                            BrowseMediaPreview(media: media)
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(media.filename)
-                                    .font(.title3.bold())
-                                    .textSelection(.enabled)
-                                metadata(L10n.fileSize(language), DisplayFormatters.fileSize(media.fileSize))
-                                if let duration = media.duration {
-                                    metadata(L10n.duration(language), DisplayFormatters.duration(duration, language: language))
+                    // The outgoing and incoming previews overlap here; directly
+                    // in the VStack they would stack and each get half the height.
+                    ZStack {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 16) {
+                                BrowseMediaPreview(media: media)
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(media.filename)
+                                        .font(.title3.bold())
+                                        .textSelection(.enabled)
+                                    metadata(L10n.fileSize(language), DisplayFormatters.fileSize(media.fileSize))
+                                    if let duration = media.duration {
+                                        metadata(L10n.duration(language), DisplayFormatters.duration(duration, language: language))
+                                    }
+                                    metadata(L10n.resolution(language), media.resolution(language: language))
+                                    metadata(L10n.path(language), media.url.path)
                                 }
-                                metadata(L10n.resolution(language), media.resolution(language: language))
-                                metadata(L10n.path(language), media.url.path)
                             }
+                            .padding(18)
                         }
-                        .padding(18)
+                        .id(media.id)
+                        // Opacity only; scaling a scroll view makes its scroll bar flicker.
+                        .transition(.opacity)
                     }
+                    .animation(Motion.quick, value: media.id)
 
                     Divider()
 
-                    let actions = PreviewActionArrangement.singleFileActions(includesOpenDefaultPlayer: media.kind == .video)
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 10) {
-                            ForEach(actions, id: \.self) { action in
-                                actionButton(action, media: media)
-                            }
-                        }
+                    PreviewActionBar(actions: actions(for: media))
                         .padding(18)
-                        VStack(spacing: 8) {
-                            ForEach(actions, id: \.self) { action in
-                                actionButton(action, media: media)
-                                    .frame(maxWidth: .infinity)
-                            }
-                        }
-                        .padding(18)
-                    }
                 }
             } else {
                 ContentUnavailableView(
@@ -79,6 +75,13 @@ struct BrowsePreviewPanel: View {
                 )
             }
         }
+        .animation(Motion.standard, value: previewState)
+    }
+
+    /// Single, multiple or empty selection; switching between them crossfades.
+    private var previewState: Int {
+        if browseModel.hasMultipleSelection { return 2 }
+        return browseModel.selectedMedia == nil ? 0 : 1
     }
 
     private func metadata(_ title: String, _ value: String) -> some View {
@@ -88,31 +91,21 @@ struct BrowsePreviewPanel: View {
         }
     }
 
-    @ViewBuilder
-    private func actionButton(_ action: PreviewActionKind, media: MediaItem) -> some View {
-        switch action {
-        case .openDefaultPlayer:
-            Button { browseModel.scanModel.openMedia(media) } label: {
-                Label(L10n.openDefaultPlayer(language), systemImage: "play.rectangle")
+    private func actions(for media: MediaItem) -> [PreviewAction] {
+        let scanModel = browseModel.scanModel
+        return PreviewActionArrangement.singleFileActions(includesOpenDefaultPlayer: media.kind == .video).compactMap { kind in
+            switch kind {
+            case .openDefaultPlayer:
+                PreviewAction(kind: kind, title: L10n.openDefaultPlayer(language), systemImage: "play.rectangle") { scanModel.openMedia(media) }
+            case .showInFinder:
+                PreviewAction(kind: kind, title: L10n.showInFinder(language), systemImage: "folder") { scanModel.revealMedia(media) }
+            case .deleteFile:
+                PreviewAction(kind: kind, title: L10n.deleteMedia(language), systemImage: "trash", isDestructive: true) {
+                    scanModel.requestDeletion(of: media)
+                }
+            case .deleteSelection:
+                nil
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        case .showInFinder:
-            Button { browseModel.scanModel.revealMedia(media) } label: {
-                Label(L10n.showInFinder(language), systemImage: "folder")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        case .deleteFile:
-            Button(role: .destructive) {
-                browseModel.scanModel.requestDeletion(of: media)
-            } label: {
-                Label(L10n.deleteMedia(language), systemImage: "trash")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        case .deleteSelection:
-            EmptyView()
         }
     }
 }
@@ -157,20 +150,7 @@ struct BrowseStackedPreview: View {
                     metadata(L10n.videos(language), "\(videoCount)")
                 }
 
-                let multiActions = PreviewActionArrangement.multipleSelectionActions()
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) {
-                        ForEach(multiActions, id: \.self) { action in
-                            actionButton(action)
-                        }
-                    }
-                    VStack(spacing: 8) {
-                        ForEach(multiActions, id: \.self) { action in
-                            actionButton(action)
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                }
+                PreviewActionBar(actions: multipleSelectionActions)
 
                 Divider()
 
@@ -214,27 +194,22 @@ struct BrowseStackedPreview: View {
         }
     }
 
-    @ViewBuilder
-    private func actionButton(_ action: PreviewActionKind) -> some View {
-        switch action {
-        case .showInFinder:
-            if let first = selectedItems.first {
-                Button { browseModel.scanModel.revealMedia(first) } label: {
-                    Label(L10n.showInFinder(language), systemImage: "folder")
+    private var multipleSelectionActions: [PreviewAction] {
+        let scanModel = browseModel.scanModel
+        let items = selectedItems
+        return PreviewActionArrangement.multipleSelectionActions().compactMap { kind in
+            switch kind {
+            case .showInFinder:
+                items.first.map { first in
+                    PreviewAction(kind: kind, title: L10n.showInFinder(language), systemImage: "folder") { scanModel.revealMedia(first) }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+            case .deleteSelection:
+                PreviewAction(kind: kind, title: L10n.deleteSelected(items.count, language), systemImage: "trash", isDestructive: true) {
+                    scanModel.requestDeletion(of: items)
+                }
+            case .openDefaultPlayer, .deleteFile:
+                nil
             }
-        case .deleteSelection:
-            Button(role: .destructive) {
-                browseModel.scanModel.requestDeletion(of: selectedItems)
-            } label: {
-                Label(L10n.deleteSelected(selectedItems.count, language), systemImage: "trash")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        case .openDefaultPlayer, .deleteFile:
-            EmptyView()
         }
     }
 }

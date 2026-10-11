@@ -85,23 +85,25 @@ struct ClickOutsideMonitor: NSViewRepresentable {
         }
     }
 
-    private final class EventMonitorStore {
-        private var eventMonitor: Any?
+}
 
-        deinit {
-            stopMonitoring()
-        }
+/// Owns an `NSEvent` monitor and removes it when replaced or deallocated.
+final class EventMonitorStore {
+    private var eventMonitor: Any?
 
-        func startMonitoring(_ eventMonitor: Any?) {
-            stopMonitoring()
-            self.eventMonitor = eventMonitor
-        }
+    deinit {
+        stopMonitoring()
+    }
 
-        func stopMonitoring() {
-            if let eventMonitor {
-                NSEvent.removeMonitor(eventMonitor)
-                self.eventMonitor = nil
-            }
+    func startMonitoring(_ eventMonitor: Any?) {
+        stopMonitoring()
+        self.eventMonitor = eventMonitor
+    }
+
+    func stopMonitoring() {
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
         }
     }
 }
