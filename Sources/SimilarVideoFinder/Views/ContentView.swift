@@ -22,7 +22,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @ObservedObject var model: ScanViewModel
+    @Bindable var model: ScanViewModel
     @AppStorage("appLanguage") private var languageRawValue = AppLanguage.defaultLanguage.rawValue
     @AppStorage("scanMode") private var scanModeRawValue = ScanMode.all.rawValue
     @AppStorage("scanIntensity") private var scanIntensityRawValue = ScanIntensity.defaultIntensity.rawValue
@@ -33,7 +33,7 @@ struct ContentView: View {
     @State private var appMode: AppMode = .scan
     /// Fades the whole window content after a mode switch; see `switchMode`.
     @State private var isModeContentVisible = true
-    @StateObject private var browseSession = BrowseSessionCoordinator()
+    @State private var browseSession = BrowseSessionCoordinator()
     @State private var isClearCacheConfirmPresented = false
     @State private var isSettingsPresented = false
     @State private var isInspectorPresented = false

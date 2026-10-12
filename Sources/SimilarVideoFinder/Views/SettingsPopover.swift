@@ -28,7 +28,7 @@ import SwiftUI
 /// during a scan so Language remains reachable; the per-item disabled states
 /// mirror what each control had when it lived directly in the toolbar.
 struct SettingsPopover: View {
-    @ObservedObject var model: ScanViewModel
+    var model: ScanViewModel
     @Binding var scanIntensityRawValue: String
     @Binding var languageRawValue: String
     @Binding var deepVerification: Bool

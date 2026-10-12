@@ -23,7 +23,7 @@ import AppKit
 import SwiftUI
 
 struct InspectorView: View {
-    @ObservedObject var model: ScanViewModel
+    var model: ScanViewModel
     @Environment(\.appLanguage) private var language
 
     var body: some View {

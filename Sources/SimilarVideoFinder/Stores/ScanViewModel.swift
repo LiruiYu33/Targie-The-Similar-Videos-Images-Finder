@@ -21,6 +21,7 @@
 
 import AppKit
 import Foundation
+import Observation
 import SwiftUI
 
 enum DeletePromptStep: Equatable {
@@ -305,21 +306,26 @@ actor ScanProgressAggregator {
     }
 }
 
+/// Observable (not ObservableObject) so each view only updates when the
+/// properties it actually reads change. With ObservableObject every change,
+/// e.g. picking a group, re-rendered the whole window: toolbar, split view,
+/// sidebar and, through forwarding, Browse.
 @MainActor
-final class ScanViewModel: ObservableObject {
+@Observable
+final class ScanViewModel {
     static let displayThresholdRange = DisplayThresholdEditing.allowedRange
 
-    @Published var selectedFolders: [URL] = []
-    @Published var threshold = DisplayThresholdEditing.recommendedThreshold {
+    var selectedFolders: [URL] = []
+    var threshold = DisplayThresholdEditing.recommendedThreshold {
         didSet { scheduleThresholdRebuild() }
     }
 
     /// Coalesces threshold-driven group rebuilds so dragging the slider does
     /// not recompute groups on every intermediate value (which freezes the UI
     /// on large libraries). The rebuild fires shortly after the last change.
-    private var thresholdRebuildTask: Task<Void, Never>?
-    private var thresholdRebuildGeneration = 0
-    private var resultsRevision = 0
+    @ObservationIgnored private var thresholdRebuildTask: Task<Void, Never>?
+    @ObservationIgnored private var thresholdRebuildGeneration = 0
+    @ObservationIgnored private var resultsRevision = 0
 
     private func scheduleThresholdRebuild() {
         guard !isDeleting else { return }
@@ -346,39 +352,39 @@ final class ScanViewModel: ObservableObject {
             self.applyRebuiltGroups(rebuilt, preserving: previousGroups)
         }
     }
-    @Published private(set) var groups: [SimilarityGroup] = []
-    @Published var selectedGroupID: UUID?
-    @Published var selectedMediaID: UUID?
+    private(set) var groups: [SimilarityGroup] = []
+    var selectedGroupID: UUID?
+    var selectedMediaID: UUID?
 
     /// Sort order for the cards within the selected group (Compare Media).
     /// Default is similarity descending: the most-similar item surfaces first,
     /// which fits the "pick a keeper, delete the rest" workflow.
-    @Published var groupSortField: GroupSortField = .similarity {
+    var groupSortField: GroupSortField = .similarity {
         didSet { recomputeSortedGroupItems() }
     }
-    @Published var groupSortAscending = false {
+    var groupSortAscending = false {
         didSet { recomputeSortedGroupItems() }
     }
 
     /// Cached sort of the selected group's items. Stored (not computed) so the
     /// Compare Media grid reads a stable array identity across unrelated model
-    /// changes — e.g. dragging the display threshold fires `objectWillChange`
-    /// every frame, and a computed `sortedItems` would hand `ForEach` a fresh
+    /// changes — e.g. dragging the display threshold changes the model every
+    /// frame, and a computed `sortedItems` would hand `ForEach` a fresh
     /// array each frame, rebuilding every card (each decoding its thumbnail
     /// from disk) and freezing the UI. Refreshed only when the selected group,
     /// its contents, or the sort field/direction actually change.
-    @Published private(set) var sortedGroupItems: [MediaItem] = []
-    @Published private(set) var progress = ScanProgress()
-    @Published private(set) var isScanning = false
-    @Published private(set) var isClearingCache = false
-    @Published private(set) var isDeleting = false
-    @Published private(set) var itemsRevision = 0
-    @Published private(set) var issues: [ScanIssue] = []
-    @Published var presentedError: PresentedError?
-    @Published var deletePrompt: DeletePrompt?
-    @Published var scanMode: ScanMode = .all
-    @Published var scanIntensity: ScanIntensity
-    @Published var excludeSubfolders = false {
+    private(set) var sortedGroupItems: [MediaItem] = []
+    private(set) var progress = ScanProgress()
+    private(set) var isScanning = false
+    private(set) var isClearingCache = false
+    private(set) var isDeleting = false
+    private(set) var itemsRevision = 0
+    private(set) var issues: [ScanIssue] = []
+    var presentedError: PresentedError?
+    var deletePrompt: DeletePrompt?
+    var scanMode: ScanMode = .all
+    var scanIntensity: ScanIntensity
+    var excludeSubfolders = false {
         didSet {
             guard oldValue != excludeSubfolders else { return }
             invalidatePendingGroupBuild()
@@ -386,11 +392,11 @@ final class ScanViewModel: ObservableObject {
             rebuildGroups()
         }
     }
-    @Published var checkedMediaIDs = Set<UUID>()
+    var checkedMediaIDs = Set<UUID>()
 
     private var allItems: [MediaItem] = []
     private var allRelations: [SimilarityRelation] = []
-    private var scanTask: Task<Void, Never>?
+    @ObservationIgnored private var scanTask: Task<Void, Never>?
     private let scanner: VideoScanner
     private let imageScanner: ImageScanner
     private let imagePipeline: ImageSimilarityPipeline
@@ -406,9 +412,9 @@ final class ScanViewModel: ObservableObject {
     private let thumbnailStore: ThumbnailStore
     private let activityManager: ScanActivityManaging
     private let groupBuilder: SimilarityGroupBuilder
-    private var groupSelectionAnchorID: UUID?
-    private var activeScanID: UUID?
-    private var scanActivity: NSObjectProtocol?
+    @ObservationIgnored private var groupSelectionAnchorID: UUID?
+    @ObservationIgnored private var activeScanID: UUID?
+    @ObservationIgnored private var scanActivity: NSObjectProtocol?
 
     init(
         scanner: VideoScanner = VideoScanner(),
@@ -428,7 +434,9 @@ final class ScanViewModel: ObservableObject {
         self.scanIntensity = scanIntensity
         self.groupBuilder = groupBuilder ?? ScanViewModel.buildGroupsOffMain
         self.usesDefaultPipeline = pipeline == nil
-        self.pipeline = pipeline ?? SimilarityPipeline(cache: hashCache, usesFrameVerification: self.deepVerification)
+        // Deep verification starts off; reading the observed property here
+        // would touch `self` before initialization completes.
+        self.pipeline = pipeline ?? SimilarityPipeline(cache: hashCache, usesFrameVerification: false)
         self.imagePipeline = ImageSimilarityPipeline(cache: hashCache)
         // Use caller-provided scanners, but if they used the default loader,
         // replace it with a cache-equipped default so re-scan skips media I/O.
@@ -1157,6 +1165,14 @@ final class ScanViewModel: ObservableObject {
         replaceItems(with: items)
         allRelations = relations
         rebuildGroups()
+    }
+
+    /// Waits for the debounced rebuild scheduled by the last threshold change.
+    /// Tests cannot wait for `groups` to change instead: Observation does not
+    /// report assigning an equal value, and a rebuild may legitimately produce
+    /// the same groups.
+    func waitForThresholdRebuildForTesting() async {
+        await thresholdRebuildTask?.value
     }
 
     func replaceProgressForTesting(_ progress: ScanProgress) {

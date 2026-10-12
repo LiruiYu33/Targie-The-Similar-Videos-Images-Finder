@@ -22,7 +22,7 @@
 import SwiftUI
 
 struct BrowseView: View {
-    @ObservedObject var browseModel: BrowseViewModel
+    @Bindable var browseModel: BrowseViewModel
     @Binding var excludeSubfolders: Bool
     let onBack: () -> Void
     @Environment(\.appLanguage) private var language

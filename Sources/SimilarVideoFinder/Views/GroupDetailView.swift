@@ -23,7 +23,7 @@ import AppKit
 import SwiftUI
 
 struct GroupDetailView: View {
-    @ObservedObject var model: ScanViewModel
+    var model: ScanViewModel
     /// Shows the Preview & Details panel; called on a plain double-click.
     var onOpenPreview: () -> Void = {}
     @Environment(\.appLanguage) private var language
@@ -307,7 +307,7 @@ struct GroupDetailView: View {
 /// ascending — no separate direction control. The active field shows its
 /// current direction with a chevron.
 private struct GroupSortMenu: View {
-    @ObservedObject var model: ScanViewModel
+    var model: ScanViewModel
     let language: AppLanguage
 
     var body: some View {
