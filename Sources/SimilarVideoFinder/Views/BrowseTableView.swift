@@ -73,6 +73,12 @@ struct BrowseTableView: View {
         } else {
             GeometryReader { geo in
                 let widths = computeWidths(forContainerWidth: geo.size.width)
+                // Read once per update, not once per row: with nothing selected,
+                // `primarySelectedID` scans every displayed item, and per-row
+                // reads made entering Browse cost rows × items.
+                let selectedIDs = browseModel.selectedMediaIDs
+                let primaryID = browseModel.primarySelectedID
+                let selectedItems = browseModel.selectedMediaList
 
                 VStack(spacing: 0) {
                     browseTableHeader(widths: widths)
@@ -89,16 +95,21 @@ struct BrowseTableView: View {
                                     item: item,
                                     language: language,
                                     widths: widths,
-                                    isSelected: browseModel.selectedMediaIDs.contains(item.id),
-                                    isPrimary: browseModel.primarySelectedID == item.id,
+                                    isSelected: selectedIDs.contains(item.id),
+                                    isPrimary: primaryID == item.id,
                                     isBatchSelectionMode: browseModel.isBatchSelectionMode,
-                                    isChecked: browseModel.selectedMediaIDs.contains(item.id),
+                                    isChecked: selectedIDs.contains(item.id),
                                     isAlternating: !index.isMultiple(of: 2),
                                     onToggleCheck: { browseModel.toggleMedia(item.id) },
                                     onSelect: { selectRow(item.id) }
                                 )
+                                .equatable()
                                 .padding(.horizontal, rowHorizontalPadding)
-                                .contextMenu { browseContextMenu(clickedID: item.id) }
+                                .contextMenu {
+                                    // Same rule as MediaContextSelection, without a scan per row:
+                                    // a click inside the selection keeps the batch.
+                                    rowContextMenu(targets: selectedIDs.contains(item.id) ? selectedItems : [item])
+                                }
                                 .marqueeItem(item.id)
                             }
                         }
@@ -261,12 +272,16 @@ struct BrowseTableView: View {
 
     @ViewBuilder
     private func browseContextMenu(clickedID: UUID?) -> some View {
-        let targets = MediaContextSelection.items(
+        rowContextMenu(targets: MediaContextSelection.items(
             displayedItems: browseModel.displayedItems,
             selectedIDs: browseModel.selectedMediaIDs,
             clickedID: clickedID,
             fallbackID: browseModel.primarySelectedID
-        )
+        ))
+    }
+
+    @ViewBuilder
+    private func rowContextMenu(targets: [MediaItem]) -> some View {
         Button(L10n.selectAll(language), action: browseModel.selectAllDisplayed)
             .disabled(browseModel.displayedItems.isEmpty || browseModel.scanModel.isBusy)
         Divider()
@@ -333,7 +348,9 @@ private struct ColumnResizeHandle: View {
 
 // MARK: - Table Row
 
-struct BrowseTableRow: View {
+/// Equatable so rows whose content did not change are skipped; the closures
+/// would otherwise make every visible row re-render on each selection change.
+struct BrowseTableRow: View, Equatable {
     let item: MediaItem
     let language: AppLanguage
     let widths: BrowseColumnWidths
@@ -344,6 +361,17 @@ struct BrowseTableRow: View {
     let isAlternating: Bool
     let onToggleCheck: () -> Void
     let onSelect: () -> Void
+
+    nonisolated static func == (lhs: BrowseTableRow, rhs: BrowseTableRow) -> Bool {
+        lhs.item == rhs.item
+            && lhs.language == rhs.language
+            && lhs.widths == rhs.widths
+            && lhs.isSelected == rhs.isSelected
+            && lhs.isPrimary == rhs.isPrimary
+            && lhs.isBatchSelectionMode == rhs.isBatchSelectionMode
+            && lhs.isChecked == rhs.isChecked
+            && lhs.isAlternating == rhs.isAlternating
+    }
 
     private static let alternateBackground = NSColor.alternatingContentBackgroundColors
         .dropFirst()
