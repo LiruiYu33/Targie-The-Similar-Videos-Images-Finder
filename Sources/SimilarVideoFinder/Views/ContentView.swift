@@ -38,6 +38,8 @@ struct ContentView: View {
     @State private var isSettingsPresented = false
     @State private var isInspectorPresented = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
+    /// Sidebar visibility to restore when leaving Browse.
+    @State private var scanColumnVisibility: NavigationSplitViewVisibility = .all
     @State private var inspectorWidth: CGFloat = 320
     @State private var inspectorDragStartWidth: CGFloat?
     @State private var isInspectorResizeCursorPushed = false
@@ -52,24 +54,44 @@ struct ContentView: View {
     }
 
     var body: some View {
-        Group {
-            switch appMode {
-            case .scan:
-                scanView
-            case .browse:
-                if let browseModel = browseSession.browseModel {
-                    BrowseView(
-                        browseModel: browseModel,
-                        excludeSubfolders: $excludeSubfolders,
-                        onBack: exitBrowseMode
-                    )
-                        .sheet(item: $model.deletePrompt) { _ in
-                            DeleteConfirmationView(model: model)
-                        }
+        // One split view for both modes: Browse replaces only the detail
+        // column and collapses the sidebar. Rebuilding the split view, sidebar
+        // list and toolbar on every mode switch was most of its cost.
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            SidebarView(model: model, excludeSubfolders: $excludeSubfolders)
+                .navigationSplitViewColumnWidth(
+                    min: SplitColumnConfiguration.sidebar.minWidth,
+                    ideal: SplitColumnConfiguration.sidebar.idealWidth,
+                    max: SplitColumnConfiguration.sidebar.maxWidth ?? SplitColumnConfiguration.sidebar.idealWidth
+                )
+                // Applies to the split view's toolbar only when set on the
+                // sidebar column; Browse has no sidebar to reveal.
+                .toolbar(removing: appMode == .browse ? .sidebarToggle : nil)
+        } detail: {
+            Group {
+                switch appMode {
+                case .scan:
+                    scanDetail
+                case .browse:
+                    if let browseModel = browseSession.browseModel {
+                        BrowseView(
+                            browseModel: browseModel,
+                            excludeSubfolders: $excludeSubfolders,
+                            onBack: exitBrowseMode
+                        )
+                    }
                 }
             }
+            .opacity(isModeContentVisible ? 1 : 0)
         }
-        .opacity(isModeContentVisible ? 1 : 0)
+        .toolbar {
+            if appMode == .scan {
+                scanToolbar
+            }
+        }
+        .sheet(item: $model.deletePrompt) { _ in
+            DeleteConfirmationView(model: model)
+        }
         .alert(L10n.operationFailed(language), isPresented: Binding(
             get: { model.presentedError != nil },
             set: { if !$0 { model.presentedError = nil } }
@@ -102,6 +124,7 @@ struct ContentView: View {
             columnVisibility = model.selectedFolders.isEmpty ? .detailOnly : .all
         }
         .onChange(of: model.selectedFolders.isEmpty) { _, isEmpty in
+            guard appMode == .scan else { return }
             withAnimation(Motion.standard) {
                 columnVisibility = isEmpty ? .detailOnly : .all
                 if isEmpty { isInspectorPresented = false }
@@ -143,121 +166,111 @@ struct ContentView: View {
 
     // MARK: - Scan Mode View
 
-    private var scanView: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(model: model, excludeSubfolders: $excludeSubfolders)
-                .navigationSplitViewColumnWidth(
-                    min: SplitColumnConfiguration.sidebar.minWidth,
-                    ideal: SplitColumnConfiguration.sidebar.idealWidth,
-                    max: SplitColumnConfiguration.sidebar.maxWidth ?? SplitColumnConfiguration.sidebar.idealWidth
-                )
-        } detail: {
-            GeometryReader { geometry in
-                let dividerWidth: CGFloat = 8
-                let maximumPreviewWidth = max(0, min(380, geometry.size.width - 280 - dividerWidth))
-                // The panel keeps its width while hidden so it slides out intact
-                // instead of collapsing; only the comparison area resizes.
-                let previewWidth = min(max(280, inspectorWidth), maximumPreviewWidth)
-                let comparisonWidth = isInspectorPresented
-                    ? max(0, geometry.size.width - previewWidth - dividerWidth)
-                    : geometry.size.width
+    private var scanDetail: some View {
+        GeometryReader { geometry in
+            let dividerWidth: CGFloat = 8
+            let maximumPreviewWidth = max(0, min(380, geometry.size.width - 280 - dividerWidth))
+            // The panel keeps its width while hidden so it slides out intact
+            // instead of collapsing; only the comparison area resizes.
+            let previewWidth = min(max(280, inspectorWidth), maximumPreviewWidth)
+            let comparisonWidth = isInspectorPresented
+                ? max(0, geometry.size.width - previewWidth - dividerWidth)
+                : geometry.size.width
 
-                HStack(spacing: 0) {
-                    GroupDetailView(model: model) {
-                        guard !isInspectorPresented else { return }
-                        withAnimation(Motion.standard) { isInspectorPresented = true }
-                    }
-                        .frame(width: comparisonWidth, height: geometry.size.height)
-                    if isInspectorPresented {
-                        HStack(spacing: 0) {
-                            Rectangle()
-                                .fill(.quaternary)
-                                .frame(width: 1)
-                                .frame(width: dividerWidth)
-                                .contentShape(Rectangle())
-                                .gesture(
-                                    DragGesture(minimumDistance: 1)
-                                        .onChanged { value in
-                                            let start = inspectorDragStartWidth ?? previewWidth
-                                            if inspectorDragStartWidth == nil { inspectorDragStartWidth = start }
-                                            inspectorWidth = min(max(280, start - value.translation.width), maximumPreviewWidth)
-                                        }
-                                        .onEnded { _ in inspectorDragStartWidth = nil }
-                                )
-                                .onHover { updateInspectorResizeCursor(hovering: $0) }
-                                .onDisappear { updateInspectorResizeCursor(hovering: false) }
-                            InspectorView(model: model)
-                                .frame(width: previewWidth, height: geometry.size.height)
-                        }
-                        .transition(Motion.slide(from: .trailing, reduceMotion: reduceMotion))
-                    }
+            HStack(spacing: 0) {
+                GroupDetailView(model: model) {
+                    guard !isInspectorPresented else { return }
+                    withAnimation(Motion.standard) { isInspectorPresented = true }
                 }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-            }
-        }
-        .toolbar {
-            ToolbarItemGroup {
-                Picker("", selection: Binding(
-                    get: { ScanMode(rawValue: scanModeRawValue) ?? .all },
-                    set: { mode in
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            scanModeRawValue = mode.rawValue
-                            model.setScanMode(mode)
-                        }
+                    .frame(width: comparisonWidth, height: geometry.size.height)
+                if isInspectorPresented {
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(.quaternary)
+                            .frame(width: 1)
+                            .frame(width: dividerWidth)
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 1)
+                                    .onChanged { value in
+                                        let start = inspectorDragStartWidth ?? previewWidth
+                                        if inspectorDragStartWidth == nil { inspectorDragStartWidth = start }
+                                        inspectorWidth = min(max(280, start - value.translation.width), maximumPreviewWidth)
+                                    }
+                                    .onEnded { _ in inspectorDragStartWidth = nil }
+                            )
+                            .onHover { updateInspectorResizeCursor(hovering: $0) }
+                            .onDisappear { updateInspectorResizeCursor(hovering: false) }
+                        InspectorView(model: model)
+                            .frame(width: previewWidth, height: geometry.size.height)
                     }
-                )) {
-                    Text(L10n.videos(language)).tag(ScanMode.videos)
-                    Text(L10n.images(language)).tag(ScanMode.images)
-                    Text(L10n.allMedia(language)).tag(ScanMode.all)
-                }
-                .pickerStyle(.segmented)
-                .fixedSize()
-
-                ToolbarLabeledButton(
-                    title: L10n.browse(language),
-                    systemImage: "doc.text.image",
-                    action: enterBrowseMode
-                )
-                .disabled(model.selectedFolders.isEmpty || model.isBusy)
-
-                ToolbarLabeledButton(
-                    title: L10n.details(language),
-                    systemImage: "sidebar.right",
-                    action: { withAnimation(Motion.standard) { isInspectorPresented.toggle() } }
-                )
-                .disabled(model.selectedFolders.isEmpty)
-                .help(L10n.previewAndDetails(language))
-                .accessibilityValue(isInspectorPresented ? "Visible" : "Hidden")
-
-                ToolbarLabeledButton(
-                    title: L10n.settings(language),
-                    systemImage: "gearshape",
-                    action: { isSettingsPresented.toggle() }
-                )
-                .popover(isPresented: $isSettingsPresented, arrowEdge: .bottom) {
-                    SettingsPopover(
-                        model: model,
-                        scanIntensityRawValue: $scanIntensityRawValue,
-                        languageRawValue: $languageRawValue,
-                        deepVerification: $deepVerification,
-                        onClearCache: {
-                            isSettingsPresented = false
-                            Task {
-                                let stats = await model.cacheStats()
-                                guard !model.isBusy else { return }
-                                cacheMB = stats
-                                isClearCacheConfirmPresented = true
-                            }
-                        }
-                    )
+                    .transition(Motion.slide(from: .trailing, reduceMotion: reduceMotion))
                 }
             }
-        }
-        .sheet(item: $model.deletePrompt) { _ in
-            DeleteConfirmationView(model: model)
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .onDeleteCommand(perform: deleteCurrentSelection)
         .background(FinderShortcutMonitor(onMoveToTrash: deleteCurrentSelection))
+    }
+
+    @ToolbarContentBuilder
+    private var scanToolbar: some ToolbarContent {
+        ToolbarItemGroup {
+            Picker("", selection: Binding(
+                get: { ScanMode(rawValue: scanModeRawValue) ?? .all },
+                set: { mode in
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        scanModeRawValue = mode.rawValue
+                        model.setScanMode(mode)
+                    }
+                }
+            )) {
+                Text(L10n.videos(language)).tag(ScanMode.videos)
+                Text(L10n.images(language)).tag(ScanMode.images)
+                Text(L10n.allMedia(language)).tag(ScanMode.all)
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+
+            ToolbarLabeledButton(
+                title: L10n.browse(language),
+                systemImage: "doc.text.image",
+                action: enterBrowseMode
+            )
+            .disabled(model.selectedFolders.isEmpty || model.isBusy)
+
+            ToolbarLabeledButton(
+                title: L10n.details(language),
+                systemImage: "sidebar.right",
+                action: { withAnimation(Motion.standard) { isInspectorPresented.toggle() } }
+            )
+            .disabled(model.selectedFolders.isEmpty)
+            .help(L10n.previewAndDetails(language))
+            .accessibilityValue(isInspectorPresented ? "Visible" : "Hidden")
+
+            ToolbarLabeledButton(
+                title: L10n.settings(language),
+                systemImage: "gearshape",
+                action: { isSettingsPresented.toggle() }
+            )
+            .popover(isPresented: $isSettingsPresented, arrowEdge: .bottom) {
+                SettingsPopover(
+                    model: model,
+                    scanIntensityRawValue: $scanIntensityRawValue,
+                    languageRawValue: $languageRawValue,
+                    deepVerification: $deepVerification,
+                    onClearCache: {
+                        isSettingsPresented = false
+                        Task {
+                            let stats = await model.cacheStats()
+                            guard !model.isBusy else { return }
+                            cacheMB = stats
+                            isClearCacheConfirmPresented = true
+                        }
+                    }
+                )
+            }
+        }
     }
 
     private func deleteCurrentSelection() {
@@ -295,6 +308,12 @@ extension ContentView {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             isModeContentVisible = false
+            if mode == .browse {
+                scanColumnVisibility = columnVisibility
+                columnVisibility = .detailOnly
+            } else {
+                columnVisibility = scanColumnVisibility
+            }
             appMode = mode
         }
         DispatchQueue.main.async {
