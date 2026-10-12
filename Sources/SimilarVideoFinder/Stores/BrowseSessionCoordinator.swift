@@ -1,11 +1,13 @@
 // Targie - Find similar media on macOS.
 // Copyright (C) 2026 Lirui Yu
 
+import Observation
 import SwiftUI
 
 @MainActor
-final class BrowseSessionCoordinator: ObservableObject {
-    @Published private(set) var browseModel: BrowseViewModel?
+@Observable
+final class BrowseSessionCoordinator {
+    private(set) var browseModel: BrowseViewModel?
 
     func prepareIfPossible(scanModel: ScanViewModel) {
         guard scanModel.hasDiscoveredItems else { return }

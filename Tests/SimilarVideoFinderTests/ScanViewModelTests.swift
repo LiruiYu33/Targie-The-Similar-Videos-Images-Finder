@@ -19,7 +19,6 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
-import Combine
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
@@ -460,12 +459,9 @@ final class ScanViewModelTests: XCTestCase {
             pipeline: ProgressReportingPipeline(tracker: tracker),
             hashCache: nil
         )
-        var fractions: [Double] = []
-        let cancellable = model.$progress.sink { progress in
-            fractions.append(progress.fraction)
-        }
+        let progressChanges = ObservationRecorder { model.progress }
         defer {
-            cancellable.cancel()
+            progressChanges.cancel()
             model.cancelScan()
         }
 
@@ -473,6 +469,7 @@ final class ScanViewModelTests: XCTestCase {
         model.startScan()
         try await waitUntil { model.progress.stage == .completed }
 
+        let fractions = progressChanges.history.map(\.fraction)
         let regressions = zip(fractions, fractions.dropFirst()).filter { previous, next in
             next < previous
         }
@@ -678,11 +675,8 @@ final class ScanViewModelTests: XCTestCase {
             XCTAssertTrue(model.groups.isEmpty)
             XCTAssertNil(model.selectedGroupID)
             XCTAssertEqual(Set(model.items.map(\.id)), [a.id, c.id])
-            let rebuilt = expectation(description: "survivors regrouped at lower threshold")
-            let publication = model.$groups.dropFirst().sink { _ in rebuilt.fulfill() }
             model.threshold = 0.60
-            await fulfillment(of: [rebuilt], timeout: 2)
-            publication.cancel()
+            await model.waitForThresholdRebuildForTesting()
             if let survivingRelation {
                 let group = try XCTUnwrap(model.groups.first)
                 XCTAssertEqual(group.relations, [survivingRelation])
@@ -1705,13 +1699,10 @@ final class ScanViewModelTests: XCTestCase {
         // Sync rebuild already filters; groups contain only top-level items.
         XCTAssertEqual(Set(model.groups.flatMap { $0.items.map(\.id) }), [topLevelAInFolder.id, topLevelBInFolder.id])
 
-        // Wait for an actual publication: group count already equals one
-        // before the asynchronous rebuild, so it cannot be our wait condition.
-        let rebuilt = expectation(description: "threshold groups published")
-        let publication = model.$groups.dropFirst().sink { _ in rebuilt.fulfill() }
-        defer { publication.cancel() }
+        // Wait for the rebuild itself: group count already equals one before
+        // the asynchronous rebuild, so it cannot be our wait condition.
         model.threshold = 0.90
-        await fulfillment(of: [rebuilt], timeout: 2)
+        await model.waitForThresholdRebuildForTesting()
 
         // After the async rebuild, subfolder items must still be excluded.
         let groupItemIDs = Set(model.groups.flatMap { $0.items.map(\.id) })

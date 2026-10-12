@@ -22,7 +22,7 @@
 import SwiftUI
 
 struct BrowseFilterPopover: View {
-    @ObservedObject var browseModel: BrowseViewModel
+    @Bindable var browseModel: BrowseViewModel
     @Binding var excludeSubfolders: Bool
     @Environment(\.appLanguage) private var language
 

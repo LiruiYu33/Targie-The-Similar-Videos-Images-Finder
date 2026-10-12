@@ -19,7 +19,6 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
-import Combine
 import XCTest
 @testable import SimilarVideoFinder
 
@@ -433,16 +432,13 @@ final class BrowseViewModelTests: XCTestCase {
         let scanModel = ScanViewModel(hashCache: nil)
         scanModel.replaceResultsForTesting(items: [first, second], relations: [])
         let browse = BrowseViewModel(scanModel: scanModel)
-        var publicationCount = 0
-        let cancellable = browse.$displayedItems.dropFirst().sink { _ in
-            publicationCount += 1
-        }
-        defer { cancellable.cancel() }
+        let publications = ObservationRecorder { browse.displayedItems }
+        defer { publications.cancel() }
 
         browse.sortField = .fileSize
 
         XCTAssertEqual(browse.displayedItems.map(\.id), [first.id, second.id])
-        XCTAssertEqual(publicationCount, 0)
+        XCTAssertEqual(publications.changeCount, 0)
     }
 
     func testSetSortUpdatesFieldAndDirectionWithOneRecompute() {

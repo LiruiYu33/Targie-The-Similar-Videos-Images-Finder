@@ -78,7 +78,7 @@ final class BrowseFilterPopoverTests: XCTestCase {
 }
 
 private struct ObservedFilterPopover: View {
-    @ObservedObject var browseModel: BrowseViewModel
+    @Bindable var browseModel: BrowseViewModel
     let didRenderWidth: (String) -> Void
 
     var body: some View {

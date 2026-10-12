@@ -19,12 +19,13 @@
 // If you reuse this code (modified or not), you must keep this notice
 // and credit the original author (Lirui Yu).
 
-import Combine
 import Foundation
+import Observation
 import SwiftUI
 
 @MainActor
-final class BrowseViewModel: ObservableObject {
+@Observable
+final class BrowseViewModel {
     // MARK: - Filters
 
     enum MediaFilter: String, CaseIterable, Identifiable, Sendable {
@@ -67,95 +68,98 @@ final class BrowseViewModel: ObservableObject {
 
     /// Filtered and sorted items ready for display.
     /// Explicitly published so the table reliably reorders when sort/filter changes.
-    @Published var displayedItems: [MediaItem] = []
+    var displayedItems: [MediaItem] = []
 
     /// Incremented on every recompute so the table reorders rows
     /// when the same items appear in a different sort order.
-    @Published var sortVersion: Int = 0
+    var sortVersion: Int = 0
 
-    @Published var sortField: SortField = .name {
+    var sortField: SortField = .name {
         didSet {
             guard sortField != oldValue else { return }
             requestDisplayedItemsRecompute(bumpSortVersion: true)
         }
     }
-    @Published var sortAscending: Bool = true {
+    var sortAscending: Bool = true {
         didSet {
             guard sortAscending != oldValue else { return }
             requestDisplayedItemsRecompute(bumpSortVersion: true)
         }
     }
-    @Published var isResolutionSortPresented: Bool = false
-    @Published var mediaFilter: MediaFilter = .all {
+    var isResolutionSortPresented: Bool = false
+    var mediaFilter: MediaFilter = .all {
         didSet {
             guard mediaFilter != oldValue else { return }
             requestDisplayedItemsRecompute()
         }
     }
-    @Published var resolutionComparator: ResolutionComparator = .lessThan {
+    var resolutionComparator: ResolutionComparator = .lessThan {
         didSet {
             guard resolutionComparator != oldValue else { return }
             requestDisplayedItemsRecompute()
         }
     }
-    @Published private(set) var selectedResolutionPreset: ResolutionPreset? {
+    private(set) var selectedResolutionPreset: ResolutionPreset? {
         didSet {
             guard selectedResolutionPreset != oldValue else { return }
             requestDisplayedItemsRecompute()
         }
     }
-    @Published private(set) var manualWidth: String = "" {
+    private(set) var manualWidth: String = "" {
         didSet {
             guard manualWidth != oldValue else { return }
             requestDisplayedItemsRecompute()
         }
     }
-    @Published private(set) var manualHeight: String = "" {
+    private(set) var manualHeight: String = "" {
         didSet {
             guard manualHeight != oldValue else { return }
             requestDisplayedItemsRecompute()
         }
     }
-    @Published var searchText: String = "" {
+    var searchText: String = "" {
         didSet {
             guard searchText != oldValue else { return }
             requestDisplayedItemsRecompute()
         }
     }
-    @Published var selectedMediaIDs: Set<UUID> = []
-    @Published var primarySelectionID: UUID?
-    @Published var selectionAnchorID: UUID?
-    @Published var isBatchSelectionMode = false
-    @Published var isFilterPresented: Bool = false
+    var selectedMediaIDs: Set<UUID> = []
+    var primarySelectionID: UUID?
+    var selectionAnchorID: UUID?
+    var isBatchSelectionMode = false
+    var isFilterPresented: Bool = false
 
     let scanModel: ScanViewModel
-    private var cancellables = Set<AnyCancellable>()
-    private var isBatchingDisplayedItemsRecompute = false
-    private var hasPendingDisplayedItemsRecompute = false
-    private var pendingSortVersionBump = false
-    private(set) var displayedItemsRecomputeCount = 0
+    @ObservationIgnored private var isBatchingDisplayedItemsRecompute = false
+    @ObservationIgnored private var hasPendingDisplayedItemsRecompute = false
+    @ObservationIgnored private var pendingSortVersionBump = false
+    @ObservationIgnored private(set) var displayedItemsRecomputeCount = 0
 
     init(scanModel: ScanViewModel) {
         self.scanModel = scanModel
 
-        // Forward scan state changes needed by Browse progress and controls,
-        // but only an item revision should rebuild the sorted media list.
-        scanModel.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-
-        scanModel.$itemsRevision
-            .dropFirst()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.requestDisplayedItemsRecompute()
-            }
-            .store(in: &cancellables)
-
+        // Browse views read the scan state they need straight from
+        // `scanModel`, so nothing is forwarded; only an item revision
+        // rebuilds the sorted media list.
+        observeItemsRevision()
         recomputeDisplayedItems()
+    }
+
+    private func observeItemsRevision() {
+        withObservationTracking {
+            _ = scanModel.itemsRevision
+        } onChange: { [weak self] in
+            // onChange runs before the new value is stored, so rebuild on the
+            // next main-queue turn (as the former `receive(on:)` did), then
+            // watch for the next revision.
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.requestDisplayedItemsRecompute()
+                    self.observeItemsRevision()
+                }
+            }
+        }
     }
 
     // MARK: - Displayed items computation

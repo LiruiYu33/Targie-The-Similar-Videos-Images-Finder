@@ -23,7 +23,7 @@ import AppKit
 import SwiftUI
 
 struct DeleteConfirmationView: View {
-    @ObservedObject var model: ScanViewModel
+    var model: ScanViewModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appLanguage) private var language
     @State private var stepShownAt = Date()

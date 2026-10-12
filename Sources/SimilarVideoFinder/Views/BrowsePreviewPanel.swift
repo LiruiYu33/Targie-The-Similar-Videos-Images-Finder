@@ -25,7 +25,7 @@ import AppKit
 import SwiftUI
 
 struct BrowsePreviewPanel: View {
-    @ObservedObject var browseModel: BrowseViewModel
+    var browseModel: BrowseViewModel
     @Environment(\.appLanguage) private var language
 
     var body: some View {
@@ -113,7 +113,7 @@ struct BrowsePreviewPanel: View {
 // MARK: - Stacked Selection Preview
 
 struct BrowseStackedPreview: View {
-    @ObservedObject var browseModel: BrowseViewModel
+    var browseModel: BrowseViewModel
     let language: AppLanguage
 
     private var selectedItems: [MediaItem] { browseModel.selectedMediaList }

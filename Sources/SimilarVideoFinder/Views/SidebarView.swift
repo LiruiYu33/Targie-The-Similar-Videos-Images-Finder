@@ -22,7 +22,7 @@
 import SwiftUI
 
 struct SidebarView: View {
-    @ObservedObject var model: ScanViewModel
+    @Bindable var model: ScanViewModel
     @Binding var excludeSubfolders: Bool
     @Environment(\.appLanguage) private var language
     @State private var showSkippedFiles = false

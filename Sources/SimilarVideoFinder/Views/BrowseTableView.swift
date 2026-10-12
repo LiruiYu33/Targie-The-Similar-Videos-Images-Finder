@@ -33,7 +33,7 @@ struct BrowseColumnWidths: Equatable {
 }
 
 struct BrowseTableView: View {
-    @ObservedObject var browseModel: BrowseViewModel
+    @Bindable var browseModel: BrowseViewModel
     @Environment(\.appLanguage) private var language
 
     // Stored (user-preferred) widths for resizable columns.
@@ -478,7 +478,7 @@ struct BrowseThumbnailCell: View {
 // MARK: - Resolution Sort Popover
 
 struct BrowseResolutionSortPopover: View {
-    @ObservedObject var browseModel: BrowseViewModel
+    @Bindable var browseModel: BrowseViewModel
     let language: AppLanguage
 
     var body: some View {
