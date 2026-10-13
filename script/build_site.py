@@ -556,8 +556,8 @@ class Site:
 <title>{esc(title)}</title>
 <meta name="description" content="{esc(desc)}">
 <link rel="canonical" href="{canonical}">
-{alternates}<meta name="theme-color" content="#fbf7f0" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#171310" media="(prefers-color-scheme: dark)">
+{alternates}<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Targie">
 <meta property="og:title" content="{esc(title)}">
