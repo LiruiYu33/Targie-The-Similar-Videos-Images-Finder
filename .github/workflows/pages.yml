@@ -1,0 +1,82 @@
+name: Website
+
+# Builds the static site in site/ + releases/*.md with script/build_site.py and
+# publishes it to GitHub Pages. Pull requests only build and check links.
+# One-time setup: Settings -> Pages -> Source: GitHub Actions.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "site/**"
+      - "releases/**"
+      - "script/build_site.py"
+      - ".github/workflows/pages.yml"
+  pull_request:
+    paths:
+      - "site/**"
+      - "releases/**"
+      - "script/build_site.py"
+      - ".github/workflows/pages.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure Pages
+        id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v6
+
+      - name: Build site
+        run: |
+          set -euo pipefail
+          BASE_URL="${{ steps.pages.outputs.base_url }}"
+          if [ -n "$BASE_URL" ]; then
+            python3 script/build_site.py --out _site --base-url "${BASE_URL%/}/"
+          else
+            python3 script/build_site.py --out _site
+          fi
+
+      - name: Upload artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5
