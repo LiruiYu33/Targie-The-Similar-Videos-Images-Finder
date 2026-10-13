@@ -556,7 +556,7 @@ class Site:
 <title>{esc(title)}</title>
 <meta name="description" content="{esc(desc)}">
 <link rel="canonical" href="{canonical}">
-{alternates}<meta name="theme-color" content="#0b1533">
+{alternates}<meta name="theme-color" content="#fff4e6">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Targie">
 <meta property="og:title" content="{esc(title)}">
