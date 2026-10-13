@@ -1,34 +1,35 @@
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
-  --bg-alt: #f5f6f8;
-  --text: #14171f;
-  --muted: #5a6272;
-  --line: #e2e5eb;
+  --bg: #fffaf3;
+  --bg-alt: #fdf0df;
+  --text: #2b1d14;
+  --muted: #7a5f4d;
+  --line: #f0dcc6;
   --card: #ffffff;
-  --accent: #1f6feb;
-  --accent-strong: #1558c0;
+  --accent: #d9480f;
+  --accent-strong: #b83a0a;
   --on-accent: #ffffff;
-  --hero-from: #eef4ff;
-  --hero-to: #ffffff;
-  --shadow: 0 18px 50px -18px rgba(15, 30, 70, 0.35);
+  --hero-from: #ffe6c7;
+  --hero-to: #fffaf3;
+  --shadow: 0 18px 50px -18px rgba(140, 70, 10, 0.35);
   --radius: 14px;
 }
 
+/* Dark mode keeps the warm character: brown surfaces, not blue-black. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1017;
-    --bg-alt: #121621;
-    --text: #eef1f7;
-    --muted: #a0a8b8;
-    --line: #232a38;
-    --card: #151a26;
-    --accent: #5b9dff;
-    --accent-strong: #7fb2ff;
-    --on-accent: #08111f;
-    --hero-from: #10203f;
-    --hero-to: #0d1017;
-    --shadow: 0 18px 50px -18px rgba(0, 0, 0, 0.7);
+    --bg: #1d150f;
+    --bg-alt: #261b13;
+    --text: #f7ede2;
+    --muted: #c4ad98;
+    --line: #3b2b1f;
+    --card: #2c2017;
+    --accent: #ff9a5c;
+    --accent-strong: #ffb685;
+    --on-accent: #2b1305;
+    --hero-from: #3d2615;
+    --hero-to: #1d150f;
+    --shadow: 0 18px 50px -18px rgba(0, 0, 0, 0.65);
   }
 }
 
@@ -49,6 +50,7 @@ img { max-width: 100%; height: auto; }
 
 a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 a:hover { color: var(--accent-strong); }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
 
 h1, h2, h3 { line-height: 1.2; letter-spacing: -0.01em; margin: 0; }
 
