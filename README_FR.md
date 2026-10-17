@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README_ZH.md) | [繁體中文](README_ZH_HANT.md) | [Español](README_ES.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
 
+**[Site web](https://liruiyu33.github.io/Targie-The-Similar-Videos-Images-Finder/fr/)** · **[Télécharger](https://github.com/LiruiYu33/Targie-The-Similar-Videos-Images-Finder/releases/latest)**
+
 > **macOS uniquement.** Targie est une application native pour macOS 14+. Il n'existe pas de version Windows ni Linux, et aucune n'est prévue.
 
 Targie trouve des vidéos et des images similaires dans les dossiers sélectionnés en combinant métadonnées, hachages de contenu, empreintes perceptuelles et caractéristiques visuelles.

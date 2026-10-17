@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README_ZH.md) | [Español](README_ES.md) | [Français](README_FR.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
 
+**[官網](https://liruiyu33.github.io/Targie-The-Similar-Videos-Images-Finder/zh-hant/)** · **[下載](https://github.com/LiruiYu33/Targie-The-Similar-Videos-Images-Finder/releases/latest)**
+
 > **僅支援 macOS。** Targie 是一款原生 macOS 14+ 應用程式，沒有 Windows 或 Linux 版本，也不計劃提供。
 
 Targie 透過結合 metadata、內容雜湊、感知指紋與視覺特徵，在多個所選資料夾之間尋找相似影片與圖片。
